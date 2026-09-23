@@ -1,31 +1,38 @@
-"""Bit matrix and the cursor / anchor readout."""
+"""Two bit grids (canvas / numbers) and the cursor / anchor readout."""
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from pixelsb.domain.models import ViewerState
+from pixelsb.domain.selection import all_bits, effective_selection
 from pixelsb.ui import text
 from pixelsb.ui.bits import BitMatrix
 from pixelsb.ui.text import readout_text
 
 
 class Inspector(QWidget):
+    """Canvas grid, number grid, presets, and the detail text."""
+
     bit_clicked = Signal(str, int, bool)
-    readout_bit_clicked = Signal(str, int)
+    readout_bit_clicked = Signal(str, int, bool)
+    channel_clicked = Signal(str)
     readout_channel_clicked = Signal(str)
     original_requested = Signal()
     only_bit_requested = Signal()
     lsbs_requested = Signal()
     clear_bits_requested = Signal()
+    reset_readout_requested = Signal()
 
     def __init__(self) -> None:
         super().__init__()
         self._state = ViewerState()
-        self._matrix = BitMatrix()
-        self._matrix.bit_clicked.connect(self.bit_clicked.emit)
-        self._matrix.bit_right_clicked.connect(self.readout_bit_clicked.emit)
-        self._matrix.channel_right_clicked.connect(self.readout_channel_clicked.emit)
+        self._canvas_matrix = BitMatrix()
+        self._canvas_matrix.bit_clicked.connect(self.bit_clicked.emit)
+        self._canvas_matrix.channel_clicked.connect(self.channel_clicked.emit)
+        self._number_matrix = BitMatrix()
+        self._number_matrix.bit_clicked.connect(self.readout_bit_clicked.emit)
+        self._number_matrix.channel_clicked.connect(self.readout_channel_clicked.emit)
         self._detail = QLabel(text.NO_IMAGE)
         self._detail.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self._detail.setWordWrap(True)
@@ -35,8 +42,8 @@ class Inspector(QWidget):
         self._detail.setFont(font)
         self._detail.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
 
-        buttons = QHBoxLayout()
-        buttons.setContentsMargins(0, 0, 0, 0)
+        presets = QHBoxLayout()
+        presets.setContentsMargins(0, 0, 0, 0)
         for label, signal in (
             (text.ORIGINAL, self.original_requested),
             (text.ONLY_BIT, self.only_bit_requested),
@@ -45,18 +52,40 @@ class Inspector(QWidget):
         ):
             button = QPushButton(label)
             button.clicked.connect(lambda _checked=False, signal=signal: signal.emit())
-            buttons.addWidget(button)
+            presets.addWidget(button)
+
+        canvas_caption = QLabel(text.CANVAS_LAYER)
+        number_row = QHBoxLayout()
+        number_row.setContentsMargins(0, 0, 0, 0)
+        number_row.addWidget(QLabel(text.NUMBER_LAYER))
+        reset = QPushButton(text.READOUT_RESET)
+        reset.setFlat(True)
+        reset.setToolTip(text.READOUT_RESET_TIP)
+        reset.clicked.connect(self.reset_readout_requested.emit)
+        number_row.addWidget(reset)
+        number_row.addStretch(1)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
-        layout.addLayout(buttons)
-        layout.addWidget(self._matrix)
+        layout.addLayout(presets)
+        layout.addWidget(canvas_caption)
+        layout.addWidget(self._canvas_matrix)
+        layout.addLayout(number_row)
+        layout.addWidget(self._number_matrix)
+        layout.addSpacing(8)
         layout.addWidget(self._detail, 1)
         self.setMinimumWidth(280)
 
     def set_state(self, state: ViewerState) -> None:
         self._state = state
-        self._matrix.set_state(state)
+        image = state.image
+        planes = () if image is None else image.planes
+        canvas_bits = None if image is None else effective_selection(image, state.selection)
+        number_bits = (
+            None if image is None else all_bits(image) if state.readout is None else state.readout
+        )
+        self._canvas_matrix.set_layer(planes, canvas_bits)
+        self._number_matrix.set_layer(planes, number_bits)
         self._detail.setText(readout_text(state))
 
     def detail_text(self) -> str:

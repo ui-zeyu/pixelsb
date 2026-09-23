@@ -30,7 +30,6 @@ from PySide6.QtWidgets import (
 )
 
 from pixelsb.domain.geometry import initial_zoom
-from pixelsb.domain.labels import widest_text, zoom_to_fit
 from pixelsb.domain.models import (
     MAX_ZOOM,
     MIN_ZOOM,
@@ -46,12 +45,14 @@ from pixelsb.domain.transitions import (
     cycle_format,
     move_cursor,
     open_image,
+    reset_readout,
     select_all_bits,
     select_focus_only,
     select_lsb,
     select_lsb_at,
     select_lsbs,
     select_only,
+    select_only_readout,
     set_anchor,
     set_cursor,
     set_format,
@@ -184,8 +185,6 @@ class MainWindow(QMainWindow):
         self._zoom_slider.setFixedWidth(160)
         self._zoom_slider.setToolTip(text.ZOOM_TIP)
         self._zoom_slider.valueChanged.connect(self._zoom_to)
-        self._zoom_labels = QPushButton(text.ZOOM_LABELS)
-        self._zoom_labels.clicked.connect(_drop_checked(self._zoom_to_labels))
         self._format_combo = _combo(text.FORMAT_TIP)
         self._format_combo.currentIndexChanged.connect(self._on_format)
         self._value_combo = _combo(text.VALUE_MODE_TIP)
@@ -206,7 +205,6 @@ class MainWindow(QMainWindow):
             ("", self._zoom_in),
             ("", self._zoom_fit),
             ("", self._zoom_reset),
-            ("", self._zoom_labels),
             ("", self._anchor_label),
             ("", self._clear_anchor),
         ):
@@ -233,11 +231,13 @@ class MainWindow(QMainWindow):
         self.inspector = Inspector()
         self.inspector.bit_clicked.connect(self._on_bit)
         self.inspector.readout_bit_clicked.connect(self._on_readout_bit)
+        self.inspector.channel_clicked.connect(self._select_name)
         self.inspector.readout_channel_clicked.connect(self._on_readout_channel)
         self.inspector.original_requested.connect(lambda: self.apply(select_all_bits))
         self.inspector.only_bit_requested.connect(lambda: self.apply(select_focus_only))
         self.inspector.lsbs_requested.connect(lambda: self.apply(select_lsbs))
         self.inspector.clear_bits_requested.connect(lambda: self.apply(clear_selection))
+        self.inspector.reset_readout_requested.connect(lambda: self.apply(reset_readout))
         inspector_scroll = QScrollArea()
         inspector_scroll.setWidgetResizable(True)
         inspector_scroll.setWidget(self.inspector)
@@ -377,7 +377,6 @@ class MainWindow(QMainWindow):
             self._zoom_out,
             self._zoom_fit,
             self._zoom_reset,
-            self._zoom_labels,
             self._zoom_slider,
         ):
             widget.setEnabled(enabled)
@@ -409,11 +408,17 @@ class MainWindow(QMainWindow):
         else:
             self.apply(lambda state: toggle_bit(state, plane, bit))
 
-    def _on_readout_bit(self, plane: str, bit: int) -> None:
-        self.apply(lambda state: toggle_readout_bit(state, plane, bit))
+    def _on_readout_bit(self, plane: str, bit: int, exclusive: bool) -> None:
+        if exclusive:
+            self.apply(lambda state: select_only_readout(state, plane, bit))
+        else:
+            self.apply(lambda state: toggle_readout_bit(state, plane, bit))
 
     def _on_readout_channel(self, name: str) -> None:
         self.apply(lambda state: toggle_readout_channel(state, name))
+
+    def _select_name(self, name: str) -> None:
+        self.apply(lambda state: select_lsb(state, name))
 
     def _on_format(self, index: int) -> None:
         fmt = _enum_at(self._format_combo, index, DisplayFormat)
@@ -457,15 +462,6 @@ class MainWindow(QMainWindow):
         self.apply(lambda current: set_zoom(current, new_zoom))
         horizontal.setValue(round(image_x * new_zoom - viewport_x))
         vertical.setValue(round(image_y * new_zoom - viewport_y))
-
-    def _zoom_to_labels(self) -> None:
-        state = self.store.state
-        if state.image is None:
-            return
-        template = widest_text(state)
-        if not template:
-            return
-        self._zoom_to(zoom_to_fit(template))
 
     def _zoom_to(self, new_zoom: float) -> None:
         state = self.store.state

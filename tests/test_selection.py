@@ -86,17 +86,19 @@ def test_numbers_follow_the_readout_layer() -> None:
     from pixelsb.domain.transitions import set_cursor, toggle_readout_bit
 
     state = set_cursor(select_only(_rgb_state(), "B", 0), PixelCoord(0, 0))
-    assert pixel_text(state, PixelCoord(0, 0)) == "R09\nG01\nB00"
-    assert widest_text(state) == "RFF\nGFF\nBFF"
-    numbers = toggle_readout_bit(state, "B", 0)
-    assert pixel_text(numbers, PixelCoord(0, 0)) == "0"
-    assert widest_text(numbers) == "1"
+    assert pixel_text(state, PixelCoord(0, 0)) == "R:09\nG:01\nB:00"
+    assert widest_text(state) == "R:FF\nG:FF\nB:FF"
+    numbers = toggle_readout_bit(state, "R", 0)
+    assert pixel_text(numbers, PixelCoord(0, 0)) == "R:08\nG:01\nB:00"
+    assert widest_text(numbers) == "R:FE\nG:FF\nB:FF"
     both = toggle_readout_bit(numbers, "R", 3)
-    assert pixel_text(both, PixelCoord(0, 0)) == "R1\nB0"
+    assert pixel_text(both, PixelCoord(0, 0)) == "R:00\nG:01\nB:00"
     binary = set_format(both, DisplayFormat.BINARY)
-    assert pixel_text(binary, PixelCoord(0, 0)) == "R1\nB0"
-    single = toggle_readout_bit(both, "B", 0)
-    assert pixel_text(single, PixelCoord(0, 0)) == "1"
+    assert pixel_text(binary, PixelCoord(0, 0)) == "R:00000000\nG:00000001\nB:00000000"
+    from pixelsb.domain.transitions import select_only_readout
+
+    single = select_only_readout(both, "B", 0)
+    assert pixel_text(single, PixelCoord(0, 0)) == "0"
 
 
 def test_labels_use_the_cell_bigness_instead_of_tiny_fonts() -> None:
@@ -134,13 +136,13 @@ def test_region_texts_matches_pixel_text_and_is_clipped() -> None:
 
 def test_region_texts_formats_offsets_against_the_anchor() -> None:
     from pixelsb.domain.models import ValueMode
-    from pixelsb.domain.transitions import set_anchor, set_value_mode, toggle_readout_bit
+    from pixelsb.domain.transitions import select_only_readout, set_anchor, set_value_mode
 
     samples = np.array([[[0b1001, 0, 0], [0b0000, 0, 0]]], dtype=np.uint16)
     image = make_image(samples, planes_rgb())
     state = set_cursor(select_only(open_image(ViewerState(), image), "R", 0), PixelCoord(1, 0))
     state = set_value_mode(set_anchor(state, PixelCoord(0, 0)), ValueMode.OFFSET)
-    assert pixel_text(state, PixelCoord(0, 0)) == "R0\nG0\nB0"
-    assert pixel_text(state, PixelCoord(1, 0)) == "R-09\nG0\nB0"
-    narrowed = toggle_readout_bit(state, "R", 0)
+    assert pixel_text(state, PixelCoord(0, 0)) == "R:0\nG:0\nB:0"
+    assert pixel_text(state, PixelCoord(1, 0)) == "R:-09\nG:0\nB:0"
+    narrowed = select_only_readout(state, "R", 0)
     assert pixel_text(narrowed, PixelCoord(1, 0)) == "-1"

@@ -59,18 +59,23 @@ def test_empty_states_have_hints() -> None:
 def test_plane_selection_keeps_original_numbers_until_the_readout_changes() -> None:
     state = set_format(set_cursor(_state(), PixelCoord(0, 0)), DisplayFormat.BINARY)
     state = select_only(state, "R", 0)
-    assert cursor_label(state) == "R11111111\nG00000000\nB00000000"
+    assert cursor_label(state) == "R:11111111\nG:00000000\nB:00000000"
     assert readout_text(state).endswith("画面 R0 · 数字 原始值")
     template = widest_text(state)
-    assert template == "R11111111\nG11111111\nB11111111"
-    assert zoom_required(template) == 33
-    assert not label_fits(32, template)
-    assert label_fits(33, template)
-    from pixelsb.domain.transitions import toggle_readout_bit
+    assert template == "R:11111111\nG:11111111\nB:11111111"
+    assert zoom_required(template) == 36
+    assert not label_fits(35, template)
+    assert label_fits(36, template)
+    from pixelsb.domain.transitions import select_only_readout, toggle_readout_bit
 
-    numbers = toggle_readout_bit(state, "R", 0)
+    numbers = select_only_readout(state, "R", 0)
     assert cursor_label(numbers) == "1"
     assert readout_text(numbers).endswith("画面 R0 · 数字 R0")
+    excluded = toggle_readout_bit(state, "R", 0)
+    assert cursor_label(excluded) == "R:11111110\nG:00000000\nB:00000000"
+    summary = readout_text(excluded)
+    assert "画面 R0 · 数字 R1 R2 R3 R4 R5 R6 R7" in summary
+    assert summary.endswith("G6 G7 B0 B1 B2 B3 B4 B5 B6 B7")
     offset = set_value_mode(set_anchor(numbers, PixelCoord(1, 0)), ValueMode.OFFSET)
     assert build_readout(offset) is not None
     assert "dx" in readout_text(offset)

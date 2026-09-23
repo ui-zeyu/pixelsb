@@ -119,28 +119,41 @@ def effective_readout(state: ViewerState) -> frozenset[BitChoice]:
 
 
 def toggle_readout_bit(state: ViewerState, plane: str, bit: int) -> ViewerState:
-    """Right-click on the matrix: toggle one bit of the number layer."""
+    """Toggle one bit of the number layer."""
     image = _image(state)
     choice = _choice(image, plane, bit)
-    updated = frozenset(state.readout or ()) ^ {choice}
-    return replace(state, readout=updated or None)
+    updated = effective_readout(state) ^ {choice}
+    return replace(state, readout=_stored_readout(image, updated))
 
 
 def toggle_readout_channel(state: ViewerState, name: str) -> ViewerState:
-    """Right-click on a channel letter: toggle every bit of that channel."""
+    """Toggle every bit of one channel in the number layer."""
     image = _image(state)
     try:
         sample_plane = image.plane(name)
     except KeyError as exc:
         raise ValueError(f"unknown plane: {name}") from exc
-    current = frozenset(state.readout or ())
     channel_bits = frozenset(BitChoice(name, bit) for bit in range(sample_plane.bit_depth))
-    updated = current - channel_bits if channel_bits <= current else current | channel_bits
-    return replace(state, readout=updated or None)
+    updated = effective_readout(state) ^ channel_bits
+    return replace(state, readout=_stored_readout(image, updated))
+
+
+def select_only_readout(state: ViewerState, plane: str, bit: int) -> ViewerState:
+    image = _image(state)
+    choice = _choice(image, plane, bit)
+    return replace(state, readout=_stored_readout(image, frozenset({choice})))
 
 
 def reset_readout(state: ViewerState) -> ViewerState:
     return replace(state, readout=None)
+
+
+def _stored_readout(
+    image: LoadedImage, chosen: frozenset[BitChoice]
+) -> frozenset[BitChoice] | None:
+    if not chosen or chosen == all_bits(image):
+        return None
+    return chosen
 
 
 def step_focus_bit(state: ViewerState, delta: int) -> ViewerState:

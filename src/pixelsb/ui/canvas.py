@@ -39,10 +39,9 @@ _BACKGROUND = QColor("#121212")
 _CURSOR = QColor("#ffb000")
 _ANCHOR = QColor("#3aa0ff")
 _GRID = QColor(0, 0, 0, 130)
+_DRAG_THRESHOLD = 4
 _DARK_TEXT = QColor("#111111")
 _LIGHT_TEXT = QColor("#f5f5f5")
-_DARK_SHADOW = QColor(255, 255, 255, 150)
-_LIGHT_SHADOW = QColor(0, 0, 0, 150)
 _LUMA_WEIGHTS = np.array([2126, 7152, 722], dtype=np.uint32)
 _LUMA_THRESHOLD = 1_500_000
 
@@ -66,6 +65,9 @@ class ImageCanvas(QWidget):
         self._panning = False
         self._pan_origin = QPoint()
         self._scroll_origin = (0, 0)
+        self._left_press: QPoint | None = None
+        self._left_dragging = False
+        self._left_press_scroll = (0, 0)
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setAcceptDrops(True)
@@ -129,6 +131,23 @@ class ImageCanvas(QWidget):
         y = math.floor(coord.y * zoom) - pad
         size = math.ceil(zoom) + pad * 2
         self.update(QRect(x, y, size, size))
+
+    def _move_pan(self, global_pos: QPoint) -> None:
+        delta = global_pos - self._pan_origin
+        self._scroll.horizontalScrollBar().setValue(self._scroll_origin[0] - delta.x())
+        self._scroll.verticalScrollBar().setValue(self._scroll_origin[1] - delta.y())
+
+    def _start_pan(self, global_pos: QPoint) -> None:
+        self._panning = True
+        self._pan_origin = global_pos
+        self._scroll_origin = (
+            self._scroll.horizontalScrollBar().value(),
+            self._scroll.verticalScrollBar().value(),
+        )
+        self.setCursor(Qt.CursorShape.ClosedHandCursor)
+
+    def _drag_distance(self, event: QMouseEvent, press: QPoint) -> float:
+        return (event.globalPosition().toPoint() - press).manhattanLength()
 
     def sizeHint(self) -> QSize:
         return self._target
@@ -195,48 +214,63 @@ class ImageCanvas(QWidget):
                 zoom,
                 zoom,
             )
-            if bright[row, column]:
-                main, shadow = _DARK_TEXT, _LIGHT_SHADOW
-            else:
-                main, shadow = _LIGHT_TEXT, _DARK_SHADOW
+            main = _DARK_TEXT if bright[row, column] else _LIGHT_TEXT
             painter.save()
             painter.setClipRect(rect.adjusted(1, 1, -1, -1))
-            painter.setPen(shadow)
-            painter.drawText(rect.translated(1.0, 1.0), Qt.AlignmentFlag.AlignCenter, label)
             painter.setPen(main)
             painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, label)
             painter.restore()
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         if self._panning:
-            delta = event.globalPosition().toPoint() - self._pan_origin
-            self._scroll.horizontalScrollBar().setValue(self._scroll_origin[0] - delta.x())
-            self._scroll.verticalScrollBar().setValue(self._scroll_origin[1] - delta.y())
+            self._move_pan(event.globalPosition().toPoint())
+            event.accept()
+            return
+        if self._left_press is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            if (
+                not self._left_dragging
+                and self._drag_distance(event, self._left_press) > _DRAG_THRESHOLD
+            ):
+                self._left_dragging = True
+                self._pan_origin = self._left_press
+                self._scroll_origin = self._left_press_scroll
+                self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            if self._left_dragging:
+                self._move_pan(event.globalPosition().toPoint())
             event.accept()
             return
         self._hover(event.position().toPoint())
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         self.setFocus(Qt.FocusReason.MouseFocusReason)
-        panning = event.button() == Qt.MouseButton.MiddleButton or (
+        if event.button() == Qt.MouseButton.MiddleButton or (
             event.button() == Qt.MouseButton.LeftButton and self._space_down
-        )
-        if panning:
-            self._panning = True
-            self._pan_origin = event.globalPosition().toPoint()
-            self._scroll_origin = (
-                self._scroll.horizontalScrollBar().value(),
-                self._scroll.verticalScrollBar().value(),
-            )
-            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+        ):
+            self._start_pan(event.globalPosition().toPoint())
             event.accept()
             return
         if event.button() == Qt.MouseButton.LeftButton:
-            coord = self._coord(event.position().toPoint())
-            if coord is not None:
-                self.anchored.emit(coord.x, coord.y)
+            self._left_press = event.globalPosition().toPoint()
+            self._left_press_scroll = (
+                self._scroll.horizontalScrollBar().value(),
+                self._scroll.verticalScrollBar().value(),
+            )
+            event.accept()
+            return
+        super().mousePressEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and self._left_press is not None:
+            dragging = self._left_dragging
+            self._left_press = None
+            self._left_dragging = False
+            self.unsetCursor()
+            if not dragging:
+                coord = self._coord(event.position().toPoint())
+                if coord is not None:
+                    self.anchored.emit(coord.x, coord.y)
+            event.accept()
+            return
         if self._panning and event.button() in {
             Qt.MouseButton.LeftButton,
             Qt.MouseButton.MiddleButton,

@@ -18,7 +18,10 @@ ZOOM_IN = "+"
 ZOOM_OUT = "−"
 ZOOM_FIT = "适配"
 ZOOM_RESET = "1:1"
-ZOOM_LABELS = "看清数值"
+CANVAS_LAYER = "画面"
+NUMBER_LAYER = "数字"
+READOUT_RESET = "原始值"
+CHANNEL_TIP = "单击选整条通道"
 VALUE = "数值"
 DECIMAL = "十进制"
 HEX = "十六进制"
@@ -43,11 +46,12 @@ IMAGE_FILTER = (
 )
 ZOOM_TIP = "拖动缩放。⌘滚轮和 +、- 也可以"
 ZOOM_RESET_TIP = "按原始像素大小显示（1 倍）"
+READOUT_RESET_TIP = "数字层回到原始通道值"
 FORMAT_TIP = "F 在十进制、十六进制、二进制之间切换"
 VALUE_MODE_TIP = "O 切换绝对值与相对锚点"
 MATRIX_TIP = (
-    "左键勾选画面用的位。右键勾选数字层（像素上显示的数），默认显示原始通道值；"
-    "右键通道字母选整条通道。⌘、Ctrl 或 Shift 加左键＝只看这一位。"
+    "上面的格子决定画面显示哪些位，下面的格子决定像素上的数字由哪些位组成"
+    "（默认显示原始通道值）。单击通道字母选整条通道。⌘、Ctrl 或 Shift 加单击＝只看这一位。"
 )
 SHORTCUT_HELP = """⌘O    打开
 方向键    移动光标 1 像素
@@ -62,9 +66,8 @@ Esc    清除锚点
 ⌘滚轮、+、-    缩放
 0    适配窗口
 1:1    原始像素大小
-看清数值    放大到能放下像素数字
 [ / ]    当前通道的上一位 / 下一位
-R G A L    只看该通道的最低位
+R G A L    画面只看该通道的最低位
 1–9    按顺序只看该通道的最低位
 F    切换进制
 O    绝对值 / 相对锚点

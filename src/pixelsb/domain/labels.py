@@ -7,7 +7,6 @@ import numpy as np
 
 from pixelsb.domain.formatting import format_delta, format_sample
 from pixelsb.domain.models import (
-    MAX_ZOOM,
     MIN_ZOOM,
     BitChoice,
     DisplayFormat,
@@ -31,8 +30,8 @@ def font_pixel_size(zoom: float, text: str) -> int:
     lines = text.split("\n")
     longest = max(len(line) for line in lines)
     cap = max(int(zoom * FONT_FILL), 1)
-    by_width = max(int((zoom - LABEL_PAD) / (ADVANCE * longest)), 1)
-    by_height = max(int((zoom - LABEL_PAD) / (LINE_SPACING * len(lines))), 1)
+    by_width = max(int((zoom - LABEL_PAD) / (ADVANCE * longest) + 1e-9), 1)
+    by_height = max(int((zoom - LABEL_PAD) / (LINE_SPACING * len(lines)) + 1e-9), 1)
     return min(cap, by_width, by_height)
 
 
@@ -51,10 +50,6 @@ def zoom_required(text: str) -> int:
     by_height = math.ceil(MIN_FONT * LINE_SPACING * len(lines)) + LABEL_PAD
     cap = math.ceil(MIN_FONT / FONT_FILL)
     return int(max(MIN_ZOOM, by_width, by_height, cap))
-
-
-def zoom_to_fit(text: str, *, cap: float = MAX_ZOOM) -> float:
-    return min(zoom_required(text), cap)
 
 
 def pixel_text(state: ViewerState, coord: PixelCoord) -> str:
@@ -104,7 +99,7 @@ def region_texts(state: ViewerState, x0: int, y0: int, x1: int, y1: int) -> list
             memo = _FormatMemo(depth, state.value_format, offset=False)
             strings = [memo[value] for value in shown.ravel().tolist()]
         if len(active) > 1:
-            name = plane.name
+            name = plane.name + ":"
             strings = [name + text for text in strings]
         joined = (
             strings
@@ -165,7 +160,7 @@ def _join_channels(
         if len(active) == 1:
             parts.append(rendered)
         else:
-            parts.append(f"{plane.name}{rendered}")
+            parts.append(f"{plane.name}:{rendered}")
     return "\n".join(parts)
 
 

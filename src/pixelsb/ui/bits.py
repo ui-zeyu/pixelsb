@@ -1,22 +1,20 @@
 """Checkbox grid of channel bits. Bit 0 is the rightmost column.
 
-Left-click toggles a bit of the canvas layer. Right-click toggles a bit of the
-number layer; right-click on a channel letter toggles the whole channel.
+One grid drives the canvas layer, another drives the number layer. Clicking a
+checkbox toggles one bit; clicking a channel letter toggles the whole channel.
 """
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QContextMenuEvent
-from PySide6.QtWidgets import QApplication, QCheckBox, QGridLayout, QLabel, QWidget
+from PySide6.QtGui import QMouseEvent
+from PySide6.QtWidgets import QCheckBox, QGridLayout, QLabel, QWidget
 
-from pixelsb.domain.models import BitChoice, SamplePlane, ViewerState
-from pixelsb.domain.selection import effective_selection
+from pixelsb.domain.models import BitChoice, SamplePlane
 from pixelsb.ui import text
 
 
 class BitMatrix(QWidget):
     bit_clicked = Signal(str, int, bool)
-    bit_right_clicked = Signal(str, int)
-    channel_right_clicked = Signal(str)
+    channel_clicked = Signal(str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -25,21 +23,20 @@ class BitMatrix(QWidget):
         self._layout.setHorizontalSpacing(2)
         self._layout.setVerticalSpacing(2)
         self._boxes: dict[tuple[str, int], QCheckBox] = {}
-        self._cells: dict[QWidget, tuple[str, int]] = {}
         self._letters: dict[QWidget, str] = {}
         self._signature: tuple[tuple[str, int], ...] = ()
         self.setToolTip(text.MATRIX_TIP)
 
-    def set_state(self, state: ViewerState) -> None:
-        image = state.image
-        planes = () if image is None else image.planes
+    def set_layer(
+        self, planes: tuple[SamplePlane, ...], chosen: frozenset[BitChoice] | None
+    ) -> None:
+        """Sync the checkboxes. ``chosen is None`` means every bit is checked."""
         signature = tuple((plane.name, plane.bit_depth) for plane in planes)
         if signature != self._signature:
             self._rebuild(planes)
             self._signature = signature
-        chosen = None if image is None else effective_selection(image, state.selection)
         for (plane, bit), box in self._boxes.items():
-            checked = chosen is not None and BitChoice(plane, bit) in chosen
+            checked = True if chosen is None else BitChoice(plane, bit) in chosen
             if box.isChecked() != checked:
                 box.blockSignals(True)
                 box.setChecked(checked)
@@ -54,7 +51,6 @@ class BitMatrix(QWidget):
             if widget is not None:
                 widget.deleteLater()
         self._boxes.clear()
-        self._cells.clear()
         self._letters.clear()
         if not planes:
             return
@@ -64,9 +60,10 @@ class BitMatrix(QWidget):
             header.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self._layout.addWidget(header, 0, column + 1)
         for row, plane in enumerate(planes, start=1):
-            name = QLabel(plane.name)
-            self._layout.addWidget(name, row, 0)
-            self._letters[name] = plane.name
+            letter = QLabel(plane.name)
+            letter.setToolTip(text.CHANNEL_TIP)
+            self._layout.addWidget(letter, row, 0)
+            self._letters[letter] = plane.name
             for bit in range(plane.bit_depth):
                 column = (max_depth - 1 - bit) + 1
                 box = QCheckBox()
@@ -77,23 +74,19 @@ class BitMatrix(QWidget):
                 )
                 self._layout.addWidget(box, row, column)
                 self._boxes[(plane.name, bit)] = box
-                self._cells[box] = (plane.name, bit)
 
-    def contextMenuEvent(self, event: QContextMenuEvent) -> None:
-        child = self.childAt(event.pos())
-        cell = self._cells.get(child)
-        if cell is not None:
-            self.bit_right_clicked.emit(cell[0], cell[1])
-            event.accept()
-            return
-        letter = self._letters.get(child)
-        if letter is not None:
-            self.channel_right_clicked.emit(letter)
-            event.accept()
-            return
-        event.ignore()
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            name = self._letters.get(self.childAt(event.position().toPoint()))
+            if name is not None:
+                self.channel_clicked.emit(name)
+                event.accept()
+                return
+        super().mousePressEvent(event)
 
     def _emit(self, plane: str, bit: int) -> None:
+        from PySide6.QtWidgets import QApplication
+
         modifiers = QApplication.keyboardModifiers()
         exclusive = bool(
             modifiers
