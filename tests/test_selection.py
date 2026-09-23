@@ -12,7 +12,6 @@ from pixelsb.domain.labels import (
 from pixelsb.domain.models import BitChoice, DisplayFormat, PixelCoord, ViewerState
 from pixelsb.domain.samples import render_rgb
 from pixelsb.domain.transitions import (
-    clear_selection,
     open_image,
     select_all_bits,
     select_lsbs,
@@ -57,12 +56,10 @@ def test_mask_keeps_original_weights_for_several_bits() -> None:
 def test_presets_cover_every_lsb_and_the_original() -> None:
     state = select_lsbs(_rgb_state())
     assert state.selection == frozenset({BitChoice("R", 0), BitChoice("G", 0), BitChoice("B", 0)})
-    cleared = clear_selection(state)
-    assert cleared.selection == frozenset()
-    assert cleared.image is not None
-    assert int(render_rgb(cleared.image, cleared.selection).sum()) == 0
-    restored = select_all_bits(cleared)
+    restored = select_all_bits(state)
     assert restored.selection is None
+    assert restored.image is not None
+    assert int(render_rgb(restored.image, restored.selection).sum()) > 0
 
 
 def test_select_only_rejects_a_bit_past_the_plane() -> None:

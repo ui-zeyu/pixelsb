@@ -20,9 +20,7 @@ class Inspector(QWidget):
     column_toggle = Signal(int, bool)
     readout_column_toggle = Signal(int, bool)
     original_requested = Signal()
-    only_bit_requested = Signal()
     lsbs_requested = Signal()
-    clear_bits_requested = Signal()
     reset_readout_requested = Signal()
 
     def __init__(self) -> None:
@@ -41,9 +39,7 @@ class Inspector(QWidget):
         presets.setContentsMargins(0, 0, 0, 0)
         for label, signal in (
             (text.ORIGINAL, self.original_requested),
-            (text.ONLY_BIT, self.only_bit_requested),
             (text.ALL_LSB, self.lsbs_requested),
-            (text.CLEAR_BITS, self.clear_bits_requested),
         ):
             button = QPushButton(label)
             button.clicked.connect(lambda _checked=False, signal=signal: signal.emit())

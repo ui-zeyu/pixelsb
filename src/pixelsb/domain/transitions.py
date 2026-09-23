@@ -91,14 +91,6 @@ def toggle_bit(state: ViewerState, plane: str, bit: int) -> ViewerState:
     return replace(state, selection=stored_selection(image, updated), focus=choice)
 
 
-def select_focus_only(state: ViewerState) -> ViewerState:
-    image = state.image
-    focus = state.focus
-    if image is None or focus is None:
-        return state
-    return select_only(state, focus.plane, focus.bit)
-
-
 def select_lsbs(state: ViewerState) -> ViewerState:
     image = _image(state)
     chosen = lsb_bits(image)
@@ -110,12 +102,6 @@ def select_all_bits(state: ViewerState) -> ViewerState:
     if state.image is None:
         return state
     return replace(state, selection=None)
-
-
-def clear_selection(state: ViewerState) -> ViewerState:
-    if state.image is None:
-        return state
-    return replace(state, selection=frozenset())
 
 
 def effective_readout(state: ViewerState) -> frozenset[BitChoice]:

@@ -42,13 +42,11 @@ from pixelsb.domain.models import (
 )
 from pixelsb.domain.transitions import (
     clear_anchor,
-    clear_selection,
     cycle_format,
     move_cursor,
     open_image,
     reset_readout,
     select_all_bits,
-    select_focus_only,
     select_lsb,
     select_lsb_at,
     select_lsbs,
@@ -163,9 +161,6 @@ class MainWindow(QMainWindow):
         view_menu.addAction(text.ALL_LSB).triggered.connect(
             _drop_checked(lambda: self.apply(select_lsbs))
         )
-        view_menu.addAction(text.CLEAR_BITS).triggered.connect(
-            _drop_checked(lambda: self.apply(clear_selection))
-        )
 
         help_menu = self.menuBar().addMenu(text.HELP_MENU)
         help_action = help_menu.addAction(text.SHORTCUTS)
@@ -245,9 +240,7 @@ class MainWindow(QMainWindow):
         self.inspector.column_toggle.connect(self._on_column_toggle)
         self.inspector.readout_column_toggle.connect(self._on_readout_column_toggle)
         self.inspector.original_requested.connect(lambda: self.apply(select_all_bits))
-        self.inspector.only_bit_requested.connect(lambda: self.apply(select_focus_only))
         self.inspector.lsbs_requested.connect(lambda: self.apply(select_lsbs))
-        self.inspector.clear_bits_requested.connect(lambda: self.apply(clear_selection))
         self.inspector.reset_readout_requested.connect(lambda: self.apply(reset_readout))
         inspector_scroll = QScrollArea()
         inspector_scroll.setWidgetResizable(True)
