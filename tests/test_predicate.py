@@ -58,6 +58,42 @@ def test_bare_numeric_result_is_read_as_non_zero() -> None:
     assert _match("B").tolist() == [[True, True], [True, False]]
 
 
+def test_rect_selects_an_inclusive_rectangle() -> None:
+    assert _match("rect(0, 1, 0, 1)").tolist() == [[False, False], [True, False]]
+    assert _match("rect(0, 0, 1, 0)").tolist() == [[True, True], [False, False]]
+    assert _match("rect(0, 0, 5, 5)").all()
+    assert not _match("rect(2, 2, 3, 3)").any()
+
+
+def test_rect_swaps_bounds_and_combines_with_conditions() -> None:
+    assert _match("rect(1, 0, 1, 0)").tolist() == [[False, True], [False, False]]
+    assert _match("rect(0, 0, 0, 0) or rect(1, 1, 1, 1)").tolist() == [
+        [True, False],
+        [False, True],
+    ]
+    assert _match("rect(0, 0, 1, 1) and B >= R and B >= G").tolist() == [
+        [False, True],
+        [True, False],
+    ]
+    assert _match("rect(0, 0, 0, 1) and B >= R and B >= G").tolist() == [
+        [False, False],
+        [True, False],
+    ]
+
+
+def test_rect_errors_are_clear() -> None:
+    with pytest.raises(PredicateError, match="4 个参数"):
+        compile_filter("rect(0, 0, 1)", planes_rgb())
+    with pytest.raises(PredicateError, match="不支持的函数"):
+        compile_filter("circle(0, 0, 1, 1)", planes_rgb())
+    with pytest.raises(PredicateError, match="标量"):
+        _match("rect(left, 0, 1, 1)")
+
+
+def test_up_is_an_alias_for_top() -> None:
+    assert _match("up == 1").tolist() == [[False, False], [True, True]]
+
+
 def test_errors_name_the_problem() -> None:
     with pytest.raises(PredicateError, match="语法错误"):
         compile_filter("B >=", planes_rgb())
@@ -65,12 +101,15 @@ def test_errors_name_the_problem() -> None:
         compile_filter("A > 0", planes_rgb())
     with pytest.raises(PredicateError, match="left"):
         compile_filter("foo == 1", planes_rgb())
-    with pytest.raises(PredicateError, match="不支持的表达式元素"):
+    with pytest.raises(PredicateError, match="不支持的函数"):
         compile_filter("len(R) > 0", planes_rgb())
+    with pytest.raises(PredicateError, match="不支持的表达式元素"):
+        compile_filter("[R] == 1", planes_rgb())
 
 
 def test_field_names_list_aliases_and_planes() -> None:
     names = field_names(planes_rgb())
     assert names["x"] == "left"
     assert names["y"] == "top"
+    assert names["up"] == "top"
     assert names["b"] == "B"

@@ -16,6 +16,7 @@ from PySide6.QtGui import (
     QShortcut,
 )
 from PySide6.QtWidgets import (
+    QAbstractSpinBox,
     QApplication,
     QCheckBox,
     QComboBox,
@@ -26,11 +27,13 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QSlider,
     QSplitter,
     QStatusBar,
+    QTextEdit,
     QWidget,
 )
 
@@ -84,6 +87,7 @@ from pixelsb.ui.text import readout_text, status_text
 type ErrorReporter = Callable[[str], None]
 
 _FILTER_ERROR_STYLE = "QLineEdit { border: 1px solid #d9534f; }"
+_TEXT_INPUTS = (QLineEdit, QAbstractSpinBox, QPlainTextEdit, QTextEdit, QComboBox)
 
 
 class MainWindow(QMainWindow):
@@ -129,6 +133,7 @@ class MainWindow(QMainWindow):
         if (
             event.type() == QEvent.Type.KeyPress
             and isinstance(event, QKeyEvent)
+            and not isinstance(watched, _TEXT_INPUTS)
             and self._should_handle_keys()
             and self._handle_key(event)
         ):
@@ -187,6 +192,7 @@ class MainWindow(QMainWindow):
         self._filter_edit.setClearButtonEnabled(True)
         self._filter_edit.setToolTip(text.FILTER_TIP)
         self._filter_edit.textEdited.connect(lambda _text: self._filter_timer.start())
+        self._filter_edit.returnPressed.connect(self._commit_filter)
         self._filter_timer = QTimer(self)
         self._filter_timer.setSingleShot(True)
         self._filter_timer.setInterval(200)
@@ -411,6 +417,12 @@ class MainWindow(QMainWindow):
             self._match_error = str(exc)
         self._match = match
         return match, self._match_error
+
+    def _commit_filter(self) -> None:
+        """Enter applies the filter right away and hands the keyboard back to the canvas."""
+        self._filter_timer.stop()
+        self._apply_filter_text()
+        self.canvas.setFocus(Qt.FocusReason.OtherFocusReason)
 
     def _apply_filter_text(self) -> None:
         expression = self._filter_edit.text()

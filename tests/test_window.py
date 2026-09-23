@@ -83,6 +83,23 @@ def test_bad_filter_shows_an_error_and_keeps_the_image(
     assert window.store.state.filter_expr == "A > 0"
 
 
+def test_typing_in_the_filter_box_keeps_its_keys(qtbot: QtBot, rgb_png: Path) -> None:
+    from pixelsb.domain.transitions import set_zoom
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.open_path(rgb_png)
+    window.apply(lambda state: set_zoom(state, 4))
+    window._filter_edit.setFocus()
+    qtbot.keyClicks(window._filter_edit, "+B")
+    assert window._filter_edit.text() == "+B"
+    assert window.store.state.zoom == 4
+    window.canvas.setFocus()
+    qtbot.keyClick(window.canvas, Qt.Key.Key_Plus)
+    assert window.store.state.zoom == 5
+
+
 def test_arrow_key_moves_the_cursor(qtbot: QtBot, rgb_png: Path) -> None:
     window = MainWindow()
     qtbot.addWidget(window)

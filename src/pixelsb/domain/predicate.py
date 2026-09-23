@@ -24,6 +24,9 @@ type BinaryOp = Callable[[Value, Value], Value]
 type CompareOp = Callable[[Value, Value], Value]
 
 
+_RECT = "rect"
+
+
 class PredicateError(Exception):
     """The filter expression could not be compiled."""
 
@@ -51,7 +54,13 @@ _COMPARISONS: dict[type[ast.cmpop], CompareOp] = {
 
 def field_names(planes: tuple[SamplePlane, ...]) -> dict[str, str]:
     """Lowercase alias -> key in the field environment. Names are case-insensitive."""
-    names = {"left": "left", "x": "left", "top": "top", "y": "top"}
+    names = {
+        "left": "left",
+        "x": "left",
+        "top": "top",
+        "y": "top",
+        "up": "top",
+    }
     for plane in planes:
         names.setdefault(plane.name.lower(), plane.name)
     return names
@@ -117,8 +126,39 @@ def _compile_node(node: ast.expr, names: dict[str, str]) -> Evaluator:
             operands = [_compile_node(left, names)]
             operands.extend(_compile_node(item, names) for item in comparators)
             return _compile_compare(ops, operands)
+        case ast.Call(func=ast.Name(id=name), args=call_args, keywords=[]):
+            if name.lower() != _RECT:
+                raise PredicateError(f"不支持的函数：{name}（可用：{_RECT}）")
+            if len(call_args) != 4:
+                raise PredicateError(f"{_RECT} 需要 4 个参数：x0, y0, x1, y1")
+            return _compile_rect([_compile_node(item, names) for item in call_args])
+        case ast.Call():
+            raise PredicateError(f"不支持的函数调用（可用：{_RECT}(x0, y0, x1, y1)）")
         case _:
             raise PredicateError(f"不支持的表达式元素：{type(node).__name__}")
+
+
+def _compile_rect(bounds: list[Evaluator]) -> Evaluator:
+    """``rect(x0, y0, x1, y1)``: the inclusive rectangle, swapped bounds allowed."""
+
+    def evaluate(env: FieldEnv) -> Value:
+        x0, y0, x1, y1 = (_scalar(bound(env)) for bound in bounds)
+        if x0 > x1:
+            x0, x1 = x1, x0
+        if y0 > y1:
+            y0, y1 = y1, y0
+        left = env["left"]
+        top = env["top"]
+        return (left >= x0) & (left <= x1) & (top >= y0) & (top <= y1)
+
+    return evaluate
+
+
+def _scalar(value: Value) -> int:
+    array = np.asarray(value)
+    if array.size != 1:
+        raise PredicateError(f"{_RECT} 的边界必须是标量表达式")
+    return int(array.item())
 
 
 def _compile_bool_op(op: ast.boolop, operands: list[Evaluator]) -> Evaluator:
