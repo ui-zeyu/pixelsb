@@ -51,6 +51,38 @@ def test_failed_open_keeps_the_current_image(qtbot: QtBot, rgb_png: Path, tmp_pa
     assert messages
 
 
+def test_filter_match_follows_the_selection(qtbot: QtBot, rgb_png: Path) -> None:
+    from pixelsb.domain.transitions import select_only, set_filter_expr
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.open_path(rgb_png)
+    window.apply(lambda state: set_filter_expr(state, "R == 255"))
+    first = window._match
+    assert first is not None
+    assert first[0, 0] and not first[1, 0]
+    window.apply(lambda state: select_only(state, "R", 7))
+    second = window._match
+    assert second is not None
+    assert not second.any()
+
+
+def test_bad_filter_shows_an_error_and_keeps_the_image(
+    qtbot: QtBot,
+    rgb_png: Path,
+) -> None:
+    from pixelsb.domain.transitions import set_filter_expr
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.open_path(rgb_png)
+    window.apply(lambda state: set_filter_expr(state, "A > 0"))
+    assert window._match is None
+    assert window._match_error is not None
+    assert "未知字段" in window._match_error
+    assert window.store.state.filter_expr == "A > 0"
+
+
 def test_arrow_key_moves_the_cursor(qtbot: QtBot, rgb_png: Path) -> None:
     window = MainWindow()
     qtbot.addWidget(window)

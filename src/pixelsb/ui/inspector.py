@@ -1,5 +1,7 @@
 """Bit grids for the canvas / number layers, presets, and the extract panel."""
 
+import numpy as np
+from numpy.typing import NDArray
 from PySide6.QtCore import Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
@@ -92,7 +94,11 @@ class Inspector(QWidget):
         layout.addWidget(self._extract_view, 1)
         self.setMinimumWidth(280)
 
-    def set_state(self, state: ViewerState) -> None:
+    def set_state(
+        self,
+        state: ViewerState,
+        match: NDArray[np.bool_] | None = None,
+    ) -> None:
         self._state = state
         image = state.image
         planes = () if image is None else image.planes
@@ -107,19 +113,21 @@ class Inspector(QWidget):
         self._canvas_caption.setVisible(detached)
         self._number_row.setVisible(detached)
         self._number_matrix.setVisible(detached)
-        self._sync_extract(image, canvas_bits)
+        self._sync_extract(image, canvas_bits, state.filter_expr, match)
 
     def _sync_extract(
         self,
         image: LoadedImage | None,
         chosen: frozenset[BitChoice] | None,
+        expression: str,
+        match: NDArray[np.bool_] | None,
     ) -> None:
-        """Re-extract only when the image or the selection changed."""
-        key = None if image is None else (id(image), chosen)
+        """Re-extract only when the image, the selection, or the filter changed."""
+        key = None if image is None else (id(image), chosen, expression)
         if key == self._extract_key:
             return
         self._extract_key = key
-        data = b"" if image is None else extract_bytes(image, chosen)
+        data = b"" if image is None else extract_bytes(image, chosen, match)
         self._extract_lines = format_extract(data)
         self._refresh_extract_view()
 

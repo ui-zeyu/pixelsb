@@ -40,6 +40,7 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "N", "PIE", "RET", "PTH"]
 "src/pixelsb/ui/**/*.py" = ["N802"]
 "src/pixelsb/ui/text.py" = ["N802", "RUF001"]
 "src/pixelsb/domain/extract.py" = ["RUF001"]
+"src/pixelsb/domain/predicate.py" = ["RUF001"]
 "tests/test_extract.py" = ["RUF001"]
 
 [tool.ruff.lint.isort]

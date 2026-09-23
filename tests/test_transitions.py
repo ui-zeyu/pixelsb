@@ -152,6 +152,19 @@ def test_channel_and_column_group_switches() -> None:
     assert set_detached(detached, False).detached is False
 
 
+def test_filter_expression_survives_opening_another_image() -> None:
+    from pixelsb.domain.transitions import set_filter_expr
+
+    state = open_image(
+        ViewerState(), make_image(np.zeros((1, 1, 3), dtype=np.uint16), planes_rgb())
+    )
+    state = set_filter_expr(state, "B >= R and 0 <= top <= 4")
+    assert state.filter_expr == "B >= R and 0 <= top <= 4"
+    other = make_image(np.zeros((1, 1, 3), dtype=np.uint16), planes_rgb(), path=Path("c.png"))
+    assert open_image(state, other).filter_expr == state.filter_expr
+    assert set_filter_expr(state, "").filter_expr == ""
+
+
 def test_clear_anchor_zoom_and_format_cycle() -> None:
     state = open_image(
         ViewerState(), make_image(np.zeros((2, 2, 3), dtype=np.uint16), planes_rgb())

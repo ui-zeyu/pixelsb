@@ -3,6 +3,8 @@
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
+import numpy as np
+from numpy.typing import NDArray
 from PySide6.QtCore import QEvent, QObject, Qt, QTimer
 from PySide6.QtGui import (
     QCloseEvent,
@@ -11,6 +13,7 @@ from PySide6.QtGui import (
     QDropEvent,
     QKeyEvent,
     QKeySequence,
+    QShortcut,
 )
 from PySide6.QtWidgets import (
     QApplication,
@@ -20,6 +23,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -40,6 +44,8 @@ from pixelsb.domain.models import (
     ValueMode,
     ViewerState,
 )
+from pixelsb.domain.predicate import PredicateError, compile_filter
+from pixelsb.domain.selection import effective_selection
 from pixelsb.domain.transitions import (
     clear_anchor,
     cycle_format,
@@ -57,6 +63,7 @@ from pixelsb.domain.transitions import (
     set_column,
     set_cursor,
     set_detached,
+    set_filter_expr,
     set_format,
     set_readout_channel,
     set_readout_column,
@@ -76,6 +83,8 @@ from pixelsb.ui.text import readout_text, status_text
 
 type ErrorReporter = Callable[[str], None]
 
+_FILTER_ERROR_STYLE = "QLineEdit { border: 1px solid #d9534f; }"
+
 
 class MainWindow(QMainWindow):
     def __init__(self, reporter: ErrorReporter | None = None) -> None:
@@ -83,6 +92,10 @@ class MainWindow(QMainWindow):
         self.store = Store()
         self._reporter = reporter or self._report_with_dialog
         self._combo_items: dict[int, tuple[tuple[str, str], ...]] = {}
+        self._match: NDArray[np.bool_] | None = None
+        self._match_key: object = None
+        self._match_error: str | None = None
+        self._match_passed = 0
         self.setWindowTitle(text.APP_NAME)
         self.resize(1200, 800)
         self.setAcceptDrops(True)
@@ -169,6 +182,17 @@ class MainWindow(QMainWindow):
     def _build_toolbar(self) -> None:
         toolbar = self.addToolBar("view")
         toolbar.setMovable(False)
+        self._filter_edit = QLineEdit()
+        self._filter_edit.setPlaceholderText(text.FILTER_PLACEHOLDER)
+        self._filter_edit.setClearButtonEnabled(True)
+        self._filter_edit.setToolTip(text.FILTER_TIP)
+        self._filter_edit.textEdited.connect(lambda _text: self._filter_timer.start())
+        self._filter_timer = QTimer(self)
+        self._filter_timer.setSingleShot(True)
+        self._filter_timer.setInterval(200)
+        self._filter_timer.timeout.connect(self._apply_filter_text)
+        find_shortcut = QShortcut(QKeySequence.StandardKey.Find, self)
+        find_shortcut.activated.connect(self._focus_filter)
         self._detach = QCheckBox(text.DETACH)
         self._detach.setToolTip(text.DETACH_TIP)
         self._detach.toggled.connect(self._on_detached)
@@ -201,6 +225,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(8, 4, 8, 4)
         layout.setSpacing(8)
         for label, widget in (
+            ("", self._filter_edit),
             ("", self._detach),
             (text.VALUE, self._format_combo),
             ("", self._value_combo),
@@ -216,6 +241,7 @@ class MainWindow(QMainWindow):
                 layout.addWidget(QLabel(label))
             layout.addWidget(widget)
         layout.addStretch(1)
+        layout.addWidget(self._filter_edit, 1)
         toolbar.addWidget(host)
 
     def _build_body(self) -> None:
@@ -344,14 +370,57 @@ class MainWindow(QMainWindow):
         return True
 
     def _apply(self, state: ViewerState) -> None:
+        match, filter_error = self._filter_match(state)
         self._sync_controls(state)
-        self.canvas.set_state(state)
-        self.inspector.set_state(state)
-        self._status.setText(status_text(state))
+        self.canvas.set_state(state, match)
+        self.inspector.set_state(state, match)
+        status = status_text(state)
+        if state.filter_expr.strip():
+            if filter_error is not None:
+                status = f"{status}  {text.FILTER_ERROR}{filter_error}"
+            elif match is not None and state.image is not None:
+                total = state.image.width * state.image.height
+                status = f"{status}  通过 {self._match_passed}/{total} 像素"
+        self._status.setText(status)
+        has_error = bool(state.filter_expr.strip()) and filter_error is not None
+        self._filter_edit.setStyleSheet(_FILTER_ERROR_STYLE if has_error else "")
         image = state.image
         title = text.APP_NAME if image is None else f"{image.path.name} — {text.APP_NAME}"
         if self.windowTitle() != title:
             self.setWindowTitle(title)
+
+    def _filter_match(
+        self,
+        state: ViewerState,
+    ) -> tuple[NDArray[np.bool_] | None, str | None]:
+        """Compiled-filter match for the canvas layer; ``None`` = everything passes."""
+        image = state.image
+        if image is None or not state.filter_expr.strip():
+            return None, None
+        key = (state.filter_expr, id(image), state.selection)
+        if self._match_key == key:
+            return self._match, self._match_error
+        self._match_key = key
+        self._match_error = None
+        match = None
+        try:
+            compiled = compile_filter(state.filter_expr, image.planes)
+            match = compiled.evaluate(image, effective_selection(image, state.selection))
+            self._match_passed = int(match.sum())
+        except PredicateError as exc:
+            self._match_error = str(exc)
+        self._match = match
+        return match, self._match_error
+
+    def _apply_filter_text(self) -> None:
+        expression = self._filter_edit.text()
+        if expression == self.store.state.filter_expr:
+            return
+        self.apply(lambda state: set_filter_expr(state, expression))
+
+    def _focus_filter(self) -> None:
+        self._filter_edit.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        self._filter_edit.selectAll()
 
     def _sync_controls(self, state: ViewerState) -> None:
         image = state.image
@@ -376,8 +445,14 @@ class MainWindow(QMainWindow):
         self._anchor_label.setText(
             f"{text.ANCHOR} —" if anchor is None else f"{text.ANCHOR} ({anchor.x}, {anchor.y})"
         )
+        self._filter_edit.blockSignals(True)
+        if self._filter_edit.text() != state.filter_expr:
+            self._filter_edit.setText(state.filter_expr)
+        self._filter_edit.blockSignals(False)
+        self._filter_timer.stop()
         enabled = image is not None
         for widget in (
+            self._filter_edit,
             self._detach,
             self._zoom_in,
             self._zoom_out,

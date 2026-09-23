@@ -1,6 +1,7 @@
 """StegSolve-style bit extraction: selected bits packed into bytes."""
 
 import numpy as np
+from numpy.typing import NDArray
 
 from pixelsb.domain.models import BitChoice, LoadedImage
 from pixelsb.domain.selection import effective_selection
@@ -8,8 +9,16 @@ from pixelsb.domain.selection import effective_selection
 DISPLAY_LINES = 4096
 
 
-def extract_bytes(image: LoadedImage, chosen: frozenset[BitChoice] | None) -> bytes:
-    """Pack the selected bits into bytes, raster order, first bit into the MSB."""
+def extract_bytes(
+    image: LoadedImage,
+    chosen: frozenset[BitChoice] | None,
+    match: NDArray[np.bool_] | None = None,
+) -> bytes:
+    """Pack the selected bits into bytes, raster order, first bit into the MSB.
+
+    ``match`` (HxW bool) limits the stream to the pixels that pass the display
+    filter; surviving pixels keep their bit order and are re-packed densely.
+    """
     selection = effective_selection(image, chosen)
     if not selection:
         return b""
@@ -20,8 +29,10 @@ def extract_bytes(image: LoadedImage, chosen: frozenset[BitChoice] | None) -> by
                 continue
             channel = image.samples[:, :, plane.index]
             planes.append(((channel >> np.uint16(bit)) & np.uint16(1)).astype(np.uint8))
-    stream = np.stack(planes, axis=-1).reshape(-1)
-    return np.packbits(stream).tobytes()
+    stream = np.stack(planes, axis=-1)
+    if match is not None:
+        stream = stream[match]
+    return np.packbits(stream.reshape(-1)).tobytes()
 
 
 def format_extract(data: bytes, limit: int = DISPLAY_LINES) -> list[str]:

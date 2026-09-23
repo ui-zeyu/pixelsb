@@ -4,6 +4,7 @@ import math
 from functools import lru_cache
 
 import numpy as np
+from numpy.typing import NDArray
 from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import (
     QColor,
@@ -41,6 +42,7 @@ _CURSOR = QColor("#ffb000")
 _ANCHOR = QColor("#3aa0ff")
 _GRID = QColor(0, 0, 0, 130)
 _DRAG_THRESHOLD = 4
+_DIM_DIVISOR = 12
 _DARK_TEXT = QColor("#111111")
 _LIGHT_TEXT = QColor("#f5f5f5")
 _LUMA_WEIGHTS = np.array([2126, 7152, 722], dtype=np.uint32)
@@ -59,6 +61,7 @@ class ImageCanvas(QWidget):
         self._state = ViewerState()
         self._image: QImage | None = None
         self._rgb: RgbArray | None = None
+        self._match: NDArray[np.bool_] | None = None
         self._cache_key: tuple[object, ...] | None = None
         self._label_key: tuple[object, ...] | None = None
         self._target = QSize(320, 240)
@@ -83,7 +86,7 @@ class ImageCanvas(QWidget):
             return None
         return image.width, image.height
 
-    def set_state(self, state: ViewerState) -> None:
+    def set_state(self, state: ViewerState, match: NDArray[np.bool_] | None = None) -> None:
         previous = self._state
         image = state.image
         rebuilt = False
@@ -94,10 +97,13 @@ class ImageCanvas(QWidget):
             self._cache_key = None
             self._target = QSize(320, 240)
         else:
-            key = (id(image), state.selection)
+            key = (id(image), state.selection, state.filter_expr)
             if key != self._cache_key:
-                self._rgb = render_rgb(image, state.selection)
-                self._image = qimage_from_rgb(self._rgb)
+                rgb = render_rgb(image, state.selection)
+                if match is not None:
+                    rgb[~match] //= _DIM_DIVISOR
+                self._rgb = rgb
+                self._image = qimage_from_rgb(rgb)
                 self._cache_key = key
                 rebuilt = True
             self._target = QSize(
@@ -111,7 +117,10 @@ class ImageCanvas(QWidget):
             state.selection,
             state.readout,
             state.detached,
+            state.filter_expr,
+            match is not None,
         )
+        self._match = match
         labels_changed = label_key != self._label_key
         self._label_key = label_key
         self._state = state
@@ -203,6 +212,7 @@ class ImageCanvas(QWidget):
             return
         region = self._rgb[y0 : y0 + rows, x0 : x0 + columns].astype(np.uint32)
         bright = (region * _LUMA_WEIGHTS).sum(axis=-1) > _LUMA_THRESHOLD
+        match = self._match
         painter.setFont(font)
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
         # The font is fitted to the template, so labels never leave their cell:
@@ -214,6 +224,8 @@ class ImageCanvas(QWidget):
             if not label:
                 continue
             column, row = divmod(index, columns)
+            if match is not None and not match[y0 + row, x0 + column]:
+                continue
             rect = QRectF(
                 (x0 + column) * zoom,
                 (y0 + row) * zoom,

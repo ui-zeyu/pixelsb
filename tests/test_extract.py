@@ -27,6 +27,18 @@ def test_extract_without_selection_uses_every_bit() -> None:
     assert extract_bytes(image, None) == bytes([0xA5, 0xF0, 0x3C])
 
 
+def test_extract_only_packs_the_matching_pixels() -> None:
+    image = _image([[[0b0001, 0b0001, 0], [0b0001, 0b0000, 0]]])
+    chosen = frozenset({BitChoice("R", 0), BitChoice("G", 0)})
+    assert extract_bytes(image, chosen) == bytes([0b11100000])
+    first_only = np.array([[True, False]])
+    assert extract_bytes(image, chosen, first_only) == bytes([0b11000000])
+    second_only = np.array([[False, True]])
+    assert extract_bytes(image, chosen, second_only) == bytes([0b10000000])
+    none_match = np.array([[False, False]])
+    assert extract_bytes(image, chosen, none_match) == b""
+
+
 def test_format_rows_show_offset_hex_and_ascii() -> None:
     data = b"MZ\x00" + bytes(range(3, 20))
     lines = format_extract(data)

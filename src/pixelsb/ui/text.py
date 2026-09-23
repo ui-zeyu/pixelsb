@@ -24,6 +24,13 @@ CHANNEL_TIP = "勾选整条通道"
 COLUMN_TIP = "勾选整列"
 EXTRACT_NOTE = "提取（按通道顺序、位从低到高，每 8 位拼 1 字节，高位在前）"
 EXTRACT_SEARCH_TIP = "搜索十六进制或 ASCII"
+FILTER_PLACEHOLDER = "显示过滤器：B >= R and B >= G"
+FILTER_ERROR = "过滤错误："
+FILTER_TIP = (
+    "显示过滤器同时作用于画布和提取。字段：left、top（别名 x、y）与各通道名。"
+    "例：50 <= left <= 100 and 50 <= top <= 100、B >= R and B >= G。"
+    "⌘F 聚焦，留空即不过滤。"
+)
 VALUE = "数值"
 DECIMAL = "十进制"
 HEX = "十六进制"

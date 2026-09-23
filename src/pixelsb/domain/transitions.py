@@ -42,6 +42,7 @@ def open_image(
         focus=BitChoice(image.planes[0].name, 0),
         readout=None,
         detached=state.detached,
+        filter_expr=state.filter_expr,
         value_format=state.value_format,
         value_mode=state.value_mode,
         zoom=chosen,
@@ -176,6 +177,10 @@ def set_readout_column(state: ViewerState, bit: int, *, on: bool) -> ViewerState
 
 def set_detached(state: ViewerState, detached: bool) -> ViewerState:
     return replace(state, detached=detached)
+
+
+def set_filter_expr(state: ViewerState, expression: str) -> ViewerState:
+    return replace(state, filter_expr=expression)
 
 
 def _set_members(
