@@ -1,7 +1,7 @@
 [project]
 name = "pixelsb"
 version = "0.1.0"
-description = "像素级图像查看器，用于查看通道数值、锚点偏移和位平面。"
+description = "像素级图像查看器，用于查看通道数值、位平面和位组合。"
 readme = "README.md"
 authors = [
     { name = "yuyy", email = "ui.zeyu@gmail.com" }

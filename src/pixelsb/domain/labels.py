@@ -1,20 +1,11 @@
 """Text drawn inside each image pixel once the zoom can hold it."""
 
 import math
-from collections.abc import Callable
 
 import numpy as np
 
-from pixelsb.domain.formatting import format_delta, format_sample
-from pixelsb.domain.models import (
-    MIN_ZOOM,
-    BitChoice,
-    DisplayFormat,
-    LoadedImage,
-    PixelCoord,
-    ValueMode,
-    ViewerState,
-)
+from pixelsb.domain.formatting import format_sample
+from pixelsb.domain.models import MIN_ZOOM, DisplayFormat, PixelCoord, ViewerState
 from pixelsb.domain.selection import bits_for, effective_selection, mask_of, number_bits
 
 LABEL_PAD = 2
@@ -73,8 +64,6 @@ def region_texts(state: ViewerState, x0: int, y0: int, x1: int, y1: int) -> list
     chosen = effective_selection(image, number_bits(state))
     if not chosen:
         return [""] * (width * height)
-    offset = state.value_mode is ValueMode.OFFSET and state.anchor is not None
-    anchor_row = _row(image, state.anchor) if offset and state.anchor is not None else None
     region = image.samples[y0:y1, x0:x1]
     active = [plane for plane in image.planes if bits_for(chosen, plane.name)]
     joined: list[str] | None = None
@@ -87,17 +76,8 @@ def region_texts(state: ViewerState, x0: int, y0: int, x1: int, y1: int) -> list
             shown = (channel >> np.uint32(bits[0])) & np.uint32(1)
         else:
             shown = channel & np.uint32(mask)
-        if offset and anchor_row is not None:
-            anchor_sample = int(anchor_row[plane.index])
-            anchor_shown = (
-                (anchor_sample >> bits[0]) & 1 if len(bits) == 1 else anchor_sample & mask
-            )
-            deltas = shown.astype(np.int64) - anchor_shown
-            memo = _FormatMemo(depth, state.value_format, offset=True)
-            strings = [memo[value] for value in deltas.ravel().tolist()]
-        else:
-            memo = _FormatMemo(depth, state.value_format, offset=False)
-            strings = [memo[value] for value in shown.ravel().tolist()]
+        memo = _FormatMemo(depth, state.value_format)
+        strings = [memo[value] for value in shown.ravel().tolist()]
         if len(active) > 1:
             name = plane.name + ":"
             strings = [name + text for text in strings]
@@ -111,71 +91,36 @@ def region_texts(state: ViewerState, x0: int, y0: int, x1: int, y1: int) -> list
 
 
 class _FormatMemo(dict[int, str]):
-    def __init__(self, depth: int, fmt: DisplayFormat, *, offset: bool) -> None:
+    def __init__(self, depth: int, fmt: DisplayFormat) -> None:
         super().__init__()
         self._depth = depth
         self._fmt = fmt
-        self._offset = offset
 
     def __missing__(self, value: int) -> str:
-        if self._offset:
-            text = format_delta(value, self._depth, self._fmt)
-        else:
-            text = format_sample(value, self._depth, self._fmt)
+        text = format_sample(value, self._depth, self._fmt)
         self[value] = text
         return text
 
 
 def widest_text(state: ViewerState) -> str:
+    """The longest label the number layer can produce, used to fit the font."""
     image = state.image
     if image is None:
         return ""
     chosen = effective_selection(image, number_bits(state))
     if not chosen:
         return ""
-    offset = state.value_mode is ValueMode.OFFSET and state.anchor is not None
-    return _join_channels(
-        image,
-        chosen,
-        state.value_format,
-        offset=offset,
-        value_at=_maximum_channel_value,
-    )
-
-
-def _join_channels(
-    image: LoadedImage,
-    chosen: frozenset[BitChoice],
-    fmt: DisplayFormat,
-    *,
-    offset: bool,
-    value_at: Callable[[int, tuple[int, ...]], tuple[int, int]],
-) -> str:
     active = [plane for plane in image.planes if bits_for(chosen, plane.name)]
     parts: list[str] = []
     for plane in active:
-        bits = bits_for(chosen, plane.name)
-        shown, depth = value_at(plane.index, bits)
-        rendered = _format_value(shown, depth, fmt, offset=offset)
-        if len(active) == 1:
-            parts.append(rendered)
-        else:
-            parts.append(f"{plane.name}:{rendered}")
+        shown, depth = _largest_value(bits_for(chosen, plane.name))
+        rendered = format_sample(shown, depth, state.value_format)
+        parts.append(rendered if len(active) == 1 else f"{plane.name}:{rendered}")
     return "\n".join(parts)
 
 
-def _maximum_channel_value(plane_index: int, bits: tuple[int, ...]) -> tuple[int, int]:
-    del plane_index
+def _largest_value(bits: tuple[int, ...]) -> tuple[int, int]:
+    """The largest number the selected bits can show, and how many bits it spans."""
     if len(bits) == 1:
         return 1, 1
     return mask_of(bits), max(bits) + 1
-
-
-def _format_value(shown: int, depth: int, fmt: DisplayFormat, *, offset: bool) -> str:
-    if offset:
-        return format_delta(shown, depth, fmt)
-    return format_sample(shown, depth, fmt)
-
-
-def _row(image: LoadedImage, coord: PixelCoord) -> tuple[int, ...]:
-    return tuple(int(sample) for sample in image.samples[coord.y, coord.x])

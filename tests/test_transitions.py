@@ -8,17 +8,15 @@ from pixelsb.domain.models import (
     BitChoice,
     DisplayFormat,
     PixelCoord,
-    ValueMode,
     ViewerState,
 )
 from pixelsb.domain.transitions import (
-    clear_anchor,
     cycle_format,
     move_cursor,
     open_image,
     select_lsb,
     select_only,
-    set_anchor,
+    set_cursor,
     set_zoom,
     step_focus_bit,
     step_zoom,
@@ -31,22 +29,16 @@ def test_open_image_clears_navigation_and_keeps_view_settings() -> None:
     image = make_image(np.zeros((2, 2, 3), dtype=np.uint16), planes_rgb(), path=Path("a.png"))
     other = make_image(np.zeros((2, 2, 3), dtype=np.uint16), planes_rgb(), path=Path("b.png"))
     state = open_image(
-        ViewerState(
-            value_format=DisplayFormat.BINARY,
-            value_mode=ValueMode.OFFSET,
-            zoom=4,
-        ),
+        ViewerState(value_format=DisplayFormat.BINARY, zoom=4),
         image,
     )
-    state = set_anchor(state, PixelCoord(0, 0))
+    state = set_cursor(state, PixelCoord(0, 0))
     state = select_only(state, "R", 3)
     opened = open_image(state, other)
-    assert opened.anchor is None
     assert opened.cursor is None
     assert opened.selection is None
     assert opened.focus == BitChoice("R", 0)
     assert opened.value_format is DisplayFormat.BINARY
-    assert opened.value_mode is ValueMode.OFFSET
     assert opened.zoom == 4
     assert opened.image is other
 
@@ -165,12 +157,10 @@ def test_filter_expression_survives_opening_another_image() -> None:
     assert set_filter_expr(state, "").filter_expr == ""
 
 
-def test_clear_anchor_zoom_and_format_cycle() -> None:
+def test_zoom_and_format_cycle() -> None:
     state = open_image(
         ViewerState(), make_image(np.zeros((2, 2, 3), dtype=np.uint16), planes_rgb())
     )
-    state = set_anchor(state, PixelCoord(1, 1))
-    assert clear_anchor(state).anchor is None
     assert cycle_format(state).value_format is DisplayFormat.BINARY
     assert cycle_format(cycle_format(state)).value_format is DisplayFormat.DECIMAL
     assert step_focus_bit(select_only(state, "R", 0), -1).focus == BitChoice("R", 0)

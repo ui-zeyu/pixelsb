@@ -38,10 +38,6 @@ VALUE = "数值"
 DECIMAL = "十进制"
 HEX = "十六进制"
 BINARY = "二进制"
-ABSOLUTE = "绝对值"
-OFFSET = "相对锚点"
-CLEAR_ANCHOR = "清除锚点"
-ANCHOR = "锚点"
 OPEN_FAILED = "无法打开图像"
 
 
@@ -61,7 +57,6 @@ ZOOM_RESET_TIP = "按原始像素大小显示（1 倍）"
 DETACH_TIP = "勾选后画面与数字各自勾选；默认同步"
 READOUT_RESET_TIP = "数字层回到原始通道值"
 FORMAT_TIP = "F 在十进制、十六进制、二进制之间切换"
-VALUE_MODE_TIP = "O 切换绝对值与相对锚点"
 MATRIX_TIP = (
     "勾选位来组合画面和数字。勾选「分离」后，画面格与数字格各自控制，"
     "数字默认显示原始通道值。行首、列首的复选框选整行或整列。"
@@ -70,13 +65,11 @@ MATRIX_TIP = (
 SHORTCUT_HELP = """⌘O    打开
 方向键    移动光标 1 像素
 Shift+方向键    移动 8 像素
-单击图像    设置锚点
 左键拖动    平移
 单击位    勾选或取消这一位
 行首 / 列首复选框    选整行或整列
 ⌘/Shift+单击    只看这一位
 分离    画面与数字各自勾选
-Esc    清除锚点
 空格拖拽、中键拖拽    平移
 ⌘滚轮、+、-    缩放
 0    适配窗口
@@ -85,7 +78,6 @@ Esc    清除锚点
 R G A L    画面只看该通道的最低位
 1–9    按顺序只看该通道的最低位
 F    切换进制
-O    绝对值 / 相对锚点
 ⌘C    复制读数"""
 
 ORIGIN_LABEL = {
@@ -102,17 +94,8 @@ def readout_text(state: ViewerState) -> str:
     if readout is None:
         return NO_CURSOR
     lines = [f"光标 ({readout.cursor.x}, {readout.cursor.y})"]
-    if readout.anchor is None or readout.dx is None or readout.dy is None:
-        lines.append(f"{ANCHOR} —")
-    else:
-        lines.append(f"{ANCHOR} ({readout.anchor.x}, {readout.anchor.y})")
-        lines.append(f"dx {readout.dx:+d}")
-        lines.append(f"dy {readout.dy:+d}")
     for channel in readout.channels:
-        if channel.relative is None:
-            lines.append(f"{channel.name}  {channel.absolute}")
-        else:
-            lines.append(f"{channel.name}  {channel.absolute}  {channel.relative}")
+        lines.append(f"{channel.name}  {channel.absolute}")
     lines.append(readout.summary)
     return "\n".join(lines)
 

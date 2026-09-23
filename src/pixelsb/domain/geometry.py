@@ -35,8 +35,3 @@ def initial_zoom(
         return MIN_ZOOM
     fit = min(view_w / image_w, view_h / image_h)
     return min(max(fit, MIN_ZOOM), min(cap, MAX_ZOOM))
-
-
-def spatial_offset(origin: PixelCoord, target: PixelCoord) -> tuple[int, int]:
-    """Return ``target - origin`` as ``(dx, dy)``."""
-    return target.x - origin.x, target.y - origin.y

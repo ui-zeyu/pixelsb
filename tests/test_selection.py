@@ -134,24 +134,3 @@ def test_region_texts_matches_pixel_text_and_is_clipped() -> None:
         pixel_text(state, PixelCoord(x, y)) for y in range(image.height) for x in range(image.width)
     ]
     assert region_texts(state, 5, 5, 9, 9) == []
-
-
-def test_region_texts_formats_offsets_against_the_anchor() -> None:
-    from pixelsb.domain.models import ValueMode
-    from pixelsb.domain.transitions import (
-        select_only_readout,
-        set_anchor,
-        set_detached,
-        set_value_mode,
-    )
-
-    samples = np.array([[[0b1001, 0, 0], [0b0000, 0, 0]]], dtype=np.uint16)
-    image = make_image(samples, planes_rgb())
-    state = set_cursor(select_only(open_image(ViewerState(), image), "R", 0), PixelCoord(1, 0))
-    state = set_detached(
-        set_value_mode(set_anchor(state, PixelCoord(0, 0)), ValueMode.OFFSET), True
-    )
-    assert pixel_text(state, PixelCoord(0, 0)) == "R:0\nG:0\nB:0"
-    assert pixel_text(state, PixelCoord(1, 0)) == "R:-09\nG:0\nB:0"
-    narrowed = select_only_readout(state, "R", 0)
-    assert pixel_text(narrowed, PixelCoord(1, 0)) == "-1"

@@ -1,4 +1,4 @@
-"""Pixel-level image viewer for channel values, anchor offsets, and bit planes."""
+"""Pixel-level image viewer for channel values, bit planes, and bit combinations."""
 
 from importlib.metadata import version
 

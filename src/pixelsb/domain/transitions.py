@@ -9,7 +9,6 @@ from pixelsb.domain.models import (
     DisplayFormat,
     LoadedImage,
     PixelCoord,
-    ValueMode,
     ViewerState,
     ensure_inside,
 )
@@ -37,14 +36,12 @@ def open_image(
     return ViewerState(
         image=image,
         cursor=None,
-        anchor=None,
         selection=None,
         focus=BitChoice(image.planes[0].name, 0),
         readout=None,
         detached=state.detached,
         filter_expr=state.filter_expr,
         value_format=state.value_format,
-        value_mode=state.value_mode,
         zoom=chosen,
     )
 
@@ -63,15 +60,6 @@ def move_cursor(state: ViewerState, dx: int, dy: int) -> ViewerState:
     x = min(max(state.cursor.x + dx, 0), image.width - 1)
     y = min(max(state.cursor.y + dy, 0), image.height - 1)
     return replace(state, cursor=PixelCoord(x, y))
-
-
-def set_anchor(state: ViewerState, coord: PixelCoord) -> ViewerState:
-    ensure_inside(_image(state), coord)
-    return replace(state, anchor=coord, cursor=coord)
-
-
-def clear_anchor(state: ViewerState) -> ViewerState:
-    return replace(state, anchor=None)
 
 
 def select_only(state: ViewerState, plane: str, bit: int) -> ViewerState:
@@ -223,15 +211,6 @@ def set_format(state: ViewerState, fmt: DisplayFormat) -> ViewerState:
 def cycle_format(state: ViewerState) -> ViewerState:
     index = _FORMATS.index(state.value_format)
     return replace(state, value_format=_FORMATS[(index + 1) % len(_FORMATS)])
-
-
-def set_value_mode(state: ViewerState, mode: ValueMode) -> ViewerState:
-    return replace(state, value_mode=mode)
-
-
-def toggle_value_mode(state: ViewerState) -> ViewerState:
-    mode = ValueMode.OFFSET if state.value_mode is ValueMode.ABSOLUTE else ValueMode.ABSOLUTE
-    return replace(state, value_mode=mode)
 
 
 def set_zoom(state: ViewerState, zoom: float) -> ViewerState:

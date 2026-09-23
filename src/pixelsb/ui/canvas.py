@@ -39,7 +39,6 @@ from pixelsb.ui.painting import qimage_from_rgb
 
 _BACKGROUND = QColor("#121212")
 _CURSOR = QColor("#ffb000")
-_ANCHOR = QColor("#3aa0ff")
 _GRID = QColor(0, 0, 0, 130)
 _DRAG_THRESHOLD = 4
 _DIM_DIVISOR = 12
@@ -51,7 +50,6 @@ _LUMA_THRESHOLD = 1_500_000
 
 class ImageCanvas(QWidget):
     hovered = Signal(int, int)
-    anchored = Signal(int, int)
     zoom_requested = Signal(int, int, int)
     file_dropped = Signal(str)
 
@@ -114,8 +112,6 @@ class ImageCanvas(QWidget):
             )
         label_key = (
             state.value_format,
-            state.value_mode,
-            state.anchor,
             state.selection,
             state.readout,
             state.detached,
@@ -133,7 +129,7 @@ class ImageCanvas(QWidget):
         if rebuilt or previous.zoom != state.zoom or labels_changed:
             self.update()
             return
-        for coord in (previous.cursor, previous.anchor, state.cursor, state.anchor):
+        for coord in (previous.cursor, state.cursor):
             self._repaint_pixel(coord, state.zoom)
 
     def _repaint_pixel(self, coord: PixelCoord | None, zoom: float) -> None:
@@ -191,12 +187,7 @@ class ImageCanvas(QWidget):
             painter.drawImage(dest, qimage, source)
         if zoom >= GRID_ZOOM:
             _draw_grid(painter, source, zoom)
-        if self._state.anchor == self._state.cursor:
-            _draw_marker(painter, self._state.anchor, _ANCHOR, zoom, inset=0)
-            _draw_marker(painter, self._state.cursor, _CURSOR, zoom, inset=2)
-        else:
-            _draw_marker(painter, self._state.anchor, _ANCHOR, zoom, inset=0)
-            _draw_marker(painter, self._state.cursor, _CURSOR, zoom, inset=0)
+        _draw_marker(painter, self._state.cursor, _CURSOR, zoom)
         self._draw_labels(painter, self._state, source, zoom)
 
     def _draw_labels(
@@ -298,14 +289,9 @@ class ImageCanvas(QWidget):
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton and self._left_press is not None:
-            dragging = self._left_dragging
             self._left_press = None
             self._left_dragging = False
             self.unsetCursor()
-            if not dragging:
-                coord = self._coord(event.position().toPoint())
-                if coord is not None:
-                    self.anchored.emit(coord.x, coord.y)
             event.accept()
             return
         if self._panning and event.button() in {
@@ -453,10 +439,8 @@ def _draw_marker(
     coord: PixelCoord | None,
     color: QColor,
     zoom: float,
-    *,
-    inset: int,
 ) -> None:
-    if coord is None or zoom <= inset * 2:
+    if coord is None:
         return
     pen = QPen(color)
     pen.setCosmetic(True)
@@ -464,7 +448,7 @@ def _draw_marker(
     painter.setPen(pen)
     painter.setBrush(Qt.BrushStyle.NoBrush)
     rect = QRectF(coord.x * zoom, coord.y * zoom, zoom, zoom)
-    painter.drawRect(rect.adjusted(inset, inset, -1 - inset, -1 - inset))
+    painter.drawRect(rect.adjusted(0, 0, -1, -1))
 
 
 def _pan_delta(event: QWheelEvent) -> tuple[int, int]:

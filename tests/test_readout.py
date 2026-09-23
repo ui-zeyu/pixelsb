@@ -8,17 +8,14 @@ from pixelsb.domain.models import (
     PixelCoord,
     SampleOrigin,
     SamplePlane,
-    ValueMode,
     ViewerState,
 )
-from pixelsb.domain.readout import build_readout, cursor_label
+from pixelsb.domain.readout import cursor_label
 from pixelsb.domain.transitions import (
     open_image,
     select_only,
-    set_anchor,
     set_cursor,
     set_format,
-    set_value_mode,
 )
 from pixelsb.ui.text import readout_text, status_text
 from tests.support import make_image, planes_rgb
@@ -36,19 +33,9 @@ def _state() -> ViewerState:
     return open_image(ViewerState(), make_image(_SAMPLES, planes_rgb(), path=Path("view.png")))
 
 
-def test_readout_text_shows_absolute_and_signed_offset() -> None:
-    state = set_cursor(set_anchor(_state(), PixelCoord(0, 0)), PixelCoord(1, 0))
-    assert readout_text(state) == (
-        "光标 (1, 0)\n锚点 (0, 0)\ndx +1\ndy +0\nR  00  -FF\nG  FF  +FF\nB  01  +01\n"
-        "画面 原图 · 数字 原始值"
-    )
-
-
-def test_readout_without_an_anchor_omits_the_delta_column() -> None:
+def test_readout_text_lists_the_channels_of_the_cursor_pixel() -> None:
     state = set_cursor(_state(), PixelCoord(1, 0))
-    assert readout_text(state) == (
-        "光标 (1, 0)\n锚点 —\nR  00\nG  FF\nB  01\n画面 原图 · 数字 原始值"
-    )
+    assert readout_text(state) == ("光标 (1, 0)\nR  00\nG  FF\nB  01\n画面 原图 · 数字 原始值")
 
 
 def test_empty_states_have_hints() -> None:
@@ -78,9 +65,6 @@ def test_plane_selection_keeps_original_numbers_until_the_readout_changes() -> N
     summary = readout_text(excluded)
     assert "画面 R0 · 数字 R1 R2 R3 R4 R5 R6 R7" in summary
     assert summary.endswith("G6 G7 B0 B1 B2 B3 B4 B5 B6 B7")
-    offset = set_value_mode(set_anchor(numbers, PixelCoord(1, 0)), ValueMode.OFFSET)
-    assert build_readout(offset) is not None
-    assert "dx" in readout_text(offset)
 
 
 def test_status_mentions_converted_samples() -> None:

@@ -27,11 +27,6 @@ class DisplayFormat(StrEnum):
     BINARY = "binary"
 
 
-class ValueMode(StrEnum):
-    ABSOLUTE = "absolute"
-    OFFSET = "offset"
-
-
 @dataclass(frozen=True, slots=True)
 class BitChoice:
     plane: str
@@ -131,14 +126,12 @@ class ViewerState:
 
     image: LoadedImage | None = None
     cursor: PixelCoord | None = None
-    anchor: PixelCoord | None = None
     selection: frozenset[BitChoice] | None = None
     focus: BitChoice | None = None
     readout: frozenset[BitChoice] | None = None
     detached: bool = False
     filter_expr: str = ""
     value_format: DisplayFormat = DisplayFormat.HEX
-    value_mode: ValueMode = ValueMode.ABSOLUTE
     zoom: float = 1.0
 
     def __post_init__(self) -> None:
@@ -147,12 +140,11 @@ class ViewerState:
         if self.image is None:
             if (
                 self.cursor is not None
-                or self.anchor is not None
                 or self.focus is not None
                 or self.selection is not None
                 or self.readout is not None
             ):
-                raise ValueError("cursor, anchor, focus, selection, and readout require an image")
+                raise ValueError("cursor, focus, selection, and readout require an image")
             return
         if self.selection is not None:
             for choice in self.selection:
@@ -164,8 +156,6 @@ class ViewerState:
             _require_choice(self.image, self.focus)
         if self.cursor is not None:
             ensure_inside(self.image, self.cursor)
-        if self.anchor is not None:
-            ensure_inside(self.image, self.anchor)
 
 
 def _require_choice(image: LoadedImage, choice: BitChoice) -> None:

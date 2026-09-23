@@ -17,14 +17,6 @@ def format_sample(value: int, bit_depth: int, fmt: DisplayFormat) -> str:
             raise ValueError(f"unknown format: {fmt}")
 
 
-def format_delta(delta: int, bit_depth: int, fmt: DisplayFormat) -> str:
-    """Format a signed channel delta. Zero is ``0``; every other value keeps its sign."""
-    if delta == 0:
-        return "0"
-    sign = "+" if delta > 0 else "-"
-    return sign + format_sample(abs(delta), bit_depth, fmt)
-
-
 def binary_bit_index(bit_depth: int, bit: int) -> int:
     """Index of ``bit`` in an MSB-first binary string. Bit 0 is the last character."""
     if not 1 <= bit_depth <= 256:

@@ -44,13 +44,11 @@ from pixelsb.domain.models import (
     DisplayFormat,
     LoadedImage,
     PixelCoord,
-    ValueMode,
     ViewerState,
 )
 from pixelsb.domain.predicate import PredicateError, compile_filter
 from pixelsb.domain.selection import effective_selection
 from pixelsb.domain.transitions import (
-    clear_anchor,
     cycle_format,
     move_cursor,
     open_image,
@@ -61,7 +59,6 @@ from pixelsb.domain.transitions import (
     select_lsbs,
     select_only,
     select_only_readout,
-    set_anchor,
     set_channel,
     set_column,
     set_cursor,
@@ -70,12 +67,10 @@ from pixelsb.domain.transitions import (
     set_format,
     set_readout_channel,
     set_readout_column,
-    set_value_mode,
     set_zoom,
     step_focus_bit,
     toggle_bit,
     toggle_readout_bit,
-    toggle_value_mode,
 )
 from pixelsb.io.loading import ImageLoadError, load_image
 from pixelsb.ui import text
@@ -228,11 +223,6 @@ class MainWindow(QMainWindow):
         self._zoom_slider.valueChanged.connect(self._zoom_to)
         self._format_combo = _combo(text.FORMAT_TIP)
         self._format_combo.currentIndexChanged.connect(self._on_format)
-        self._value_combo = _combo(text.VALUE_MODE_TIP)
-        self._value_combo.currentIndexChanged.connect(self._on_value_mode)
-        self._anchor_label = QLabel(f"{text.ANCHOR} —")
-        self._clear_anchor = QPushButton(text.CLEAR_ANCHOR)
-        self._clear_anchor.clicked.connect(_drop_checked(lambda: self.apply(clear_anchor)))
 
         host = QWidget()
         layout = QHBoxLayout(host)
@@ -242,14 +232,11 @@ class MainWindow(QMainWindow):
             ("", self._filter_edit),
             ("", self._detach),
             (text.VALUE, self._format_combo),
-            ("", self._value_combo),
             ("", self._zoom_out),
             ("", self._zoom_slider),
             ("", self._zoom_in),
             ("", self._zoom_fit),
             ("", self._zoom_reset),
-            ("", self._anchor_label),
-            ("", self._clear_anchor),
         ):
             if label:
                 layout.addWidget(QLabel(label))
@@ -268,7 +255,6 @@ class MainWindow(QMainWindow):
         self._scroll.viewport().setAcceptDrops(True)
         self._scroll.viewport().installEventFilter(self)
         self.canvas.hovered.connect(self._on_hover)
-        self.canvas.anchored.connect(self._on_anchor)
         self.canvas.zoom_requested.connect(self._zoom_by)
         self.canvas.file_dropped.connect(lambda path: self.open_path(Path(path)))
 
@@ -347,9 +333,6 @@ class MainWindow(QMainWindow):
             case Qt.Key.Key_Down:
                 self._nudge(0, 8 if shift else 1)
                 return True
-            case Qt.Key.Key_Escape:
-                self.apply(clear_anchor)
-                return True
             case Qt.Key.Key_BracketLeft:
                 self.apply(lambda state: step_focus_bit(state, -1))
                 return True
@@ -375,8 +358,6 @@ class MainWindow(QMainWindow):
         match label:
             case "F":
                 self.apply(cycle_format)
-            case "O":
-                self.apply(toggle_value_mode)
             case "R" | "G" | "A" | "L":
                 self.apply(lambda state, name=label: select_lsb(state, name))
             case "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9":
@@ -461,18 +442,6 @@ class MainWindow(QMainWindow):
             ),
             state.value_format.value,
         )
-        self._fill(
-            self._value_combo,
-            (
-                (ValueMode.ABSOLUTE.value, text.ABSOLUTE),
-                (ValueMode.OFFSET.value, text.OFFSET),
-            ),
-            state.value_mode.value,
-        )
-        anchor = state.anchor
-        self._anchor_label.setText(
-            f"{text.ANCHOR} —" if anchor is None else f"{text.ANCHOR} ({anchor.x}, {anchor.y})"
-        )
         self._filter_edit.blockSignals(True)
         if self._filter_edit.text() != state.filter_expr:
             self._filter_edit.setText(state.filter_expr)
@@ -495,7 +464,6 @@ class MainWindow(QMainWindow):
         self._detach.blockSignals(True)
         self._detach.setChecked(state.detached)
         self._detach.blockSignals(False)
-        self._clear_anchor.setEnabled(anchor is not None)
 
     def _fill(
         self, combo: QComboBox, items: Sequence[tuple[str, str]], current: str | None
@@ -549,17 +517,8 @@ class MainWindow(QMainWindow):
             return
         self.apply(lambda state: set_format(state, fmt))
 
-    def _on_value_mode(self, index: int) -> None:
-        mode = _enum_at(self._value_combo, index, ValueMode)
-        if mode is None or mode is self.store.state.value_mode:
-            return
-        self.apply(lambda state: set_value_mode(state, mode))
-
     def _on_hover(self, x: int, y: int) -> None:
         self.apply(lambda state: set_cursor(state, PixelCoord(x, y)))
-
-    def _on_anchor(self, x: int, y: int) -> None:
-        self.apply(lambda state: set_anchor(state, PixelCoord(x, y)))
 
     def _nudge(self, dx: int, dy: int) -> None:
         self.apply(lambda state: move_cursor(state, dx, dy))
@@ -688,7 +647,7 @@ def _drop_checked(slot: Callable[..., object]) -> Callable[..., None]:
     return wrapped
 
 
-def _enum_at[T: DisplayFormat | ValueMode](
+def _enum_at[T: DisplayFormat](
     combo: QComboBox,
     index: int,
     kind: type[T],
