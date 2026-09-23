@@ -45,13 +45,18 @@ ZOOM_TIP = "拖动缩放。⌘滚轮和 +、- 也可以"
 ZOOM_RESET_TIP = "按原始像素大小显示（1 倍）"
 FORMAT_TIP = "F 在十进制、十六进制、二进制之间切换"
 VALUE_MODE_TIP = "O 切换绝对值与相对锚点"
-MATRIX_TIP = "勾选任意通道的任意位来组合画面。⌘、Ctrl 或 Shift 加单击＝只看这一位。"
+MATRIX_TIP = (
+    "左键勾选画面用的位。右键勾选数字层（像素上显示的数），默认显示原始通道值；"
+    "右键通道字母选整条通道。⌘、Ctrl 或 Shift 加左键＝只看这一位。"
+)
 SHORTCUT_HELP = """⌘O    打开
 方向键    移动光标 1 像素
 Shift+方向键    移动 8 像素
 单击图像    设置锚点
-单击位    勾选或取消这一位
-⌘/Shift+单击位    只看这一位
+左键单击位    勾选或取消画面位
+右键单击位    勾选或取消数字层
+右键通道字母    选整条通道
+⌘/Shift+左键    只看这一位
 Esc    清除锚点
 空格拖拽、中键拖拽    平移
 ⌘滚轮、+、-    缩放
@@ -108,5 +113,5 @@ def status_text(state: ViewerState) -> str:
     return (
         f"{image.path.name}  {image.width}×{image.height}  模式 {image.source_mode}  "
         f"帧 {image.frame_index + 1}/{image.frame_count}  {planes}  "
-        f"{state.zoom}×  光标 {cursor}{note}{zoom_hint}"
+        f"{state.zoom:g}×  光标 {cursor}{note}{zoom_hint}"
     )

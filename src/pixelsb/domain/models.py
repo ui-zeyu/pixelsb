@@ -11,8 +11,8 @@ type SampleArray = NDArray[np.uint16]
 type PreviewArray = NDArray[np.uint8]
 type RgbArray = NDArray[np.uint8]
 
-MIN_ZOOM = 1
-MAX_ZOOM = 128
+MIN_ZOOM = 1.0
+MAX_ZOOM = 128.0
 
 
 class SampleOrigin(StrEnum):
@@ -134,9 +134,10 @@ class ViewerState:
     anchor: PixelCoord | None = None
     selection: frozenset[BitChoice] | None = None
     focus: BitChoice | None = None
+    readout: frozenset[BitChoice] | None = None
     value_format: DisplayFormat = DisplayFormat.HEX
     value_mode: ValueMode = ValueMode.ABSOLUTE
-    zoom: int = 1
+    zoom: float = 1.0
 
     def __post_init__(self) -> None:
         if not MIN_ZOOM <= self.zoom <= MAX_ZOOM:
@@ -147,11 +148,15 @@ class ViewerState:
                 or self.anchor is not None
                 or self.focus is not None
                 or self.selection is not None
+                or self.readout is not None
             ):
-                raise ValueError("cursor, anchor, focus, and selection require an image")
+                raise ValueError("cursor, anchor, focus, selection, and readout require an image")
             return
         if self.selection is not None:
             for choice in self.selection:
+                _require_choice(self.image, choice)
+        if self.readout is not None:
+            for choice in self.readout:
                 _require_choice(self.image, choice)
         if self.focus is not None:
             _require_choice(self.image, self.focus)

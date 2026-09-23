@@ -18,7 +18,12 @@ from pixelsb.domain.selection import all_bits, lsb_bits, stored_selection
 _FORMATS = (DisplayFormat.DECIMAL, DisplayFormat.HEX, DisplayFormat.BINARY)
 
 
-def open_image(state: ViewerState, image: LoadedImage, *, zoom: int | None = None) -> ViewerState:
+def open_image(
+    state: ViewerState,
+    image: LoadedImage,
+    *,
+    zoom: float | None = None,
+) -> ViewerState:
     chosen = state.zoom if zoom is None else zoom
     if not MIN_ZOOM <= chosen <= MAX_ZOOM:
         raise ValueError(f"zoom {chosen} is outside {MIN_ZOOM}..{MAX_ZOOM}")
@@ -30,6 +35,7 @@ def open_image(state: ViewerState, image: LoadedImage, *, zoom: int | None = Non
         anchor=None,
         selection=None,
         focus=BitChoice(image.planes[0].name, 0),
+        readout=None,
         value_format=state.value_format,
         value_mode=state.value_mode,
         zoom=chosen,
@@ -106,6 +112,37 @@ def clear_selection(state: ViewerState) -> ViewerState:
     return replace(state, selection=frozenset())
 
 
+def effective_readout(state: ViewerState) -> frozenset[BitChoice]:
+    """The number layer. ``None`` means the original channel values."""
+    image = _image(state)
+    return state.readout if state.readout is not None else all_bits(image)
+
+
+def toggle_readout_bit(state: ViewerState, plane: str, bit: int) -> ViewerState:
+    """Right-click on the matrix: toggle one bit of the number layer."""
+    image = _image(state)
+    choice = _choice(image, plane, bit)
+    updated = frozenset(state.readout or ()) ^ {choice}
+    return replace(state, readout=updated or None)
+
+
+def toggle_readout_channel(state: ViewerState, name: str) -> ViewerState:
+    """Right-click on a channel letter: toggle every bit of that channel."""
+    image = _image(state)
+    try:
+        sample_plane = image.plane(name)
+    except KeyError as exc:
+        raise ValueError(f"unknown plane: {name}") from exc
+    current = frozenset(state.readout or ())
+    channel_bits = frozenset(BitChoice(name, bit) for bit in range(sample_plane.bit_depth))
+    updated = current - channel_bits if channel_bits <= current else current | channel_bits
+    return replace(state, readout=updated or None)
+
+
+def reset_readout(state: ViewerState) -> ViewerState:
+    return replace(state, readout=None)
+
+
 def step_focus_bit(state: ViewerState, delta: int) -> ViewerState:
     image = state.image
     if image is None:
@@ -148,13 +185,13 @@ def toggle_value_mode(state: ViewerState) -> ViewerState:
     return replace(state, value_mode=mode)
 
 
-def set_zoom(state: ViewerState, zoom: int) -> ViewerState:
+def set_zoom(state: ViewerState, zoom: float) -> ViewerState:
     if not MIN_ZOOM <= zoom <= MAX_ZOOM:
         raise ValueError(f"zoom {zoom} is outside {MIN_ZOOM}..{MAX_ZOOM}")
     return replace(state, zoom=zoom)
 
 
-def step_zoom(state: ViewerState, delta: int) -> ViewerState:
+def step_zoom(state: ViewerState, delta: float) -> ViewerState:
     return set_zoom(state, min(max(state.zoom + delta, MIN_ZOOM), MAX_ZOOM))
 
 

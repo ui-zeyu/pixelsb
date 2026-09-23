@@ -82,6 +82,34 @@ def test_missing_plane_shortcut_leaves_the_state_alone() -> None:
     assert select_lsb(state, "L") is state
 
 
+def test_readout_layer_defaults_to_the_original_and_toggles() -> None:
+    from pixelsb.domain.transitions import (
+        effective_readout,
+        toggle_readout_bit,
+        toggle_readout_channel,
+    )
+
+    state = select_only(
+        open_image(ViewerState(), make_image(np.zeros((1, 1, 3), dtype=np.uint16), planes_rgb())),
+        "R",
+        0,
+    )
+    assert state.readout is None
+    with pytest.raises(ValueError):
+        toggle_readout_bit(state, "R", 8)
+    numbers = toggle_readout_bit(state, "R", 0)
+    assert numbers.readout == frozenset({BitChoice("R", 0)})
+    cleared = toggle_readout_bit(numbers, "R", 0)
+    assert cleared.readout is None
+    channel = toggle_readout_channel(state, "G")
+    assert channel.readout == frozenset(BitChoice("G", bit) for bit in range(8))
+    full = toggle_readout_channel(channel, "R")
+    assert full.readout == frozenset(
+        {*(BitChoice("G", bit) for bit in range(8)), *(BitChoice("R", bit) for bit in range(8))}
+    )
+    assert len(effective_readout(full)) == 16
+
+
 def test_clear_anchor_zoom_and_format_cycle() -> None:
     state = open_image(
         ViewerState(), make_image(np.zeros((2, 2, 3), dtype=np.uint16), planes_rgb())

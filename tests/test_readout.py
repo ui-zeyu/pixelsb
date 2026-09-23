@@ -19,7 +19,6 @@ from pixelsb.domain.transitions import (
     set_cursor,
     set_format,
     set_value_mode,
-    toggle_bit,
 )
 from pixelsb.ui.text import readout_text, status_text
 from tests.support import make_image, planes_rgb
@@ -40,13 +39,16 @@ def _state() -> ViewerState:
 def test_readout_text_shows_absolute_and_signed_offset() -> None:
     state = set_cursor(set_anchor(_state(), PixelCoord(0, 0)), PixelCoord(1, 0))
     assert readout_text(state) == (
-        "光标 (1, 0)\n锚点 (0, 0)\ndx +1\ndy +0\nR  00  -FF\nG  FF  +FF\nB  01  +01\n原图"
+        "光标 (1, 0)\n锚点 (0, 0)\ndx +1\ndy +0\nR  00  -FF\nG  FF  +FF\nB  01  +01\n"
+        "画面 原图 · 数字 原始值"
     )
 
 
 def test_readout_without_an_anchor_omits_the_delta_column() -> None:
     state = set_cursor(_state(), PixelCoord(1, 0))
-    assert readout_text(state) == "光标 (1, 0)\n锚点 —\nR  00\nG  FF\nB  01\n原图"
+    assert readout_text(state) == (
+        "光标 (1, 0)\n锚点 —\nR  00\nG  FF\nB  01\n画面 原图 · 数字 原始值"
+    )
 
 
 def test_empty_states_have_hints() -> None:
@@ -54,19 +56,22 @@ def test_empty_states_have_hints() -> None:
     assert readout_text(_state()) == "移动鼠标或方向键查看像素"
 
 
-def test_one_bit_label_is_a_digit_and_needs_zoom_before_it_is_drawn() -> None:
+def test_plane_selection_keeps_original_numbers_until_the_readout_changes() -> None:
     state = set_format(set_cursor(_state(), PixelCoord(0, 0)), DisplayFormat.BINARY)
     state = select_only(state, "R", 0)
-    assert cursor_label(state) == "1"
-    assert readout_text(state).endswith("选择 R0")
+    assert cursor_label(state) == "R11111111\nG00000000\nB00000000"
+    assert readout_text(state).endswith("画面 R0 · 数字 原始值")
     template = widest_text(state)
-    assert template == "1"
-    assert zoom_required(template) == 9
-    assert not label_fits(8, template)
-    assert label_fits(9, template)
-    both = toggle_bit(state, "G", 0)
-    assert cursor_label(both) == "R1\nG0"
-    offset = set_value_mode(set_anchor(both, PixelCoord(1, 0)), ValueMode.OFFSET)
+    assert template == "R11111111\nG11111111\nB11111111"
+    assert zoom_required(template) == 33
+    assert not label_fits(32, template)
+    assert label_fits(33, template)
+    from pixelsb.domain.transitions import toggle_readout_bit
+
+    numbers = toggle_readout_bit(state, "R", 0)
+    assert cursor_label(numbers) == "1"
+    assert readout_text(numbers).endswith("画面 R0 · 数字 R0")
+    offset = set_value_mode(set_anchor(numbers, PixelCoord(1, 0)), ValueMode.OFFSET)
     assert build_readout(offset) is not None
     assert "dx" in readout_text(offset)
 

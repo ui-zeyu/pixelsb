@@ -25,7 +25,7 @@ LINE_SPACING = 1.25
 MIN_FONT = 5
 
 
-def font_pixel_size(zoom: int, text: str) -> int:
+def font_pixel_size(zoom: float, text: str) -> int:
     if not text:
         return MIN_FONT
     lines = text.split("\n")
@@ -36,7 +36,7 @@ def font_pixel_size(zoom: int, text: str) -> int:
     return min(cap, by_width, by_height)
 
 
-def label_fits(zoom: int, text: str) -> bool:
+def label_fits(zoom: float, text: str) -> bool:
     if not text:
         return False
     return font_pixel_size(zoom, text) >= MIN_FONT
@@ -44,16 +44,16 @@ def label_fits(zoom: int, text: str) -> bool:
 
 def zoom_required(text: str) -> int:
     if not text:
-        return MIN_ZOOM
+        return int(MIN_ZOOM)
     lines = text.split("\n")
     longest = max(len(line) for line in lines)
     by_width = math.ceil(MIN_FONT * ADVANCE * longest) + LABEL_PAD
     by_height = math.ceil(MIN_FONT * LINE_SPACING * len(lines)) + LABEL_PAD
     cap = math.ceil(MIN_FONT / FONT_FILL)
-    return max(MIN_ZOOM, by_width, by_height, cap)
+    return int(max(MIN_ZOOM, by_width, by_height, cap))
 
 
-def zoom_to_fit(text: str, *, cap: int = MAX_ZOOM) -> int:
+def zoom_to_fit(text: str, *, cap: float = MAX_ZOOM) -> float:
     return min(zoom_required(text), cap)
 
 
@@ -75,7 +75,7 @@ def region_texts(state: ViewerState, x0: int, y0: int, x1: int, y1: int) -> list
     height = y1 - y0
     if width <= 0 or height <= 0:
         return []
-    chosen = effective_selection(image, state.selection)
+    chosen = effective_selection(image, state.readout)
     if not chosen:
         return [""] * (width * height)
     offset = state.value_mode is ValueMode.OFFSET and state.anchor is not None
@@ -87,9 +87,16 @@ def region_texts(state: ViewerState, x0: int, y0: int, x1: int, y1: int) -> list
         bits = bits_for(chosen, plane.name)
         mask = mask_of(bits)
         depth = max(bits) + 1 if len(bits) > 1 else 1
-        shown = region[:, :, plane.index].astype(np.uint32) & np.uint32(mask)
+        channel = region[:, :, plane.index].astype(np.uint32)
+        if len(bits) == 1:
+            shown = (channel >> np.uint32(bits[0])) & np.uint32(1)
+        else:
+            shown = channel & np.uint32(mask)
         if offset and anchor_row is not None:
-            anchor_shown = int(anchor_row[plane.index]) & mask
+            anchor_sample = int(anchor_row[plane.index])
+            anchor_shown = (
+                (anchor_sample >> bits[0]) & 1 if len(bits) == 1 else anchor_sample & mask
+            )
             deltas = shown.astype(np.int64) - anchor_shown
             memo = _FormatMemo(depth, state.value_format, offset=True)
             strings = [memo[value] for value in deltas.ravel().tolist()]
@@ -128,7 +135,7 @@ def widest_text(state: ViewerState) -> str:
     image = state.image
     if image is None:
         return ""
-    chosen = effective_selection(image, state.selection)
+    chosen = effective_selection(image, state.readout)
     if not chosen:
         return ""
     offset = state.value_mode is ValueMode.OFFSET and state.anchor is not None

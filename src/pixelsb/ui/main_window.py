@@ -59,6 +59,8 @@ from pixelsb.domain.transitions import (
     set_zoom,
     step_focus_bit,
     toggle_bit,
+    toggle_readout_bit,
+    toggle_readout_channel,
     toggle_value_mode,
 )
 from pixelsb.io.loading import ImageLoadError, load_image
@@ -176,9 +178,9 @@ class MainWindow(QMainWindow):
         self._zoom_fit.clicked.connect(_drop_checked(self._fit))
         self._zoom_reset = QPushButton(text.ZOOM_RESET)
         self._zoom_reset.setToolTip(text.ZOOM_RESET_TIP)
-        self._zoom_reset.clicked.connect(_drop_checked(lambda: self._zoom_to(MIN_ZOOM)))
+        self._zoom_reset.clicked.connect(_drop_checked(lambda: self._zoom_to(float(MIN_ZOOM))))
         self._zoom_slider = QSlider(Qt.Orientation.Horizontal)
-        self._zoom_slider.setRange(MIN_ZOOM, MAX_ZOOM)
+        self._zoom_slider.setRange(int(MIN_ZOOM), int(MAX_ZOOM))
         self._zoom_slider.setFixedWidth(160)
         self._zoom_slider.setToolTip(text.ZOOM_TIP)
         self._zoom_slider.valueChanged.connect(self._zoom_to)
@@ -230,6 +232,8 @@ class MainWindow(QMainWindow):
 
         self.inspector = Inspector()
         self.inspector.bit_clicked.connect(self._on_bit)
+        self.inspector.readout_bit_clicked.connect(self._on_readout_bit)
+        self.inspector.readout_channel_clicked.connect(self._on_readout_channel)
         self.inspector.original_requested.connect(lambda: self.apply(select_all_bits))
         self.inspector.only_bit_requested.connect(lambda: self.apply(select_focus_only))
         self.inspector.lsbs_requested.connect(lambda: self.apply(select_lsbs))
@@ -378,7 +382,7 @@ class MainWindow(QMainWindow):
         ):
             widget.setEnabled(enabled)
         self._zoom_slider.blockSignals(True)
-        self._zoom_slider.setValue(state.zoom)
+        self._zoom_slider.setValue(round(state.zoom))
         self._zoom_slider.blockSignals(False)
         self._clear_anchor.setEnabled(anchor is not None)
 
@@ -404,6 +408,12 @@ class MainWindow(QMainWindow):
             self.apply(lambda state: select_only(state, plane, bit))
         else:
             self.apply(lambda state: toggle_bit(state, plane, bit))
+
+    def _on_readout_bit(self, plane: str, bit: int) -> None:
+        self.apply(lambda state: toggle_readout_bit(state, plane, bit))
+
+    def _on_readout_channel(self, name: str) -> None:
+        self.apply(lambda state: toggle_readout_channel(state, name))
 
     def _on_format(self, index: int) -> None:
         fmt = _enum_at(self._format_combo, index, DisplayFormat)
@@ -457,7 +467,7 @@ class MainWindow(QMainWindow):
             return
         self._zoom_to(zoom_to_fit(template))
 
-    def _zoom_to(self, new_zoom: int) -> None:
+    def _zoom_to(self, new_zoom: float) -> None:
         state = self.store.state
         if state.image is None or new_zoom == state.zoom:
             return
@@ -487,7 +497,7 @@ class MainWindow(QMainWindow):
         self._scroll.horizontalScrollBar().setValue(0)
         self._scroll.verticalScrollBar().setValue(0)
 
-    def _fit_zoom(self, image: LoadedImage) -> int:
+    def _fit_zoom(self, image: LoadedImage) -> float:
         viewport = self._scroll.viewport().size()
         return initial_zoom(
             (image.width, image.height),
@@ -501,10 +511,10 @@ class MainWindow(QMainWindow):
         if cursor is None:
             return
         self._scroll.ensureVisible(
-            cursor.x * zoom + zoom // 2,
-            cursor.y * zoom + zoom // 2,
-            zoom,
-            zoom,
+            round(cursor.x * zoom + zoom / 2),
+            round(cursor.y * zoom + zoom / 2),
+            round(zoom),
+            round(zoom),
         )
 
     def _copy(self) -> None:

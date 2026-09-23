@@ -12,6 +12,8 @@ from pixelsb.ui.text import readout_text
 
 class Inspector(QWidget):
     bit_clicked = Signal(str, int, bool)
+    readout_bit_clicked = Signal(str, int)
+    readout_channel_clicked = Signal(str)
     original_requested = Signal()
     only_bit_requested = Signal()
     lsbs_requested = Signal()
@@ -22,6 +24,8 @@ class Inspector(QWidget):
         self._state = ViewerState()
         self._matrix = BitMatrix()
         self._matrix.bit_clicked.connect(self.bit_clicked.emit)
+        self._matrix.bit_right_clicked.connect(self.readout_bit_clicked.emit)
+        self._matrix.channel_right_clicked.connect(self.readout_channel_clicked.emit)
         self._detail = QLabel(text.NO_IMAGE)
         self._detail.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self._detail.setWordWrap(True)

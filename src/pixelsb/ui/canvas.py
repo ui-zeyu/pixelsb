@@ -1,7 +1,9 @@
 """Zoomable image canvas. One image pixel maps to ``zoom`` logical pixels."""
 
+import math
+
 import numpy as np
-from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
+from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import (
     QColor,
     QDragEnterEvent,
@@ -95,12 +97,16 @@ class ImageCanvas(QWidget):
                 self._image = qimage_from_rgb(self._rgb)
                 self._cache_key = key
                 rebuilt = True
-            self._target = QSize(image.width * state.zoom, image.height * state.zoom)
+            self._target = QSize(
+                math.ceil(image.width * state.zoom),
+                math.ceil(image.height * state.zoom),
+            )
         label_key = (
             state.value_format,
             state.value_mode,
             state.anchor,
             state.selection,
+            state.readout,
         )
         labels_changed = label_key != self._label_key
         self._label_key = label_key
@@ -115,18 +121,14 @@ class ImageCanvas(QWidget):
         for coord in (previous.cursor, previous.anchor, state.cursor, state.anchor):
             self._repaint_pixel(coord, state.zoom)
 
-    def _repaint_pixel(self, coord: PixelCoord | None, zoom: int) -> None:
+    def _repaint_pixel(self, coord: PixelCoord | None, zoom: float) -> None:
         if coord is None:
             return
         pad = 2
-        self.update(
-            QRect(
-                coord.x * zoom - pad,
-                coord.y * zoom - pad,
-                zoom + pad * 2,
-                zoom + pad * 2,
-            )
-        )
+        x = math.floor(coord.x * zoom) - pad
+        y = math.floor(coord.y * zoom) - pad
+        size = math.ceil(zoom) + pad * 2
+        self.update(QRect(x, y, size, size))
 
     def sizeHint(self) -> QSize:
         return self._target
@@ -146,8 +148,8 @@ class ImageCanvas(QWidget):
             return
         zoom = self._state.zoom
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
-        source, dest = _visible_rects(event.rect(), zoom, qimage.width(), qimage.height())
-        if source.width() > 0 and source.height() > 0:
+        source, dest = _visible_rects(QRectF(event.rect()), zoom, qimage.width(), qimage.height())
+        if not dest.isEmpty():
             painter.drawImage(dest, qimage, source)
         if zoom >= GRID_ZOOM:
             _draw_grid(painter, source, zoom)
@@ -164,19 +166,21 @@ class ImageCanvas(QWidget):
         self,
         painter: QPainter,
         state: ViewerState,
-        source: QRect,
-        zoom: int,
+        source: QRectF,
+        zoom: float,
     ) -> None:
         template = widest_text(state)
         font = _label_font(template, zoom)
         if font is None or self._rgb is None:
             return
-        x0, y0 = source.x(), source.y()
-        columns = source.width()
-        texts = region_texts(state, x0, y0, x0 + columns, y0 + source.height())
+        x0 = int(source.x())
+        y0 = int(source.y())
+        columns = int(source.width())
+        rows = int(source.height())
+        texts = region_texts(state, x0, y0, x0 + columns, y0 + rows)
         if not any(texts):
             return
-        region = self._rgb[y0 : y0 + source.height(), x0 : x0 + columns].astype(np.uint32)
+        region = self._rgb[y0 : y0 + rows, x0 : x0 + columns].astype(np.uint32)
         bright = (region * _LUMA_WEIGHTS).sum(axis=-1) > _LUMA_THRESHOLD
         painter.setFont(font)
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
@@ -185,7 +189,12 @@ class ImageCanvas(QWidget):
                 continue
             column = index % columns
             row = index // columns
-            rect = QRect((x0 + column) * zoom, (y0 + row) * zoom, zoom, zoom)
+            rect = QRectF(
+                (x0 + column) * zoom,
+                (y0 + row) * zoom,
+                zoom,
+                zoom,
+            )
             if bright[row, column]:
                 main, shadow = _DARK_TEXT, _LIGHT_SHADOW
             else:
@@ -193,7 +202,7 @@ class ImageCanvas(QWidget):
             painter.save()
             painter.setClipRect(rect.adjusted(1, 1, -1, -1))
             painter.setPen(shadow)
-            painter.drawText(rect.translated(1, 1), Qt.AlignmentFlag.AlignCenter, label)
+            painter.drawText(rect.translated(1.0, 1.0), Qt.AlignmentFlag.AlignCenter, label)
             painter.setPen(main)
             painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, label)
             painter.restore()
@@ -308,7 +317,7 @@ class ImageCanvas(QWidget):
         return pixel_at(point.x(), point.y(), self._state.zoom, image.width, image.height)
 
 
-def _label_font(template: str, zoom: int) -> QFont | None:
+def _label_font(template: str, zoom: float) -> QFont | None:
     if not label_fits(zoom, template):
         return None
     lines = template.split("\n")
@@ -329,35 +338,44 @@ def _label_font(template: str, zoom: int) -> QFont | None:
     return None
 
 
-def _visible_rects(widget_rect: QRect, zoom: int, width: int, height: int) -> tuple[QRect, QRect]:
-    src_x = max(widget_rect.x() // zoom, 0)
-    src_y = max(widget_rect.y() // zoom, 0)
-    src_right = min(widget_rect.right() // zoom + 1, width)
-    src_bottom = min(widget_rect.bottom() // zoom + 1, height)
-    source = QRect(src_x, src_y, max(src_right - src_x, 0), max(src_bottom - src_y, 0))
-    dest = QRect(src_x * zoom, src_y * zoom, source.width() * zoom, source.height() * zoom)
+def _visible_rects(
+    widget_rect: QRectF,
+    zoom: float,
+    width: int,
+    height: int,
+) -> tuple[QRectF, QRectF]:
+    first_x = max(math.floor(widget_rect.left() / zoom), 0)
+    first_y = max(math.floor(widget_rect.top() / zoom), 0)
+    last_x = min(math.floor(widget_rect.right() / zoom), width - 1)
+    last_y = min(math.floor(widget_rect.bottom() / zoom), height - 1)
+    if last_x < first_x or last_y < first_y:
+        return QRectF(), QRectF()
+    source = QRectF(first_x, first_y, last_x - first_x + 1, last_y - first_y + 1)
+    dest = QRectF(first_x * zoom, first_y * zoom, source.width() * zoom, source.height() * zoom)
     return source, dest
 
 
-def _draw_grid(painter: QPainter, source: QRect, zoom: int) -> None:
+def _draw_grid(painter: QPainter, source: QRectF, zoom: float) -> None:
     pen = QPen(_GRID)
     pen.setCosmetic(True)
     painter.setPen(pen)
-    right = (source.x() + source.width()) * zoom
-    bottom = (source.y() + source.height()) * zoom
-    for column in range(source.x(), source.x() + source.width() + 1):
+    left = source.left()
+    top = source.top()
+    right = source.right() + zoom
+    bottom = source.bottom() + zoom
+    for column in range(int(source.left()), int(source.right()) + 2):
         x = column * zoom
-        painter.drawLine(x, source.y() * zoom, x, bottom)
-    for row in range(source.y(), source.y() + source.height() + 1):
+        painter.drawLine(QPointF(x, top), QPointF(x, bottom))
+    for row in range(int(source.top()), int(source.bottom()) + 2):
         y = row * zoom
-        painter.drawLine(source.x() * zoom, y, right, y)
+        painter.drawLine(QPointF(left, y), QPointF(right, y))
 
 
 def _draw_marker(
     painter: QPainter,
     coord: PixelCoord | None,
     color: QColor,
-    zoom: int,
+    zoom: float,
     *,
     inset: int,
 ) -> None:
@@ -368,7 +386,7 @@ def _draw_marker(
     pen.setWidth(2)
     painter.setPen(pen)
     painter.setBrush(Qt.BrushStyle.NoBrush)
-    rect = QRect(coord.x * zoom, coord.y * zoom, zoom, zoom)
+    rect = QRectF(coord.x * zoom, coord.y * zoom, zoom, zoom)
     painter.drawRect(rect.adjusted(inset, inset, -1 - inset, -1 - inset))
 
 

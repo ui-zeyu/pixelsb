@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pixelsb.domain.formatting import format_delta, format_sample
 from pixelsb.domain.geometry import spatial_offset
 from pixelsb.domain.labels import pixel_text, widest_text, zoom_required
-from pixelsb.domain.models import PixelCoord, SampleOrigin, ViewerState
+from pixelsb.domain.models import BitChoice, LoadedImage, PixelCoord, SampleOrigin, ViewerState
 from pixelsb.domain.selection import bits_for, effective_selection, shown_channel_value
 
 
@@ -27,19 +27,31 @@ class Readout:
     summary: str
 
 
-def selection_summary(state: ViewerState) -> str:
+def layer_summary(state: ViewerState) -> str:
+    """One line saying which bits drive the canvas and which drive the numbers."""
     image = state.image
     if image is None:
         return ""
-    if state.selection is None:
-        return "原图"
-    if not state.selection:
+    canvas = _layer_text(image, state.selection, original="原图")
+    numbers = _layer_text(image, state.readout, original="原始值")
+    return f"画面 {canvas} · 数字 {numbers}"
+
+
+def _layer_text(
+    image: LoadedImage,
+    chosen: frozenset[BitChoice] | None,
+    *,
+    original: str,
+) -> str:
+    if chosen is None:
+        return original
+    if not chosen:
         return "未选择"
     parts: list[str] = []
     for plane in image.planes:
-        for bit in bits_for(state.selection, plane.name):
+        for bit in bits_for(chosen, plane.name):
             parts.append(f"{plane.name}{bit}")
-    return "选择 " + " ".join(parts)
+    return " ".join(parts)
 
 
 def build_readout(state: ViewerState) -> Readout | None:
@@ -58,7 +70,7 @@ def build_readout(state: ViewerState) -> Readout | None:
         dx=dx,
         dy=dy,
         channels=_channels(state),
-        summary=selection_summary(state),
+        summary=layer_summary(state),
     )
 
 
@@ -80,7 +92,7 @@ def _channels(state: ViewerState) -> tuple[ChannelReadout, ...]:
     cursor = state.cursor
     if image is None or cursor is None:
         return ()
-    chosen = effective_selection(image, state.selection)
+    chosen = effective_selection(image, state.readout)
     if not chosen:
         return ()
     cursor_row = tuple(int(sample) for sample in image.samples[cursor.y, cursor.x])

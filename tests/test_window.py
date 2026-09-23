@@ -35,7 +35,7 @@ def test_click_sets_the_anchor(qtbot: QtBot, rgb_png: Path) -> None:
     window.open_path(rgb_png)
     qtbot.mouseClick(window.canvas, Qt.MouseButton.LeftButton, pos=QPoint(1, 1))
     assert window.store.state.anchor == PixelCoord(0, 0)
-    zoom = window.store.state.zoom
+    zoom = int(window.store.state.zoom)
     qtbot.mouseMove(window.canvas, QPoint(zoom + 1, 1))
     assert window.store.state.cursor == PixelCoord(1, 0)
 
