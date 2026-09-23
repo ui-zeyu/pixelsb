@@ -27,7 +27,7 @@ EXTRACT_SEARCH_TIP = "搜索十六进制或 ASCII"
 FILTER_PLACEHOLDER = "显示过滤器：rect(50, 50, 100, 100) and B >= R"
 FILTER_ERROR = "过滤错误："
 FILTER_TIP = (
-    "显示过滤器同时作用于画布和提取。字段：left、top（别名 x、y）与各通道名；"
+    "显示过滤器同时作用于画布和提取。字段：left、top 与各通道名（R、G、B…）；"
     "rect(x0, y0, x1, y1) 选中矩形（含边界）。"
     "例：rect(50, 50, 100, 100) and B >= R and B >= G、50 <= left <= 100。"
     "⌘F 聚焦，回车应用并回到画布，留空即不过滤。"

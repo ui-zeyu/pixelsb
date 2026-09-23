@@ -1,9 +1,9 @@
 """tshark-style display filter over pixel fields, compiled to vector operations.
 
-Fields: ``left`` / ``top`` (aliases ``x`` / ``y``) and channel names. Channel
-values are the current selection masked onto each plane; channels without any
-selected bit read as 0. The expression is parsed with :mod:`ast` and every node
-is compiled into a numpy closure — strings are never evaluated.
+Fields: ``left``, ``top``, and the channel names. Channel values are the current
+selection masked onto each plane; channels without any selected bit read as 0.
+The expression is parsed with :mod:`ast` and every node is compiled into a numpy
+closure — strings are never evaluated.
 """
 
 import ast
@@ -53,14 +53,12 @@ _COMPARISONS: dict[type[ast.cmpop], CompareOp] = {
 
 
 def field_names(planes: tuple[SamplePlane, ...]) -> dict[str, str]:
-    """Lowercase alias -> key in the field environment. Names are case-insensitive."""
-    names = {
-        "left": "left",
-        "x": "left",
-        "top": "top",
-        "y": "top",
-        "up": "top",
-    }
+    """Lowercase field name -> key in the field environment.
+
+    The names are ``left``, ``top``, and the channel names; matching ignores
+    case, so ``b`` and ``B`` are the same field.
+    """
+    names = {"left": "left", "top": "top"}
     for plane in planes:
         names.setdefault(plane.name.lower(), plane.name)
     return names

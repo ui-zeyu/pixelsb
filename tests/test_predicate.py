@@ -33,10 +33,16 @@ def test_arithmetic_and_chained_comparison() -> None:
     assert _match("not (R > 0)").tolist() == [[False, True], [False, True]]
 
 
-def test_coordinates_and_aliases() -> None:
+def test_coordinates_cover_both_axes() -> None:
     assert _match("left == 0 and top == 1").tolist() == [[False, False], [True, False]]
-    assert _match("x == 1 and y == 0").tolist() == [[False, True], [False, False]]
     assert _match("left >= 1").tolist() == [[False, True], [False, True]]
+    assert _match("top == 0").tolist() == [[True, True], [False, False]]
+
+
+def test_removed_aliases_are_unknown_fields() -> None:
+    for expression in ("x == 1", "y == 0", "up == 1"):
+        with pytest.raises(PredicateError, match="未知字段"):
+            compile_filter(expression, planes_rgb())
 
 
 def test_channel_values_follow_the_selection() -> None:
@@ -90,10 +96,6 @@ def test_rect_errors_are_clear() -> None:
         _match("rect(left, 0, 1, 1)")
 
 
-def test_up_is_an_alias_for_top() -> None:
-    assert _match("up == 1").tolist() == [[False, False], [True, True]]
-
-
 def test_errors_name_the_problem() -> None:
     with pytest.raises(PredicateError, match="语法错误"):
         compile_filter("B >=", planes_rgb())
@@ -107,9 +109,9 @@ def test_errors_name_the_problem() -> None:
         compile_filter("[R] == 1", planes_rgb())
 
 
-def test_field_names_list_aliases_and_planes() -> None:
+def test_field_names_hold_one_name_per_field() -> None:
     names = field_names(planes_rgb())
-    assert names["x"] == "left"
-    assert names["y"] == "top"
-    assert names["up"] == "top"
+    assert set(names.values()) == {"left", "top", "R", "G", "B"}
     assert names["b"] == "B"
+    assert "x" not in names
+    assert "up" not in names
