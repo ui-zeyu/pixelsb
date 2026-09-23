@@ -55,6 +55,33 @@ def test_channel_values_follow_the_selection() -> None:
     assert _match("B == 0", None).tolist() == [[False, False], [False, True]]
 
 
+def test_raw_attribute_ignores_the_selection() -> None:
+    low_bit = frozenset({BitChoice("B", 0)})
+    assert _match("B == 0", low_bit).all()
+    assert _match("B.raw == 50", low_bit).tolist() == [[True, False], [False, False]]
+    assert _match("B.raw == 0", low_bit).tolist() == [[False, False], [False, True]]
+    assert _match("B.raw == 50", frozenset()).tolist() == [[True, False], [False, False]]
+    assert _match("B.raw == 50").tolist() == [[True, False], [False, False]]
+
+
+def test_bits_attribute_matches_the_bare_name() -> None:
+    low_bit = frozenset({BitChoice("B", 0)})
+    assert _match("B.bits == B", low_bit).all()
+    assert _match("B.RAW >= 200", low_bit).tolist() == [[False, True], [False, False]]
+    assert _match("B.raw > B.bits", low_bit).tolist() == [[True, True], [True, False]]
+
+
+def test_identifier_errors_name_the_problem() -> None:
+    with pytest.raises(PredicateError, match="属性只能是"):
+        compile_filter("B.value > 0", planes_rgb())
+    with pytest.raises(PredicateError, match="没有属性"):
+        compile_filter("left.raw == 0", planes_rgb())
+    with pytest.raises(PredicateError, match="未知字段"):
+        compile_filter("A.raw == 0", planes_rgb())
+    with pytest.raises(PredicateError, match="不支持的表达式元素"):
+        compile_filter("R.raw.raw == 1", planes_rgb())
+
+
 def test_identifiers_are_case_insensitive() -> None:
     assert _match("b >= r and b >= g").tolist() == [[False, True], [True, False]]
 

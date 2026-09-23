@@ -1,10 +1,11 @@
 """tshark-style display filter over pixel fields, compiled to vector operations.
 
 Fields: ``left``, ``top``, ``right``, ``bottom`` (a pixel occupies
-``[left, right) x [top, bottom)``), and the channel names. Channel values are the
-current selection masked onto each plane; channels without any selected bit read
-as 0. The expression is parsed with :mod:`ast` and every node is compiled into a
-numpy closure — strings are never evaluated.
+``[left, right) x [top, bottom)``), and the channel names. A bare channel name is
+the current selection masked onto the plane, and channels without any selected bit
+read as 0; ``R.raw`` is the channel as stored, ``R.bits`` spells the selection
+value out. The expression is parsed with :mod:`ast` and every node is compiled
+into a numpy closure — strings are never evaluated.
 """
 
 import ast
@@ -27,6 +28,10 @@ type CompareOp = Callable[[Value, Value], Value]
 
 _RECT = "rect"
 _RECT_EDGES = ("left", "top", "right", "bottom")
+_BITS = "bits"
+_RAW = "raw"
+# Attributes a channel name accepts: the selection value, and the stored value.
+_CHANNEL_ATTRIBUTES = (_BITS, _RAW)
 
 
 class PredicateError(Exception):
@@ -55,15 +60,22 @@ _COMPARISONS: dict[type[ast.cmpop], CompareOp] = {
 
 
 def field_names(planes: tuple[SamplePlane, ...]) -> dict[str, str]:
-    """Lowercase field name -> key in the field environment.
+    """Lowercase field name -> key prefix in the field environment.
 
     The names are ``left``, ``top``, ``right``, ``bottom``, and the channel
-    names; matching ignores case, so ``b`` and ``B`` are the same field.
+    names; matching ignores case, so ``b`` and ``B`` are the same field. Channel
+    values come in two flavours, named by their attribute (see
+    :func:`_value_key`).
     """
     names = {"left": "left", "top": "top", "right": "right", "bottom": "bottom"}
     for plane in planes:
         names.setdefault(plane.name.lower(), plane.name)
     return names
+
+
+def _value_key(plane: str, attribute: str) -> str:
+    """Environment key for one flavour of a channel value, e.g. ``B.raw``."""
+    return f"{plane}.{attribute}"
 
 
 class Filter:
@@ -103,11 +115,10 @@ def _compile_node(node: ast.expr, names: dict[str, str]) -> Evaluator:
             constant = np.asarray(value)
             return lambda _env: constant
         case ast.Name():
-            canonical = names.get(node.id.lower())
-            if canonical is None:
-                available = ", ".join(sorted(set(names.values())))
-                raise PredicateError(f"未知字段：{node.id}（可用：{available}）")
+            canonical = _canonical_name(node.id, names)
             return lambda env: env[canonical]
+        case ast.Attribute(value=ast.Name(id=field), attr=attribute):
+            return _compile_attribute(field, attribute, names)
         case ast.UnaryOp(op=ast.Not(), operand=operand):
             inner = _compile_node(operand, names)
             return lambda env: np.logical_not(inner(env))
@@ -134,6 +145,28 @@ def _compile_node(node: ast.expr, names: dict[str, str]) -> Evaluator:
             raise PredicateError(f"不支持的函数调用（可用：{_RECT}(x0, y0, x1, y1)）")
         case _:
             raise PredicateError(f"不支持的表达式元素：{type(node).__name__}")
+
+
+def _canonical_name(field: str, names: dict[str, str]) -> str:
+    """The field's canonical name, or a clear error naming the alternatives."""
+    canonical = names.get(field.lower())
+    if canonical is None:
+        available = ", ".join(sorted(set(names.values())))
+        raise PredicateError(f"未知字段：{field}（可用：{available}）")
+    return canonical
+
+
+def _compile_attribute(field: str, attribute: str, names: dict[str, str]) -> Evaluator:
+    """A channel attribute: ``R.raw`` (as stored) or ``R.bits`` (the selection)."""
+    canonical = _canonical_name(field, names)
+    if canonical in _RECT_EDGES:
+        raise PredicateError(f"字段 {canonical} 没有属性")
+    lowered = attribute.lower()
+    if lowered not in _CHANNEL_ATTRIBUTES:
+        options = "、".join(_CHANNEL_ATTRIBUTES)
+        raise PredicateError(f"字段 {canonical} 的属性只能是 {options}（收到：{attribute}）")
+    key = _value_key(canonical, lowered)
+    return lambda env: env[key]
 
 
 def _rect_bounds(
@@ -229,19 +262,28 @@ def _field_values(
         "bottom": top + np.uint32(1),
     }
     for plane in image.planes:
-        values[plane.name] = _plane_values(image.samples, plane, chosen)
+        channel = _raw_values(image.samples, plane)
+        selected = _selected_values(channel, plane.name, chosen)
+        values[plane.name] = selected
+        values[_value_key(plane.name, _BITS)] = selected
+        values[_value_key(plane.name, _RAW)] = channel
     return values
 
 
-def _plane_values(
-    samples: SampleArray,
-    plane: SamplePlane,
+def _raw_values(samples: SampleArray, plane: SamplePlane) -> Value:
+    """The channel exactly as stored, ignoring the bit selection."""
+    return samples[:, :, plane.index].astype(np.uint32)
+
+
+def _selected_values(
+    channel: Value,
+    plane: str,
     chosen: frozenset[BitChoice] | None,
 ) -> Value:
-    channel = samples[:, :, plane.index].astype(np.uint32)
+    """The channel masked onto the selected bits; no selected bit reads as 0."""
     if chosen is None:
         return channel
-    bits = bits_for(chosen, plane.name)
+    bits = bits_for(chosen, plane)
     if not bits:
         return np.zeros(channel.shape, dtype=np.uint32)
     if len(bits) == 1:
