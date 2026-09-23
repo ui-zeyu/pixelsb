@@ -56,7 +56,7 @@ class Inspector(QWidget):
         self._extract_view.setReadOnly(True)
         extract_font = QFont()
         extract_font.setStyleHint(QFont.StyleHint.Monospace)
-        extract_font.setFamilies(["Menlo", "monospace"])
+        extract_font.setFamilies(["Menlo", "Consolas"])
         self._extract_view.setFont(extract_font)
         self._extract_view.setMinimumHeight(180)
 
@@ -123,7 +123,7 @@ class Inspector(QWidget):
         match: NDArray[np.bool_] | None,
     ) -> None:
         """Re-extract only when the image, the selection, or the filter changed."""
-        key = None if image is None else (id(image), chosen, expression)
+        key = None if image is None else (image, chosen, expression)
         if key == self._extract_key:
             return
         self._extract_key = key

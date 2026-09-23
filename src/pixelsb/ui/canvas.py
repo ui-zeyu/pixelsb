@@ -97,10 +97,12 @@ class ImageCanvas(QWidget):
             self._cache_key = None
             self._target = QSize(320, 240)
         else:
-            key = (id(image), state.selection, state.filter_expr)
+            # The image object itself is the identity: id() values get recycled
+            # after the previous image is freed, which would hit a stale cache.
+            key = (image, state.selection, state.filter_expr)
             if key != self._cache_key:
                 rgb = render_rgb(image, state.selection)
-                if match is not None:
+                if match is not None and match.shape == rgb.shape[:2]:
                     rgb[~match] //= _DIM_DIVISOR
                 self._rgb = rgb
                 self._image = qimage_from_rgb(rgb)
@@ -168,13 +170,19 @@ class ImageCanvas(QWidget):
 
     def paintEvent(self, event: QPaintEvent) -> None:
         painter = QPainter(self)
+        try:
+            self._paint(painter, event)
+        finally:
+            # Never leave an active painter behind, even if drawing raises.
+            painter.end()
+
+    def _paint(self, painter: QPainter, event: QPaintEvent) -> None:
         painter.fillRect(event.rect(), _BACKGROUND)
         qimage = self._image
         image = self._state.image
         if qimage is None or image is None:
             painter.setPen(QColor("#9a9a9a"))
             painter.drawText(event.rect(), Qt.AlignmentFlag.AlignCenter, text.CANVAS_HINT)
-            painter.end()
             return
         zoom = self._state.zoom
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
@@ -190,7 +198,6 @@ class ImageCanvas(QWidget):
             _draw_marker(painter, self._state.anchor, _ANCHOR, zoom, inset=0)
             _draw_marker(painter, self._state.cursor, _CURSOR, zoom, inset=0)
         self._draw_labels(painter, self._state, source, zoom)
-        painter.end()
 
     def _draw_labels(
         self,
@@ -199,45 +206,57 @@ class ImageCanvas(QWidget):
         source: QRectF,
         zoom: float,
     ) -> None:
-        template = widest_text(state)
-        font = _label_font(template, zoom)
-        if font is None or self._rgb is None:
+        rgb = self._rgb
+        image = state.image
+        font = _label_font(widest_text(state), zoom)
+        if font is None or rgb is None or image is None:
             return
-        x0 = int(source.x())
-        y0 = int(source.y())
-        columns = int(source.width())
-        rows = int(source.height())
-        texts = region_texts(state, x0, y0, x0 + columns, y0 + rows)
+        height, width = rgb.shape[:2]
+        # Labels, colors, and the match mask are all clipped to the same bounds,
+        # so they cannot disagree even if a cached buffer lags behind the state.
+        x0 = max(int(source.x()), 0)
+        y0 = max(int(source.y()), 0)
+        x1 = min(x0 + int(source.width()), width, image.width)
+        y1 = min(y0 + int(source.height()), height, image.height)
+        columns = x1 - x0
+        rows = y1 - y0
+        if columns <= 0 or rows <= 0:
+            return
+        texts = region_texts(state, x0, y0, x1, y1)
         if not any(texts):
             return
-        region = self._rgb[y0 : y0 + rows, x0 : x0 + columns].astype(np.uint32)
+        region = rgb[y0:y1, x0:x1].astype(np.uint32)
         bright = (region * _LUMA_WEIGHTS).sum(axis=-1) > _LUMA_THRESHOLD
         match = self._match
+        if match is not None and match.shape != (height, width):
+            match = None
         painter.setFont(font)
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
         # The font is fitted to the template, so labels never leave their cell:
         # one clip for the whole visible area, no per-cell save/restore.
         painter.save()
-        painter.setClipRect(QRectF(x0 * zoom, y0 * zoom, columns * zoom, rows * zoom))
-        pen: QColor | None = None
-        for index, label in enumerate(texts):
-            if not label:
-                continue
-            column, row = divmod(index, columns)
-            if match is not None and not match[y0 + row, x0 + column]:
-                continue
-            rect = QRectF(
-                (x0 + column) * zoom,
-                (y0 + row) * zoom,
-                zoom,
-                zoom,
-            )
-            main = _DARK_TEXT if bright[row, column] else _LIGHT_TEXT
-            if main is not pen:
-                painter.setPen(main)
-                pen = main
-            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, label)
-        painter.restore()
+        try:
+            painter.setClipRect(QRectF(x0 * zoom, y0 * zoom, columns * zoom, rows * zoom))
+            pen: QColor | None = None
+            for index, label in enumerate(texts):
+                if not label:
+                    continue
+                row, column = cell_of(index, columns)
+                if match is not None and not match[y0 + row, x0 + column]:
+                    continue
+                rect = QRectF(
+                    (x0 + column) * zoom,
+                    (y0 + row) * zoom,
+                    zoom,
+                    zoom,
+                )
+                main = _DARK_TEXT if bright[row, column] else _LIGHT_TEXT
+                if main is not pen:
+                    painter.setPen(main)
+                    pen = main
+                painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, label)
+        finally:
+            painter.restore()
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         if self._panning:
@@ -377,7 +396,7 @@ def _label_font(template: str, zoom: float) -> QFont | None:
     longest = max(lines, key=len)
     font = QFont()
     font.setStyleHint(QFont.StyleHint.Monospace)
-    font.setFamilies(["Menlo", "monospace"])
+    font.setFamilies(["Menlo", "Consolas"])
     size = font_pixel_size(zoom, template)
     while size >= 1:
         font.setPixelSize(size)
@@ -389,6 +408,11 @@ def _label_font(template: str, zoom: float) -> QFont | None:
             return font if size >= MIN_FONT else None
         size -= 1
     return None
+
+
+def cell_of(index: int, columns: int) -> tuple[int, int]:
+    """Row-major ``(row, column)`` of the index-th label in a ``columns``-wide block."""
+    return divmod(index, columns)
 
 
 def _visible_rects(

@@ -397,7 +397,7 @@ class MainWindow(QMainWindow):
         image = state.image
         if image is None or not state.filter_expr.strip():
             return None, None
-        key = (state.filter_expr, id(image), state.selection)
+        key = (state.filter_expr, image, state.selection)
         if self._match_key == key:
             return self._match, self._match_error
         self._match_key = key
