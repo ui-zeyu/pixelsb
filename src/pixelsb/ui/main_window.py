@@ -133,6 +133,14 @@ class MainWindow(QMainWindow):
         if (
             event.type() == QEvent.Type.KeyPress
             and isinstance(event, QKeyEvent)
+            and watched is self._filter_edit
+            and event.key() == Qt.Key.Key_Escape
+        ):
+            self._clear_filter()
+            return True
+        if (
+            event.type() == QEvent.Type.KeyPress
+            and isinstance(event, QKeyEvent)
             and not isinstance(watched, _TEXT_INPUTS)
             and self._should_handle_keys()
             and self._handle_key(event)
@@ -304,6 +312,8 @@ class MainWindow(QMainWindow):
             or application.activeModalWidget() is not None
         ):
             return False
+        if isinstance(self.focusWidget(), _TEXT_INPUTS):
+            return False
         active = application.activeWindow()
         return active is None or active is self
 
@@ -419,10 +429,16 @@ class MainWindow(QMainWindow):
         return match, self._match_error
 
     def _commit_filter(self) -> None:
-        """Enter applies the filter right away and hands the keyboard back to the canvas."""
+        """Enter applies the filter right away and keeps the caret in the box."""
         self._filter_timer.stop()
         self._apply_filter_text()
-        self.canvas.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def _clear_filter(self) -> None:
+        """Esc clears the filter and hands the keyboard back to the canvas."""
+        self._filter_timer.stop()
+        self._filter_edit.clear()
+        self._apply_filter_text()
+        self.canvas.setFocus(Qt.FocusReason.ShortcutFocusReason)
 
     def _apply_filter_text(self) -> None:
         expression = self._filter_edit.text()

@@ -64,36 +64,45 @@ def test_bare_numeric_result_is_read_as_non_zero() -> None:
     assert _match("B").tolist() == [[True, True], [True, False]]
 
 
-def test_rect_selects_an_inclusive_rectangle() -> None:
-    assert _match("rect(0, 1, 0, 1)").tolist() == [[False, False], [True, False]]
-    assert _match("rect(0, 0, 1, 0)").tolist() == [[True, True], [False, False]]
-    assert _match("rect(0, 0, 5, 5)").all()
+def test_rect_selects_a_box() -> None:
+    assert _match("rect(0, 0, 1, 1)").tolist() == [[True, False], [False, False]]
+    assert _match("rect(0, 1, 1, 2)").tolist() == [[False, False], [True, False]]
+    assert _match("rect(0, 0, 2, 2)").all()
     assert not _match("rect(2, 2, 3, 3)").any()
 
 
 def test_rect_swaps_bounds_and_combines_with_conditions() -> None:
-    assert _match("rect(1, 0, 1, 0)").tolist() == [[False, True], [False, False]]
-    assert _match("rect(0, 0, 0, 0) or rect(1, 1, 1, 1)").tolist() == [
+    assert _match("rect(1, 0, 2, 1)").tolist() == [[False, True], [False, False]]
+    assert _match("rect(0, 0, 1, 1) or rect(1, 1, 2, 2)").tolist() == [
         [True, False],
         [False, True],
     ]
-    assert _match("rect(0, 0, 1, 1) and B >= R and B >= G").tolist() == [
+    assert _match("rect(0, 0, 2, 2) and B >= R and B >= G").tolist() == [
         [False, True],
         [True, False],
     ]
-    assert _match("rect(0, 0, 0, 1) and B >= R and B >= G").tolist() == [
+    assert _match("rect(0, 0, 1, 2) and B >= R and B >= G").tolist() == [
         [False, False],
         [True, False],
     ]
 
 
 def test_rect_edges_can_be_named() -> None:
-    positional = "rect(0, 1, 1, 1)"
-    named = "rect(left=0, top=1, right=1, bottom=1)"
-    assert _match(named).tolist() == _match(positional).tolist()
-    assert _match(named).tolist() == [[False, False], [True, True]]
-    swapped = _match("rect(left=1, top=1, right=0, bottom=1)")
-    assert swapped.tolist() == [[False, False], [True, True]]
+    positional = _match("rect(0, 1, 1, 2)")
+    named = _match("rect(left=0, top=1, right=1, bottom=2)")
+    assert named.tolist() == positional.tolist()
+    assert named.tolist() == [[False, False], [True, False]]
+    swapped = _match("rect(left=1, top=2, right=0, bottom=1)")
+    assert swapped.tolist() == [[False, False], [True, False]]
+
+
+def test_edge_fields_match_the_rect_form() -> None:
+    assert _match("right == 1").tolist() == [[True, False], [True, False]]
+    assert _match("bottom == 2").tolist() == [[False, False], [True, True]]
+    edges = "left >= 1 and right <= 2 and top >= 0 and bottom <= 1"
+    assert _match(edges).tolist() == _match("rect(1, 0, 2, 1)").tolist()
+    assert _match("0 <= left <= 0").tolist() == [[True, False], [True, False]]
+    assert not _match("50 <= left <= 100").any()
 
 
 def test_rect_errors_are_clear() -> None:
@@ -126,7 +135,8 @@ def test_errors_name_the_problem() -> None:
 
 def test_field_names_hold_one_name_per_field() -> None:
     names = field_names(planes_rgb())
-    assert set(names.values()) == {"left", "top", "R", "G", "B"}
+    assert set(names.values()) == {"left", "top", "right", "bottom", "R", "G", "B"}
     assert names["b"] == "B"
     assert "x" not in names
     assert "up" not in names
+    assert "bottom" in names

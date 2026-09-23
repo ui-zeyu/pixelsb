@@ -1,9 +1,10 @@
 """tshark-style display filter over pixel fields, compiled to vector operations.
 
-Fields: ``left``, ``top``, and the channel names. Channel values are the current
-selection masked onto each plane; channels without any selected bit read as 0.
-The expression is parsed with :mod:`ast` and every node is compiled into a numpy
-closure — strings are never evaluated.
+Fields: ``left``, ``top``, ``right``, ``bottom`` (a pixel occupies
+``[left, right) x [top, bottom)``), and the channel names. Channel values are the
+current selection masked onto each plane; channels without any selected bit read
+as 0. The expression is parsed with :mod:`ast` and every node is compiled into a
+numpy closure — strings are never evaluated.
 """
 
 import ast
@@ -56,10 +57,10 @@ _COMPARISONS: dict[type[ast.cmpop], CompareOp] = {
 def field_names(planes: tuple[SamplePlane, ...]) -> dict[str, str]:
     """Lowercase field name -> key in the field environment.
 
-    The names are ``left``, ``top``, and the channel names; matching ignores
-    case, so ``b`` and ``B`` are the same field.
+    The names are ``left``, ``top``, ``right``, ``bottom``, and the channel
+    names; matching ignores case, so ``b`` and ``B`` are the same field.
     """
-    names = {"left": "left", "top": "top"}
+    names = {"left": "left", "top": "top", "right": "right", "bottom": "bottom"}
     for plane in planes:
         names.setdefault(plane.name.lower(), plane.name)
     return names
@@ -167,7 +168,7 @@ def _rect_bounds(
 
 
 def _compile_rect(bounds: list[Evaluator]) -> Evaluator:
-    """The inclusive rectangle; swapped edges are normalized."""
+    """The box [left, right) x [top, bottom), matching the four edge fields."""
 
     def evaluate(env: FieldEnv) -> Value:
         x0, y0, x1, y1 = (_scalar(bound(env)) for bound in bounds)
@@ -175,9 +176,9 @@ def _compile_rect(bounds: list[Evaluator]) -> Evaluator:
             x0, x1 = x1, x0
         if y0 > y1:
             y0, y1 = y1, y0
-        left = env["left"]
-        top = env["top"]
-        return (left >= x0) & (left <= x1) & (top >= y0) & (top <= y1)
+        return (
+            (env["left"] >= x0) & (env["right"] <= x1) & (env["top"] >= y0) & (env["bottom"] <= y1)
+        )
 
     return evaluate
 
@@ -218,9 +219,14 @@ def _field_values(
     chosen: frozenset[BitChoice] | None,
 ) -> FieldEnv:
     height, width = image.height, image.width
+    left = np.arange(width, dtype=np.uint32)[None, :]
+    top = np.arange(height, dtype=np.uint32)[:, None]
+    # A pixel occupies [left, right) x [top, bottom), so its far edges are +1.
     values: FieldEnv = {
-        "left": np.arange(width, dtype=np.uint32)[None, :],
-        "top": np.arange(height, dtype=np.uint32)[:, None],
+        "left": left,
+        "top": top,
+        "right": left + np.uint32(1),
+        "bottom": top + np.uint32(1),
     }
     for plane in image.planes:
         values[plane.name] = _plane_values(image.samples, plane, chosen)

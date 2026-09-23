@@ -83,6 +83,26 @@ def test_bad_filter_shows_an_error_and_keeps_the_image(
     assert window.store.state.filter_expr == "A > 0"
 
 
+def test_filter_box_typing_and_focus_flow(qtbot: QtBot, rgb_png: Path) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.open_path(rgb_png)
+    edit = window._filter_edit
+    edit.setFocus()
+    qtbot.keyClicks(edit, "B >= R")
+    assert edit.text() == "B >= R"
+    qtbot.keyClick(edit, Qt.Key.Key_Return)
+    assert window.store.state.filter_expr == "B >= R"
+    assert window.focusWidget() is edit
+    qtbot.keyClicks(edit, " and 0 <= top")
+    qtbot.keyClick(edit, Qt.Key.Key_Return)
+    assert window.store.state.filter_expr == "B >= R and 0 <= top"
+    qtbot.keyClick(edit, Qt.Key.Key_Escape)
+    assert window.store.state.filter_expr == ""
+    assert window.focusWidget() is window.canvas
+
+
 def test_typing_in_the_filter_box_keeps_its_keys(qtbot: QtBot, rgb_png: Path) -> None:
     from pixelsb.domain.transitions import set_zoom
 
