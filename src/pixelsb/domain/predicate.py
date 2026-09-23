@@ -25,6 +25,7 @@ type CompareOp = Callable[[Value, Value], Value]
 
 
 _RECT = "rect"
+_RECT_EDGES = ("left", "top", "right", "bottom")
 
 
 class PredicateError(Exception):
@@ -124,20 +125,49 @@ def _compile_node(node: ast.expr, names: dict[str, str]) -> Evaluator:
             operands = [_compile_node(left, names)]
             operands.extend(_compile_node(item, names) for item in comparators)
             return _compile_compare(ops, operands)
-        case ast.Call(func=ast.Name(id=name), args=call_args, keywords=[]):
+        case ast.Call(func=ast.Name(id=name), args=call_args, keywords=call_keywords):
             if name.lower() != _RECT:
                 raise PredicateError(f"不支持的函数：{name}（可用：{_RECT}）")
-            if len(call_args) != 4:
-                raise PredicateError(f"{_RECT} 需要 4 个参数：x0, y0, x1, y1")
-            return _compile_rect([_compile_node(item, names) for item in call_args])
+            return _compile_rect(_rect_bounds(call_args, call_keywords, names))
         case ast.Call():
             raise PredicateError(f"不支持的函数调用（可用：{_RECT}(x0, y0, x1, y1)）")
         case _:
             raise PredicateError(f"不支持的表达式元素：{type(node).__name__}")
 
 
+def _rect_bounds(
+    args: list[ast.expr],
+    keywords: list[ast.keyword],
+    names: dict[str, str],
+) -> list[Evaluator]:
+    """Four rectangle edges, given either positionally or by name."""
+    if keywords:
+        if args:
+            raise PredicateError(f"{_RECT} 不能混用位置参数和命名参数")
+        provided: dict[str, ast.expr] = {}
+        for keyword in keywords:
+            if keyword.arg is None or keyword.arg not in _RECT_EDGES:
+                received = keyword.arg or "**"
+                raise PredicateError(
+                    f"{_RECT} 的参数名只能是 {'、'.join(_RECT_EDGES)}（收到：{received}）"
+                )
+            provided[keyword.arg] = keyword.value
+        missing = [edge for edge in _RECT_EDGES if edge not in provided]
+        if missing:
+            raise PredicateError(f"{_RECT} 缺少参数：{'、'.join(missing)}")
+        ordered = [provided[edge] for edge in _RECT_EDGES]
+    else:
+        if len(args) != 4:
+            raise PredicateError(
+                f"{_RECT} 需要 4 个坐标：{_RECT}(x0, y0, x1, y1) "
+                f"或 {_RECT}(left=, top=, right=, bottom=)"
+            )
+        ordered = list(args)
+    return [_compile_node(item, names) for item in ordered]
+
+
 def _compile_rect(bounds: list[Evaluator]) -> Evaluator:
-    """``rect(x0, y0, x1, y1)``: the inclusive rectangle, swapped bounds allowed."""
+    """The inclusive rectangle; swapped edges are normalized."""
 
     def evaluate(env: FieldEnv) -> Value:
         x0, y0, x1, y1 = (_scalar(bound(env)) for bound in bounds)

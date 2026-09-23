@@ -87,13 +87,28 @@ def test_rect_swaps_bounds_and_combines_with_conditions() -> None:
     ]
 
 
+def test_rect_edges_can_be_named() -> None:
+    positional = "rect(0, 1, 1, 1)"
+    named = "rect(left=0, top=1, right=1, bottom=1)"
+    assert _match(named).tolist() == _match(positional).tolist()
+    assert _match(named).tolist() == [[False, False], [True, True]]
+    swapped = _match("rect(left=1, top=1, right=0, bottom=1)")
+    assert swapped.tolist() == [[False, False], [True, True]]
+
+
 def test_rect_errors_are_clear() -> None:
-    with pytest.raises(PredicateError, match="4 个参数"):
+    with pytest.raises(PredicateError, match="4 个坐标"):
         compile_filter("rect(0, 0, 1)", planes_rgb())
     with pytest.raises(PredicateError, match="不支持的函数"):
         compile_filter("circle(0, 0, 1, 1)", planes_rgb())
     with pytest.raises(PredicateError, match="标量"):
         _match("rect(left, 0, 1, 1)")
+    with pytest.raises(PredicateError, match="不能混用"):
+        compile_filter("rect(0, 0, right=1, bottom=1)", planes_rgb())
+    with pytest.raises(PredicateError, match="参数名只能是"):
+        compile_filter("rect(left=0, top=0, right=1, width=1)", planes_rgb())
+    with pytest.raises(PredicateError, match="缺少参数"):
+        compile_filter("rect(left=0, top=0, right=1)", planes_rgb())
 
 
 def test_errors_name_the_problem() -> None:
