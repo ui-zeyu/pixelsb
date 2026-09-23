@@ -1,11 +1,22 @@
 """Bit selection for both layers, the layer switch, and the extract panel."""
 
 import re
+from math import ceil
 
 import numpy as np
 from numpy.typing import NDArray
-from PySide6.QtCore import Signal
-from PySide6.QtGui import QColor, QFont, QSyntaxHighlighter, QTextCharFormat, QTextDocument
+from PySide6.QtCore import QRect, QRectF, Qt, Signal
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QFontMetricsF,
+    QPainter,
+    QPaintEvent,
+    QResizeEvent,
+    QSyntaxHighlighter,
+    QTextCharFormat,
+    QTextDocument,
+)
 from PySide6.QtWidgets import (
     QCheckBox,
     QFrame,
@@ -18,12 +29,23 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from pixelsb.domain.extract import extract_bytes, filter_extract, format_extract
+from pixelsb.domain.extract import (
+    ASCII_START,
+    BYTES_PER_ROW,
+    HEX_WIDTH,
+    ExtractRow,
+    extract_bytes,
+    filter_extract,
+    format_extract,
+)
 from pixelsb.domain.models import BitChoice, LoadedImage, ViewerState
 from pixelsb.domain.selection import all_bits, effective_selection
 from pixelsb.ui import text, theme
 from pixelsb.ui.bits import BitMatrix
 from pixelsb.ui.text import readout_text
+
+_GUTTER_PAD = 10
+_HEADER_GAP = 3
 
 
 class Inspector(QWidget):
@@ -59,16 +81,14 @@ class Inspector(QWidget):
         self._detach.toggled.connect(self.detached_toggled.emit)
 
         self._extract_key: tuple[object, ...] | None = None
-        self._extract_lines: list[str] = []
+        self._extract_rows: tuple[ExtractRow, ...] = ()
         self._extract_search = QLineEdit()
         self._extract_search.setPlaceholderText(text.EXTRACT_SEARCH_TIP)
         self._extract_search.setFixedHeight(theme.CONTROL_HEIGHT)
         self._extract_search.textChanged.connect(lambda _text: self._refresh_extract_view())
         self._extract_note = _caption(text.EXTRACT_NOTE)
         self._extract_note.setWordWrap(True)
-        self._extract_view = QPlainTextEdit()
-        self._extract_view.setReadOnly(True)
-        self._extract_view.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self._extract_view = ExtractView()
         self._extract_view.setMinimumHeight(180)
         extract_font = QFont()
         extract_font.setStyleHint(QFont.StyleHint.Monospace)
@@ -169,39 +189,186 @@ class Inspector(QWidget):
             return
         self._extract_key = key
         data = b"" if image is None else extract_bytes(image, chosen, match)
-        self._extract_lines = format_extract(data)
+        self._extract_rows = tuple(format_extract(data))
         self._refresh_extract_view()
 
     def _refresh_extract_view(self) -> None:
-        lines = filter_extract(self._extract_lines, self._extract_search.text())
-        self._extract_view.setPlainText("\n".join(lines))
+        rows = filter_extract(list(self._extract_rows), self._extract_search.text())
+        self._extract_view.set_rows(rows)
 
     def detail_text(self) -> str:
         return readout_text(self._state)
 
 
-class ExtractHighlighter(QSyntaxHighlighter):
-    """Colors the offset, hex, and ASCII columns of the extract view."""
+class ExtractView(QPlainTextEdit):
+    """Read-only byte dump whose offsets sit in a painted gutter.
 
-    _DATA_LINE = re.compile(r"[0-9a-f]{8}  ")
-    _OFFSET_WIDTH = 8
-    _HEX_START = 10
-    _HEX_WIDTH = 47
-    _ASCII_START = 59
+    The document holds the hex and ASCII columns only, so selecting and copying
+    never picks up an offset; the gutter and the column header are chrome the
+    mouse cannot reach.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setReadOnly(True)
+        self.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self._rows: tuple[ExtractRow, ...] = ()
+        self._gutter_width = 0
+        self._header_height = 0
+        self._gutter = _OffsetGutter(self)
+        self._header = _ColumnHeader(self)
+        self._gutter.resize(0, 0)  # nothing to paint until the first rows arrive
+        self._header.resize(0, 0)
+        self.updateRequest.connect(self._on_update_request)
+        for bar in (self.verticalScrollBar(), self.horizontalScrollBar()):
+            # A scrollbar that appears shrinks the viewport, so the chrome moves.
+            bar.rangeChanged.connect(lambda _low, _high: self._place_chrome())
+        self.verticalScrollBar().valueChanged.connect(lambda _value: self._gutter.update())
+        self.horizontalScrollBar().valueChanged.connect(lambda _value: self._header.update())
+
+    def set_rows(self, rows: list[ExtractRow]) -> None:
+        self._rows = tuple(rows)
+        self.setPlainText("\n".join(row.text for row in self._rows))
+        self._gutter_width = self._measure_gutter()
+        self._header_height = self._measure_header()
+        self.setViewportMargins(self._gutter_width, self._header_height, 0, 0)
+        self._place_chrome()
+        self._gutter.update()
+        self._header.update()
+
+    def offset_text(self, block_number: int) -> str:
+        """The gutter label for a document block; empty for note rows."""
+        if 0 <= block_number < len(self._rows):
+            return self._rows[block_number].offset_text
+        return ""
+
+    def header_text(self) -> str:
+        """The column ruler, aligned with the hex columns by construction."""
+        ruler = " ".join(f"{index:02x}" for index in range(BYTES_PER_ROW))
+        return f"{ruler}  {text.EXTRACT_ASCII}"
+
+    @property
+    def gutter_width(self) -> int:
+        """Width of the offset column, which the header shares."""
+        return self._gutter_width
+
+    def header_origin(self) -> float:
+        """Where the header text starts, in header coordinates."""
+        margin = self.document().documentMargin() - self.horizontalScrollBar().value()
+        return margin + self._gutter_width
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self._place_chrome()
+
+    def _measure_gutter(self) -> int:
+        digits = max(
+            (len(row.offset_text) for row in self._rows if row.offset is not None),
+            default=0,
+        )
+        advance = QFontMetricsF(self.font()).horizontalAdvance("0")
+        return ceil(advance * max(digits, 8)) + _GUTTER_PAD
+
+    def _measure_header(self) -> int:
+        return ceil(QFontMetricsF(self.font()).height()) + _HEADER_GAP
+
+    def _place_chrome(self) -> None:
+        viewport = self.viewport().geometry()
+        self._gutter.setGeometry(
+            viewport.left() - self._gutter_width,
+            viewport.top(),
+            self._gutter_width,
+            viewport.height(),
+        )
+        self._header.setGeometry(
+            viewport.left() - self._gutter_width,
+            viewport.top() - self._header_height,
+            self._gutter_width + viewport.width(),
+            self._header_height,
+        )
+
+    def _on_update_request(self, rect: QRect, dy: int) -> None:
+        if dy:
+            self._gutter.scroll(0, dy)
+        else:
+            self._gutter.update(0, rect.y(), self._gutter.width(), rect.height())
+
+
+class _OffsetGutter(QWidget):
+    """Left margin of the dump: the byte offset of every visible row."""
+
+    def __init__(self, editor: ExtractView) -> None:
+        super().__init__(editor)
+        self._editor = editor
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        painter = QPainter(self)
+        painter.fillRect(event.rect(), QColor(theme.FIELD))
+        painter.setPen(QColor(theme.TEXT_MUTED))
+        height = QFontMetricsF(self.font()).height()
+        width = self.width() - _GUTTER_PAD
+        block = self._editor.firstVisibleBlock()
+        top = (
+            self._editor.blockBoundingGeometry(block).translated(self._editor.contentOffset()).top()
+        )
+        bottom = top + self._editor.blockBoundingRect(block).height()
+        while block.isValid() and top <= event.rect().bottom():
+            if block.isVisible() and bottom >= event.rect().top():
+                label = self._editor.offset_text(block.blockNumber())
+                if label:
+                    painter.drawText(
+                        QRectF(0, top, width, height),
+                        int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter),
+                        label,
+                    )
+            block = block.next()
+            top = bottom
+            bottom = top + self._editor.blockBoundingRect(block).height()
+
+
+class _ColumnHeader(QWidget):
+    """Top margin of the dump: byte column numbers and the ASCII label."""
+
+    def __init__(self, editor: ExtractView) -> None:
+        super().__init__(editor)
+        self._editor = editor
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        painter = QPainter(self)
+        painter.fillRect(event.rect(), QColor(theme.FIELD))
+        painter.setPen(QColor(theme.HAIRLINE))
+        painter.drawLine(0, self.height() - 1, self.width(), self.height() - 1)
+        painter.setPen(QColor(theme.TEXT_MUTED))
+        flags = int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        painter.drawText(
+            QRectF(0, 0, self._editor.gutter_width - _GUTTER_PAD, self.height()),
+            flags,
+            text.EXTRACT_OFFSET,
+        )
+        origin = self._editor.header_origin()
+        painter.drawText(
+            QRectF(origin, 0, max(self.width() - origin, 0.0), self.height()),
+            int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
+            self._editor.header_text(),
+        )
+
+
+class ExtractHighlighter(QSyntaxHighlighter):
+    """Colors the hex and ASCII columns of the extract view."""
+
+    _HEX_BYTE = re.compile(r"[0-9a-f]{2}")
 
     def __init__(self, document: QTextDocument) -> None:
         super().__init__(document)
-        self._offset = _char_format(theme.TEXT_MUTED)
         self._hex = _char_format(theme.TEXT)
         self._ascii = _char_format(theme.TEXT_MUTED)
 
     def highlightBlock(self, line: str) -> None:
-        if not self._DATA_LINE.match(line):
+        if not self._HEX_BYTE.match(line):
             return
-        self.setFormat(0, self._OFFSET_WIDTH, self._offset)
-        self.setFormat(self._HEX_START, self._HEX_WIDTH, self._hex)
-        if len(line) > self._ASCII_START:
-            self.setFormat(self._ASCII_START, len(line) - self._ASCII_START, self._ascii)
+        self.setFormat(0, HEX_WIDTH, self._hex)
+        if len(line) > ASCII_START:
+            self.setFormat(ASCII_START, len(line) - ASCII_START, self._ascii)
 
 
 def _char_format(color: str) -> QTextCharFormat:

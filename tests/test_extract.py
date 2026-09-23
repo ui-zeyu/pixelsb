@@ -39,30 +39,40 @@ def test_extract_only_packs_the_matching_pixels() -> None:
     assert extract_bytes(image, chosen, none_match) == b""
 
 
-def test_format_rows_show_offset_hex_and_ascii() -> None:
+def test_format_rows_keep_the_offset_beside_the_text() -> None:
     data = b"MZ\x00" + bytes(range(3, 20))
-    lines = format_extract(data)
-    assert lines[0].startswith("00000000  4d 5a 00 03 04")
-    assert "  MZ.." in lines[0]
-    assert lines[1].startswith("00000010")
+    rows = format_extract(data)
+    assert rows[0].offset == 0
+    assert rows[0].offset_text == "00000000"
+    assert rows[0].text.startswith("4d 5a 00 03 04")
+    assert "  MZ.." in rows[0].text
+    assert "00000000" not in rows[0].text
+    assert rows[1].offset == 16
+    assert rows[1].offset_text == "00000010"
 
 
 def test_format_pads_the_last_row_and_handles_empty() -> None:
-    lines = format_extract(b"\x01")
-    assert lines[0].startswith("00000000  01")
-    assert lines[0].endswith(".")
-    assert format_extract(b"") == ["（无数据）"]
+    rows = format_extract(b"\x01")
+    assert rows[0].offset_text == "00000000"
+    assert rows[0].text.startswith("01")
+    assert rows[0].text.endswith(".")
+    empty = format_extract(b"")
+    assert [row.text for row in empty] == ["（无数据）"]
+    assert empty[0].offset is None
+    assert empty[0].offset_text == ""
 
 
 def test_format_truncates_with_a_note() -> None:
-    lines = format_extract(bytes(256), limit=4)
-    assert len(lines) == 5
-    assert lines[3].startswith("00000030")
-    assert lines[4] == "…已截断，共 256 字节"
+    rows = format_extract(bytes(256), limit=4)
+    assert len(rows) == 5
+    assert rows[3].offset_text == "00000030"
+    assert rows[4].offset is None
+    assert rows[4].text == "…已截断，共 256 字节"
 
 
-def test_filter_matches_hex_or_ascii_case_insensitive() -> None:
-    lines = format_extract(b"flag{abc}" + bytes([0xDE]) * 8)
-    assert filter_extract(lines, "flag") == lines[:1]
-    assert filter_extract(lines, "de") == lines
-    assert filter_extract(lines, "zzz") == []
+def test_filter_matches_hex_ascii_or_offset() -> None:
+    rows = format_extract(b"flag{abc}" + bytes([0xDE]) * 8)
+    assert filter_extract(rows, "flag") == rows[:1]
+    assert filter_extract(rows, "de") == rows
+    assert filter_extract(rows, "00000010") == rows[1:]
+    assert filter_extract(rows, "zzz") == []

@@ -26,3 +26,16 @@ def rgb_png(tmp_path: Path) -> Path:
     path = tmp_path / "rgb.png"
     image.save(path)
     return path
+
+
+@pytest.fixture
+def extract_png(tmp_path: Path) -> Path:
+    """8x4 RGB: 96 bytes, six dump rows of 16.
+
+    Bits pack with the first extracted bit in the MSB, so these sample values
+    read back as the ASCII bytes ``41 42 43`` -- "ABC" -- over and over.
+    """
+    image = Image.new("RGB", (8, 4), (0x82, 0x42, 0xC2))
+    path = tmp_path / "extract.png"
+    image.save(path)
+    return path
