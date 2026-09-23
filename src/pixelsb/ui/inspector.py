@@ -114,11 +114,13 @@ class Inspector(QWidget):
         image: LoadedImage | None,
         chosen: frozenset[BitChoice] | None,
     ) -> None:
+        """Re-extract only when the image or the selection changed."""
         key = None if image is None else (id(image), chosen)
-        if key != self._extract_key:
-            self._extract_key = key
-            data = b"" if image is None else extract_bytes(image, chosen)
-            self._extract_lines = format_extract(data)
+        if key == self._extract_key:
+            return
+        self._extract_key = key
+        data = b"" if image is None else extract_bytes(image, chosen)
+        self._extract_lines = format_extract(data)
         self._refresh_extract_view()
 
     def _refresh_extract_view(self) -> None:

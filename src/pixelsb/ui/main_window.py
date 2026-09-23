@@ -350,7 +350,8 @@ class MainWindow(QMainWindow):
         self._status.setText(status_text(state))
         image = state.image
         title = text.APP_NAME if image is None else f"{image.path.name} — {text.APP_NAME}"
-        self.setWindowTitle(title)
+        if self.windowTitle() != title:
+            self.setWindowTitle(title)
 
     def _sync_controls(self, state: ViewerState) -> None:
         image = state.image

@@ -1,6 +1,7 @@
 """Zoomable image canvas. One image pixel maps to ``zoom`` logical pixels."""
 
 import math
+from functools import lru_cache
 
 import numpy as np
 from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, Signal
@@ -204,11 +205,15 @@ class ImageCanvas(QWidget):
         bright = (region * _LUMA_WEIGHTS).sum(axis=-1) > _LUMA_THRESHOLD
         painter.setFont(font)
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+        # The font is fitted to the template, so labels never leave their cell:
+        # one clip for the whole visible area, no per-cell save/restore.
+        painter.save()
+        painter.setClipRect(QRectF(x0 * zoom, y0 * zoom, columns * zoom, rows * zoom))
+        pen: QColor | None = None
         for index, label in enumerate(texts):
             if not label:
                 continue
-            column = index % columns
-            row = index // columns
+            column, row = divmod(index, columns)
             rect = QRectF(
                 (x0 + column) * zoom,
                 (y0 + row) * zoom,
@@ -216,11 +221,11 @@ class ImageCanvas(QWidget):
                 zoom,
             )
             main = _DARK_TEXT if bright[row, column] else _LIGHT_TEXT
-            painter.save()
-            painter.setClipRect(rect.adjusted(1, 1, -1, -1))
-            painter.setPen(main)
+            if main is not pen:
+                painter.setPen(main)
+                pen = main
             painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, label)
-            painter.restore()
+        painter.restore()
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         if self._panning:
@@ -352,6 +357,7 @@ class ImageCanvas(QWidget):
         return pixel_at(point.x(), point.y(), self._state.zoom, image.width, image.height)
 
 
+@lru_cache(maxsize=64)
 def _label_font(template: str, zoom: float) -> QFont | None:
     if not label_fits(zoom, template):
         return None
