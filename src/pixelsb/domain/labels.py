@@ -15,7 +15,7 @@ from pixelsb.domain.models import (
     ValueMode,
     ViewerState,
 )
-from pixelsb.domain.selection import bits_for, effective_selection, mask_of
+from pixelsb.domain.selection import bits_for, effective_selection, mask_of, number_bits
 
 LABEL_PAD = 2
 FONT_FILL = 0.72
@@ -70,7 +70,7 @@ def region_texts(state: ViewerState, x0: int, y0: int, x1: int, y1: int) -> list
     height = y1 - y0
     if width <= 0 or height <= 0:
         return []
-    chosen = effective_selection(image, state.readout)
+    chosen = effective_selection(image, number_bits(state))
     if not chosen:
         return [""] * (width * height)
     offset = state.value_mode is ValueMode.OFFSET and state.anchor is not None
@@ -130,7 +130,7 @@ def widest_text(state: ViewerState) -> str:
     image = state.image
     if image is None:
         return ""
-    chosen = effective_selection(image, state.readout)
+    chosen = effective_selection(image, number_bits(state))
     if not chosen:
         return ""
     offset = state.value_mode is ValueMode.OFFSET and state.anchor is not None

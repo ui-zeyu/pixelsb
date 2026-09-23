@@ -18,10 +18,12 @@ ZOOM_IN = "+"
 ZOOM_OUT = "−"
 ZOOM_FIT = "适配"
 ZOOM_RESET = "1:1"
+DETACH = "分离"
 CANVAS_LAYER = "画面"
 NUMBER_LAYER = "数字"
 READOUT_RESET = "原始值"
-CHANNEL_TIP = "单击选整条通道"
+CHANNEL_TIP = "勾选整条通道"
+COLUMN_TIP = "勾选整列"
 VALUE = "数值"
 DECIMAL = "十进制"
 HEX = "十六进制"
@@ -46,21 +48,24 @@ IMAGE_FILTER = (
 )
 ZOOM_TIP = "拖动缩放。⌘滚轮和 +、- 也可以"
 ZOOM_RESET_TIP = "按原始像素大小显示（1 倍）"
+DETACH_TIP = "勾选后画面与数字各自勾选；默认同步"
 READOUT_RESET_TIP = "数字层回到原始通道值"
 FORMAT_TIP = "F 在十进制、十六进制、二进制之间切换"
 VALUE_MODE_TIP = "O 切换绝对值与相对锚点"
 MATRIX_TIP = (
-    "上面的格子决定画面显示哪些位，下面的格子决定像素上的数字由哪些位组成"
-    "（默认显示原始通道值）。单击通道字母选整条通道。⌘、Ctrl 或 Shift 加单击＝只看这一位。"
+    "勾选位来组合画面和数字。勾选「分离」后，画面格与数字格各自控制，"
+    "数字默认显示原始通道值。行首、列首的复选框选整行或整列。"
+    "⌘、Ctrl 或 Shift 加单击＝只看这一位。"
 )
 SHORTCUT_HELP = """⌘O    打开
 方向键    移动光标 1 像素
 Shift+方向键    移动 8 像素
 单击图像    设置锚点
-左键单击位    勾选或取消画面位
-右键单击位    勾选或取消数字层
-右键通道字母    选整条通道
-⌘/Shift+左键    只看这一位
+左键拖动    平移
+单击位    勾选或取消这一位
+行首 / 列首复选框    选整行或整列
+⌘/Shift+单击    只看这一位
+分离    画面与数字各自勾选
 Esc    清除锚点
 空格拖拽、中键拖拽    平移
 ⌘滚轮、+、-    缩放

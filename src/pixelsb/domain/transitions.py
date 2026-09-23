@@ -13,7 +13,12 @@ from pixelsb.domain.models import (
     ViewerState,
     ensure_inside,
 )
-from pixelsb.domain.selection import all_bits, lsb_bits, stored_selection
+from pixelsb.domain.selection import (
+    all_bits,
+    effective_selection,
+    lsb_bits,
+    stored_selection,
+)
 
 _FORMATS = (DisplayFormat.DECIMAL, DisplayFormat.HEX, DisplayFormat.BINARY)
 
@@ -36,6 +41,7 @@ def open_image(
         selection=None,
         focus=BitChoice(image.planes[0].name, 0),
         readout=None,
+        detached=state.detached,
         value_format=state.value_format,
         value_mode=state.value_mode,
         zoom=chosen,
@@ -156,6 +162,38 @@ def _stored_readout(
     return chosen
 
 
+def toggle_channel(state: ViewerState, name: str) -> ViewerState:
+    """Toggle every bit of one channel in the canvas layer."""
+    image = _image(state)
+    try:
+        sample_plane = image.plane(name)
+    except KeyError as exc:
+        raise ValueError(f"unknown plane: {name}") from exc
+    channel_bits = frozenset(BitChoice(name, bit) for bit in range(sample_plane.bit_depth))
+    updated = effective_selection(image, state.selection) ^ channel_bits
+    return replace(state, selection=stored_selection(image, updated))
+
+
+def toggle_column(state: ViewerState, bit: int) -> ViewerState:
+    """Toggle one bit column across every plane in the canvas layer."""
+    image = _image(state)
+    column = _column(image, bit)
+    updated = effective_selection(image, state.selection) ^ column
+    return replace(state, selection=stored_selection(image, updated))
+
+
+def toggle_readout_column(state: ViewerState, bit: int) -> ViewerState:
+    """Toggle one bit column across every plane in the number layer."""
+    image = _image(state)
+    column = _column(image, bit)
+    updated = effective_readout(state) ^ column
+    return replace(state, readout=_stored_readout(image, updated))
+
+
+def set_detached(state: ViewerState, detached: bool) -> ViewerState:
+    return replace(state, detached=detached)
+
+
 def step_focus_bit(state: ViewerState, delta: int) -> ViewerState:
     image = state.image
     if image is None:
@@ -222,3 +260,7 @@ def _choice(image: LoadedImage, plane: str, bit: int) -> BitChoice:
     if not 0 <= bit < sample_plane.bit_depth:
         raise ValueError(f"bit {bit} is outside 0..{sample_plane.bit_depth - 1}")
     return BitChoice(plane, bit)
+
+
+def _column(image: LoadedImage, bit: int) -> frozenset[BitChoice]:
+    return frozenset(BitChoice(plane.name, bit) for plane in image.planes if bit < plane.bit_depth)

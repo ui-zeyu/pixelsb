@@ -57,8 +57,12 @@ def test_empty_states_have_hints() -> None:
 
 
 def test_plane_selection_keeps_original_numbers_until_the_readout_changes() -> None:
+    from pixelsb.domain.transitions import select_only_readout, set_detached, toggle_readout_bit
+
     state = set_format(set_cursor(_state(), PixelCoord(0, 0)), DisplayFormat.BINARY)
     state = select_only(state, "R", 0)
+    assert cursor_label(state) == "1"
+    state = set_detached(state, True)
     assert cursor_label(state) == "R:11111111\nG:00000000\nB:00000000"
     assert readout_text(state).endswith("画面 R0 · 数字 原始值")
     template = widest_text(state)
@@ -66,8 +70,6 @@ def test_plane_selection_keeps_original_numbers_until_the_readout_changes() -> N
     assert zoom_required(template) == 36
     assert not label_fits(35, template)
     assert label_fits(36, template)
-    from pixelsb.domain.transitions import select_only_readout, toggle_readout_bit
-
     numbers = select_only_readout(state, "R", 0)
     assert cursor_label(numbers) == "1"
     assert readout_text(numbers).endswith("画面 R0 · 数字 R0")

@@ -21,7 +21,7 @@ def run(argv: list[str] | None = None) -> int:
     application.setApplicationName("pixelsb")
     apply_theme(application)
     window = MainWindow()
-    window.show()
+    window.showMaximized()
     if args.path is not None:
         window.open_path(args.path)
     return application.exec()

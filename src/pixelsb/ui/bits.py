@@ -1,12 +1,12 @@
 """Checkbox grid of channel bits. Bit 0 is the rightmost column.
 
-One grid drives the canvas layer, another drives the number layer. Clicking a
-checkbox toggles one bit; clicking a channel letter toggles the whole channel.
+Row and column checkboxes toggle whole channels and bit columns; they show a
+partial state when only part of the group is selected.
 """
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QMouseEvent
-from PySide6.QtWidgets import QCheckBox, QGridLayout, QLabel, QWidget
+from PySide6.QtWidgets import QCheckBox, QGridLayout, QWidget
 
 from pixelsb.domain.models import BitChoice, SamplePlane
 from pixelsb.ui import text
@@ -14,7 +14,8 @@ from pixelsb.ui import text
 
 class BitMatrix(QWidget):
     bit_clicked = Signal(str, int, bool)
-    channel_clicked = Signal(str)
+    channel_toggle = Signal(str, bool)
+    column_toggle = Signal(int, bool)
 
     def __init__(self) -> None:
         super().__init__()
@@ -23,24 +24,37 @@ class BitMatrix(QWidget):
         self._layout.setHorizontalSpacing(2)
         self._layout.setVerticalSpacing(2)
         self._boxes: dict[tuple[str, int], QCheckBox] = {}
-        self._letters: dict[QWidget, str] = {}
+        self._row_boxes: dict[str, QCheckBox] = {}
+        self._col_boxes: dict[int, QCheckBox] = {}
         self._signature: tuple[tuple[str, int], ...] = ()
         self.setToolTip(text.MATRIX_TIP)
 
     def set_layer(
-        self, planes: tuple[SamplePlane, ...], chosen: frozenset[BitChoice] | None
+        self,
+        planes: tuple[SamplePlane, ...],
+        chosen: frozenset[BitChoice] | None,
     ) -> None:
         """Sync the checkboxes. ``chosen is None`` means every bit is checked."""
         signature = tuple((plane.name, plane.bit_depth) for plane in planes)
         if signature != self._signature:
             self._rebuild(planes)
             self._signature = signature
+        if not planes:
+            return
         for (plane, bit), box in self._boxes.items():
             checked = True if chosen is None else BitChoice(plane, bit) in chosen
-            if box.isChecked() != checked:
-                box.blockSignals(True)
-                box.setChecked(checked)
-                box.blockSignals(False)
+            _sync_box(box, checked)
+        for name, box in self._row_boxes.items():
+            plane = next(candidate for candidate in planes if candidate.name == name)
+            members = _members(plane, bit_range(plane), chosen)
+            _sync_group(box, members)
+        for bit, box in self._col_boxes.items():
+            members = [
+                True if chosen is None else BitChoice(plane.name, bit) in chosen
+                for plane in planes
+                if bit < plane.bit_depth
+            ]
+            _sync_group(box, members)
 
     def _rebuild(self, planes: tuple[SamplePlane, ...]) -> None:
         while self._layout.count():
@@ -51,19 +65,28 @@ class BitMatrix(QWidget):
             if widget is not None:
                 widget.deleteLater()
         self._boxes.clear()
-        self._letters.clear()
+        self._row_boxes.clear()
+        self._col_boxes.clear()
         if not planes:
             return
         max_depth = max(plane.bit_depth for plane in planes)
-        for column, bit in enumerate(range(max_depth - 1, -1, -1)):
-            header = QLabel(str(bit))
-            header.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self._layout.addWidget(header, 0, column + 1)
+        for bit in range(max_depth - 1, -1, -1):
+            column = (max_depth - 1 - bit) + 1
+            box = QCheckBox(str(bit))
+            box.setToolTip(f"{text.COLUMN_TIP} bit {bit}")
+            box.clicked.connect(
+                lambda _checked=False, bit=bit: self.column_toggle.emit(bit, _checked)
+            )
+            self._layout.addWidget(box, 0, column)
+            self._col_boxes[bit] = box
         for row, plane in enumerate(planes, start=1):
-            letter = QLabel(plane.name)
-            letter.setToolTip(text.CHANNEL_TIP)
-            self._layout.addWidget(letter, row, 0)
-            self._letters[letter] = plane.name
+            row_box = QCheckBox(plane.name)
+            row_box.setToolTip(text.CHANNEL_TIP)
+            row_box.clicked.connect(
+                lambda _checked=False, name=plane.name: self.channel_toggle.emit(name, _checked)
+            )
+            self._layout.addWidget(row_box, row, 0)
+            self._row_boxes[plane.name] = row_box
             for bit in range(plane.bit_depth):
                 column = (max_depth - 1 - bit) + 1
                 box = QCheckBox()
@@ -76,12 +99,10 @@ class BitMatrix(QWidget):
                 self._boxes[(plane.name, bit)] = box
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
-        if event.button() == Qt.MouseButton.LeftButton:
-            name = self._letters.get(self.childAt(event.position().toPoint()))
-            if name is not None:
-                self.channel_clicked.emit(name)
-                event.accept()
-                return
+        # Swallow clicks on empty grid cells so they do not reach the parent.
+        if self.childAt(event.position().toPoint()) is None:
+            event.accept()
+            return
         super().mousePressEvent(event)
 
     def _emit(self, plane: str, bit: int) -> None:
@@ -97,3 +118,30 @@ class BitMatrix(QWidget):
             )
         )
         self.bit_clicked.emit(plane, bit, exclusive)
+
+
+def bit_range(plane: SamplePlane) -> range:
+    return range(plane.bit_depth)
+
+
+def _members(plane: SamplePlane, bits: range, chosen: frozenset[BitChoice] | None) -> list[bool]:
+    if chosen is None:
+        return [True for _ in bits]
+    return [BitChoice(plane.name, bit) in chosen for bit in bits]
+
+
+def _sync_box(box: QCheckBox, checked: bool) -> None:
+    state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+    if box.checkState() != state:
+        box.setCheckState(state)
+
+
+def _sync_group(box: QCheckBox, members: list[bool]) -> None:
+    if all(members):
+        state = Qt.CheckState.Checked
+    elif any(members):
+        state = Qt.CheckState.PartiallyChecked
+    else:
+        state = Qt.CheckState.Unchecked
+    if box.checkState() != state:
+        box.setCheckState(state)

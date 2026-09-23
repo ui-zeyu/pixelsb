@@ -135,6 +135,7 @@ class ViewerState:
     selection: frozenset[BitChoice] | None = None
     focus: BitChoice | None = None
     readout: frozenset[BitChoice] | None = None
+    detached: bool = False
     value_format: DisplayFormat = DisplayFormat.HEX
     value_mode: ValueMode = ValueMode.ABSOLUTE
     zoom: float = 1.0

@@ -6,7 +6,7 @@ from pixelsb.domain.formatting import format_delta, format_sample
 from pixelsb.domain.geometry import spatial_offset
 from pixelsb.domain.labels import pixel_text, widest_text, zoom_required
 from pixelsb.domain.models import BitChoice, LoadedImage, PixelCoord, SampleOrigin, ViewerState
-from pixelsb.domain.selection import bits_for, effective_selection, shown_channel_value
+from pixelsb.domain.selection import bits_for, effective_selection, number_bits, shown_channel_value
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,7 +92,7 @@ def _channels(state: ViewerState) -> tuple[ChannelReadout, ...]:
     cursor = state.cursor
     if image is None or cursor is None:
         return ()
-    chosen = effective_selection(image, state.readout)
+    chosen = effective_selection(image, number_bits(state))
     if not chosen:
         return ()
     cursor_row = tuple(int(sample) for sample in image.samples[cursor.y, cursor.x])

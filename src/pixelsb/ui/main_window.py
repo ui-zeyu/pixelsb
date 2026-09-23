@@ -14,6 +14,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QFrame,
@@ -55,13 +56,17 @@ from pixelsb.domain.transitions import (
     select_only_readout,
     set_anchor,
     set_cursor,
+    set_detached,
     set_format,
     set_value_mode,
     set_zoom,
     step_focus_bit,
     toggle_bit,
+    toggle_channel,
+    toggle_column,
     toggle_readout_bit,
     toggle_readout_channel,
+    toggle_readout_column,
     toggle_value_mode,
 )
 from pixelsb.io.loading import ImageLoadError, load_image
@@ -169,6 +174,9 @@ class MainWindow(QMainWindow):
     def _build_toolbar(self) -> None:
         toolbar = self.addToolBar("view")
         toolbar.setMovable(False)
+        self._detach = QCheckBox(text.DETACH)
+        self._detach.setToolTip(text.DETACH_TIP)
+        self._detach.toggled.connect(self._on_detached)
         self._zoom_in = QPushButton(text.ZOOM_IN)
         self._zoom_in.setFixedWidth(32)
         self._zoom_in.clicked.connect(_drop_checked(lambda: self._zoom_by(1)))
@@ -198,6 +206,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(8, 4, 8, 4)
         layout.setSpacing(8)
         for label, widget in (
+            ("", self._detach),
             (text.VALUE, self._format_combo),
             ("", self._value_combo),
             ("", self._zoom_out),
@@ -231,8 +240,10 @@ class MainWindow(QMainWindow):
         self.inspector = Inspector()
         self.inspector.bit_clicked.connect(self._on_bit)
         self.inspector.readout_bit_clicked.connect(self._on_readout_bit)
-        self.inspector.channel_clicked.connect(self._select_name)
-        self.inspector.readout_channel_clicked.connect(self._on_readout_channel)
+        self.inspector.channel_toggle.connect(self._on_channel_toggle)
+        self.inspector.readout_channel_toggle.connect(self._on_readout_channel)
+        self.inspector.column_toggle.connect(self._on_column_toggle)
+        self.inspector.readout_column_toggle.connect(self._on_readout_column_toggle)
         self.inspector.original_requested.connect(lambda: self.apply(select_all_bits))
         self.inspector.only_bit_requested.connect(lambda: self.apply(select_focus_only))
         self.inspector.lsbs_requested.connect(lambda: self.apply(select_lsbs))
@@ -373,6 +384,7 @@ class MainWindow(QMainWindow):
         )
         enabled = image is not None
         for widget in (
+            self._detach,
             self._zoom_in,
             self._zoom_out,
             self._zoom_fit,
@@ -383,6 +395,9 @@ class MainWindow(QMainWindow):
         self._zoom_slider.blockSignals(True)
         self._zoom_slider.setValue(round(state.zoom))
         self._zoom_slider.blockSignals(False)
+        self._detach.blockSignals(True)
+        self._detach.setChecked(state.detached)
+        self._detach.blockSignals(False)
         self._clear_anchor.setEnabled(anchor is not None)
 
     def _fill(
@@ -414,8 +429,27 @@ class MainWindow(QMainWindow):
         else:
             self.apply(lambda state: toggle_readout_bit(state, plane, bit))
 
-    def _on_readout_channel(self, name: str) -> None:
+    def _on_readout_channel(self, name: str, checked: bool) -> None:
+        del checked
         self.apply(lambda state: toggle_readout_channel(state, name))
+
+    def _on_channel_toggle(self, name: str, checked: bool) -> None:
+        del checked
+        self.apply(lambda state: toggle_channel(state, name))
+
+    def _on_channel_toggle(self, name: str, _checked: bool) -> None:
+        self.apply(lambda state: toggle_channel(state, name))
+
+    def _on_column_toggle(self, bit: int, _checked: bool) -> None:
+        self.apply(lambda state: toggle_column(state, bit))
+
+    def _on_readout_column_toggle(self, bit: int, _checked: bool) -> None:
+        self.apply(lambda state: toggle_readout_column(state, bit))
+
+    def _on_detached(self, checked: bool) -> None:
+        if checked is self.store.state.detached:
+            return
+        self.apply(lambda state: set_detached(state, checked))
 
     def _select_name(self, name: str) -> None:
         self.apply(lambda state: select_lsb(state, name))

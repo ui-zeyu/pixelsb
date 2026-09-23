@@ -109,6 +109,7 @@ class ImageCanvas(QWidget):
             state.anchor,
             state.selection,
             state.readout,
+            state.detached,
         )
         labels_changed = label_key != self._label_key
         self._label_key = label_key

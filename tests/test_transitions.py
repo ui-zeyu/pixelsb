@@ -112,6 +112,34 @@ def test_readout_layer_defaults_to_the_original_and_toggles() -> None:
     assert len(effective_readout(narrowed)) == 1
 
 
+def test_channel_and_column_toggles_cover_both_layers() -> None:
+    from pixelsb.domain.selection import all_bits
+    from pixelsb.domain.transitions import (
+        set_detached,
+        toggle_channel,
+        toggle_column,
+        toggle_readout_column,
+    )
+
+    image = make_image(np.zeros((1, 1, 3), dtype=np.uint16), planes_rgb())
+    state = open_image(ViewerState(), image)
+    channel = toggle_channel(state, "R")
+    expected = all_bits(image) - {BitChoice("R", bit) for bit in range(8)}
+    assert channel.selection == expected
+    column = toggle_column(channel, 0)
+    expected = expected ^ {BitChoice("R", 0), BitChoice("G", 0), BitChoice("B", 0)}
+    assert column.selection == expected
+    readout_column = toggle_readout_column(column, 1)
+    assert readout_column.readout == all_bits(image) - {
+        BitChoice("R", 1),
+        BitChoice("G", 1),
+        BitChoice("B", 1),
+    }
+    detached = set_detached(readout_column, True)
+    assert detached.detached
+    assert set_detached(detached, False).detached is False
+
+
 def test_clear_anchor_zoom_and_format_cycle() -> None:
     state = open_image(
         ViewerState(), make_image(np.zeros((2, 2, 3), dtype=np.uint16), planes_rgb())
