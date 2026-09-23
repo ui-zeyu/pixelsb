@@ -5,6 +5,7 @@ from pytestqt.qtbot import QtBot
 
 from pixelsb.domain.models import BitChoice, DisplayFormat, PixelCoord
 from pixelsb.domain.transitions import select_only, set_cursor, set_format
+from pixelsb.ui import text
 from pixelsb.ui.main_window import MainWindow
 
 
@@ -129,3 +130,29 @@ def test_arrow_key_moves_the_cursor(qtbot: QtBot, rgb_png: Path) -> None:
     assert window.store.state.cursor == PixelCoord(0, 0)
     qtbot.keyClick(window, Qt.Key.Key_Right)
     assert window.store.state.cursor == PixelCoord(1, 0)
+
+
+def test_panel_and_status_widgets_track_the_state(qtbot: QtBot, rgb_png: Path) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.open_path(rgb_png)
+    assert window._zoom_label.text() == text.zoom_label(window.store.state.zoom)
+    assert "rgb.png" in window._status_info.text()
+    assert window._status_view.text().startswith("光标")
+
+    assert window.inspector._number_matrix.isVisible() is False
+    window.inspector._detach.setChecked(True)
+    assert window.store.state.detached is True
+    assert window.inspector._number_matrix.isVisible() is True
+    window.inspector._detach.setChecked(False)
+    assert window.store.state.detached is False
+
+    window._format_combo.setCurrentIndex(window._format_combo.findData(DisplayFormat.BINARY.value))
+    assert window.store.state.value_format is DisplayFormat.BINARY
+
+    window._filter_edit.setText("B >= R")
+    window._commit_filter()
+    assert window._filter_count.text() == "通过 3/4"
+    assert window._status_view.text().startswith("光标")
+    window.grab()

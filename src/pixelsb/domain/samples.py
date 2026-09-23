@@ -12,8 +12,8 @@ from pixelsb.domain.models import (
 )
 from pixelsb.domain.selection import bits_for, effective_selection, mask_of
 
-_CHECKER_DARK = 32
-_CHECKER_LIGHT = 56
+_CHECKER_DARK = 232
+_CHECKER_LIGHT = 255
 
 
 def bit_plane(
@@ -32,7 +32,7 @@ def bit_plane(
 
 
 def composite_on_checkerboard(rgba: NDArray[np.uint8], cell: int = 8) -> RgbArray:
-    """Composite straight RGBA over a dark checkerboard. Returns HxWx3 uint8."""
+    """Composite straight RGBA over a light checkerboard. Returns HxWx3 uint8."""
     if rgba.ndim != 3 or rgba.shape[2] != 4:
         raise ValueError("expected an HxWx4 array")
     if cell < 1:

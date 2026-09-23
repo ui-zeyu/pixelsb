@@ -18,7 +18,6 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QApplication,
-    QCheckBox,
     QComboBox,
     QFileDialog,
     QFrame,
@@ -34,6 +33,8 @@ from PySide6.QtWidgets import (
     QSplitter,
     QStatusBar,
     QTextEdit,
+    QToolBar,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -73,15 +74,15 @@ from pixelsb.domain.transitions import (
     toggle_readout_bit,
 )
 from pixelsb.io.loading import ImageLoadError, load_image
-from pixelsb.ui import text
+from pixelsb.ui import text, theme
 from pixelsb.ui.canvas import ImageCanvas
 from pixelsb.ui.inspector import Inspector
 from pixelsb.ui.store import Store, Transition
-from pixelsb.ui.text import readout_text, status_text
+from pixelsb.ui.text import readout_text, status_info, status_view
 
 type ErrorReporter = Callable[[str], None]
 
-_FILTER_ERROR_STYLE = "QLineEdit { border: 1px solid #d9534f; }"
+_FILTER_ERROR_STYLE = f"QLineEdit {{ border: 1px solid {theme.DANGER}; }}"
 _TEXT_INPUTS = (QLineEdit, QAbstractSpinBox, QPlainTextEdit, QTextEdit, QComboBox)
 
 
@@ -188,8 +189,19 @@ class MainWindow(QMainWindow):
         help_action.triggered.connect(_drop_checked(self._show_shortcuts))
 
     def _build_toolbar(self) -> None:
-        toolbar = self.addToolBar("view")
+        toolbar = QToolBar("view")
         toolbar.setMovable(False)
+        toolbar.setFloatable(False)
+        self.addToolBar(toolbar)
+        host = QWidget()
+        rows = QVBoxLayout(host)
+        rows.setContentsMargins(0, 0, 0, 0)
+        rows.setSpacing(0)
+        rows.addWidget(self._filter_row())
+        rows.addWidget(self._action_row())
+        toolbar.addWidget(host)
+
+    def _filter_row(self) -> QFrame:
         self._filter_edit = QLineEdit()
         self._filter_edit.setPlaceholderText(text.FILTER_PLACEHOLDER)
         self._filter_edit.setClearButtonEnabled(True)
@@ -202,14 +214,23 @@ class MainWindow(QMainWindow):
         self._filter_timer.timeout.connect(self._apply_filter_text)
         find_shortcut = QShortcut(QKeySequence.StandardKey.Find, self)
         find_shortcut.activated.connect(self._focus_filter)
-        self._detach = QCheckBox(text.DETACH)
-        self._detach.setToolTip(text.DETACH_TIP)
-        self._detach.toggled.connect(self._on_detached)
+        self._filter_count = _muted_label()
+
+        row = _row_frame("filterRow")
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(14, 8, 14, 8)
+        layout.setSpacing(8)
+        layout.addWidget(_muted_label(text.FILTER_LABEL))
+        layout.addWidget(self._filter_edit, 1)
+        layout.addWidget(self._filter_count)
+        return row
+
+    def _action_row(self) -> QFrame:
         self._zoom_in = QPushButton(text.ZOOM_IN)
-        self._zoom_in.setFixedWidth(32)
+        self._zoom_in.setFixedWidth(28)
         self._zoom_in.clicked.connect(_drop_checked(lambda: self._zoom_by(1)))
         self._zoom_out = QPushButton(text.ZOOM_OUT)
-        self._zoom_out.setFixedWidth(32)
+        self._zoom_out.setFixedWidth(28)
         self._zoom_out.clicked.connect(_drop_checked(lambda: self._zoom_by(-1)))
         self._zoom_fit = QPushButton(text.ZOOM_FIT)
         self._zoom_fit.clicked.connect(_drop_checked(self._fit))
@@ -218,35 +239,37 @@ class MainWindow(QMainWindow):
         self._zoom_reset.clicked.connect(_drop_checked(lambda: self._zoom_to(float(MIN_ZOOM))))
         self._zoom_slider = QSlider(Qt.Orientation.Horizontal)
         self._zoom_slider.setRange(int(MIN_ZOOM), int(MAX_ZOOM))
-        self._zoom_slider.setFixedWidth(160)
+        self._zoom_slider.setFixedWidth(150)
         self._zoom_slider.setToolTip(text.ZOOM_TIP)
         self._zoom_slider.valueChanged.connect(self._zoom_to)
+        self._zoom_label = _muted_label()
+        self._zoom_label.setObjectName("zoomLabel")
+        self._zoom_label.setFixedWidth(52)
+        self._zoom_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self._format_combo = _combo(text.FORMAT_TIP)
         self._format_combo.currentIndexChanged.connect(self._on_format)
 
-        host = QWidget()
-        layout = QHBoxLayout(host)
-        layout.setContentsMargins(8, 4, 8, 4)
+        row = _row_frame("actionRow")
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(14, 8, 14, 8)
         layout.setSpacing(8)
-        for label, widget in (
-            ("", self._filter_edit),
-            ("", self._detach),
-            (text.VALUE, self._format_combo),
-            ("", self._zoom_out),
-            ("", self._zoom_slider),
-            ("", self._zoom_in),
-            ("", self._zoom_fit),
-            ("", self._zoom_reset),
+        for widget in (
+            self._zoom_out,
+            self._zoom_slider,
+            self._zoom_in,
+            self._zoom_label,
+            self._zoom_fit,
+            self._zoom_reset,
         ):
-            if label:
-                layout.addWidget(QLabel(label))
             layout.addWidget(widget)
         layout.addStretch(1)
-        layout.addWidget(self._filter_edit, 1)
-        toolbar.addWidget(host)
+        layout.addWidget(_muted_label(text.VALUE))
+        layout.addWidget(self._format_combo)
+        return row
 
     def _build_body(self) -> None:
         self._scroll = QScrollArea()
+        self._scroll.setObjectName("canvasArea")
         self._scroll.setWidgetResizable(False)
         self._scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -268,11 +291,12 @@ class MainWindow(QMainWindow):
         self.inspector.original_requested.connect(lambda: self.apply(select_all_bits))
         self.inspector.lsbs_requested.connect(lambda: self.apply(select_lsbs))
         self.inspector.reset_readout_requested.connect(lambda: self.apply(reset_readout))
+        self.inspector.detached_toggled.connect(self._on_detached)
         inspector_scroll = QScrollArea()
+        inspector_scroll.setObjectName("inspectorArea")
         inspector_scroll.setWidgetResizable(True)
         inspector_scroll.setWidget(self.inspector)
         inspector_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        inspector_scroll.setMinimumWidth(300)
 
         splitter = QSplitter()
         splitter.addWidget(self._scroll)
@@ -280,13 +304,15 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 0)
         splitter.setChildrenCollapsible(False)
-        splitter.setSizes([840, 360])
+        splitter.setSizes([860, 340])
         self.setCentralWidget(splitter)
 
     def _build_statusbar(self) -> None:
-        self._status = QLabel()
+        self._status_info = QLabel()
+        self._status_view = QLabel()
         status = QStatusBar()
-        status.addWidget(self._status, 1)
+        status.addWidget(self._status_info, 1)
+        status.addPermanentWidget(self._status_view)
         self.setStatusBar(status)
 
     def _should_handle_keys(self) -> bool:
@@ -371,20 +397,26 @@ class MainWindow(QMainWindow):
         self._sync_controls(state)
         self.canvas.set_state(state, match)
         self.inspector.set_state(state, match)
-        status = status_text(state)
-        if state.filter_expr.strip():
-            if filter_error is not None:
-                status = f"{status}  {text.FILTER_ERROR}{filter_error}"
-            elif match is not None and state.image is not None:
-                total = state.image.width * state.image.height
-                status = f"{status}  通过 {self._match_passed}/{total} 像素"
-        self._status.setText(status)
-        has_error = bool(state.filter_expr.strip()) and filter_error is not None
+        info = status_info(state)
+        filtering = bool(state.filter_expr.strip())
+        if filtering and filter_error is not None:
+            info = f"{info}  {text.FILTER_ERROR}{filter_error}"
+        self._status_info.setText(info)
+        self._status_view.setText(status_view(state))
+        self._filter_count.setText(self._count_text(state, filter_error))
+        has_error = filtering and filter_error is not None
         self._filter_edit.setStyleSheet(_FILTER_ERROR_STYLE if has_error else "")
         image = state.image
         title = text.APP_NAME if image is None else f"{image.path.name} — {text.APP_NAME}"
         if self.windowTitle() != title:
             self.setWindowTitle(title)
+
+    def _count_text(self, state: ViewerState, filter_error: str | None) -> str:
+        """The pass count at the right end of the filter row, empty when idle."""
+        image = state.image
+        if image is None or not state.filter_expr.strip() or filter_error is not None:
+            return ""
+        return text.filter_count(self._match_passed, image.width * image.height)
 
     def _filter_match(
         self,
@@ -442,6 +474,7 @@ class MainWindow(QMainWindow):
             ),
             state.value_format.value,
         )
+        self._zoom_label.setText(text.zoom_label(state.zoom))
         self._filter_edit.blockSignals(True)
         if self._filter_edit.text() != state.filter_expr:
             self._filter_edit.setText(state.filter_expr)
@@ -450,7 +483,6 @@ class MainWindow(QMainWindow):
         enabled = image is not None
         for widget in (
             self._filter_edit,
-            self._detach,
             self._zoom_in,
             self._zoom_out,
             self._zoom_fit,
@@ -461,9 +493,6 @@ class MainWindow(QMainWindow):
         self._zoom_slider.blockSignals(True)
         self._zoom_slider.setValue(round(state.zoom))
         self._zoom_slider.blockSignals(False)
-        self._detach.blockSignals(True)
-        self._detach.setChecked(state.detached)
-        self._detach.blockSignals(False)
 
     def _fill(
         self, combo: QComboBox, items: Sequence[tuple[str, str]], current: str | None
@@ -631,6 +660,18 @@ def _combo(tip: str) -> QComboBox:
     combo = QComboBox()
     combo.setToolTip(tip)
     return combo
+
+
+def _row_frame(name: str) -> QFrame:
+    frame = QFrame()
+    frame.setObjectName(name)
+    return frame
+
+
+def _muted_label(label: str = "") -> QLabel:
+    widget = QLabel(label)
+    widget.setObjectName("muted")
+    return widget
 
 
 def _application() -> QApplication | None:

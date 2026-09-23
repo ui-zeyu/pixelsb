@@ -4,9 +4,10 @@ import numpy as np
 from PySide6.QtWidgets import QScrollArea
 from pytestqt.qtbot import QtBot
 
-from pixelsb.domain.models import ViewerState
+from pixelsb.domain.models import PixelCoord, ViewerState
 from pixelsb.domain.predicate import compile_filter
-from pixelsb.domain.transitions import open_image, select_only, set_zoom
+from pixelsb.domain.samples import render_rgb
+from pixelsb.domain.transitions import open_image, select_only, set_cursor, set_zoom
 from pixelsb.ui.canvas import ImageCanvas, cell_of
 from tests.support import make_image, planes_rgb
 
@@ -71,6 +72,29 @@ def test_painting_survives_a_lagging_buffer(qtbot: QtBot) -> None:
     assert canvas._rgb is not None
     canvas._rgb = np.ascontiguousarray(canvas._rgb[:5, :7])
     canvas.grab()
+
+
+def test_empty_state_and_cursor_marker_paint(qtbot: QtBot) -> None:
+    canvas = _canvas(qtbot)
+    canvas.set_state(ViewerState())
+    canvas.grab()
+    canvas.set_state(set_cursor(_state_for(_image(6, 6)), PixelCoord(1, 1)))
+    canvas.grab()
+
+
+def test_filtered_pixels_fade_toward_the_canvas(qtbot: QtBot) -> None:
+    canvas = _canvas(qtbot)
+    image = _image(8, 4)
+    state = _state_for(image)
+    match = compile_filter("left < 4", planes_rgb()).evaluate(image, state.selection)
+    canvas.set_state(state, match)
+    rgb = canvas._rgb
+    assert rgb is not None
+    plain = render_rgb(image, state.selection)
+    faded = rgb[0, 5]
+    assert (faded >= plain[0, 5]).all()
+    assert int(faded.min()) > 200
+    assert rgb[0, 1].tolist() == plain[0, 1].tolist()
 
 
 def _state_for(image) -> ViewerState:

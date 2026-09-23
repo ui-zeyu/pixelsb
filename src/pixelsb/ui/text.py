@@ -19,11 +19,14 @@ ZOOM_RESET = "1:1"
 DETACH = "分离"
 CANVAS_LAYER = "画面"
 NUMBER_LAYER = "数字"
+SECTION_BITS = "位选择"
+SECTION_EXTRACT = "提取"
 READOUT_RESET = "原始值"
 CHANNEL_TIP = "勾选整条通道"
 COLUMN_TIP = "勾选整列"
 EXTRACT_NOTE = "提取（按通道顺序、位从低到高，每 8 位拼 1 字节，高位在前）"
 EXTRACT_SEARCH_TIP = "搜索十六进制或 ASCII"
+FILTER_LABEL = "过滤"
 FILTER_PLACEHOLDER = "显示过滤器：rect(left=50, top=50, right=100, bottom=100) and B >= R"
 FILTER_ERROR = "过滤错误："
 FILTER_TIP = (
@@ -45,9 +48,18 @@ def open_failed(detail: str) -> str:
     return f"{OPEN_FAILED}：{detail}"
 
 
+def filter_count(passed: int, total: int) -> str:
+    return f"通过 {passed}/{total}"
+
+
+def zoom_label(zoom: float) -> str:
+    return f"{zoom:g}×"
+
+
 NO_IMAGE = "未打开图像"
 NO_CURSOR = "移动鼠标或方向键查看像素"
 CANVAS_HINT = "打开一张图像，或把文件拖到这里"
+CANVAS_SHORTCUT = "⌘O 选择文件"
 CONVERTED_NOTE = "位平面来自转换后的数据"
 IMAGE_FILTER = (
     "图像 (*.png *.bmp *.gif *.tif *.tiff *.webp *.jpg *.jpeg *.ppm *.pgm *.pbm);;所有文件 (*)"
@@ -100,19 +112,27 @@ def readout_text(state: ViewerState) -> str:
     return "\n".join(lines)
 
 
-def status_text(state: ViewerState) -> str:
+def status_info(state: ViewerState) -> str:
+    """Status bar, left: what is open."""
     image = state.image
     if image is None:
         return NO_IMAGE
     planes = ", ".join(
         f"{plane.name} {plane.bit_depth}bit {ORIGIN_LABEL[plane.origin]}" for plane in image.planes
     )
-    cursor = f"({state.cursor.x}, {state.cursor.y})" if state.cursor is not None else "—"
     note = f"  {CONVERTED_NOTE}" if image.any_converted else ""
-    needed = label_zoom(state)
-    zoom_hint = f"  放到 {needed}× 显示数值" if needed is not None and state.zoom < needed else ""
     return (
         f"{image.path.name}  {image.width}×{image.height}  模式 {image.source_mode}  "
-        f"帧 {image.frame_index + 1}/{image.frame_count}  {planes}  "
-        f"{state.zoom:g}×  光标 {cursor}{note}{zoom_hint}"
+        f"帧 {image.frame_index + 1}/{image.frame_count}  {planes}{note}"
     )
+
+
+def status_view(state: ViewerState) -> str:
+    """Status bar, right: where the cursor is and what zoom would show numbers."""
+    if state.image is None:
+        return ""
+    location = "—" if state.cursor is None else f"({state.cursor.x}, {state.cursor.y})"
+    needed = label_zoom(state)
+    if needed is not None and state.zoom < needed:
+        return f"光标 {location}  放到 {needed}× 显示数值"
+    return f"光标 {location}"

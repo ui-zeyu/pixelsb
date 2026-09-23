@@ -17,7 +17,7 @@ from pixelsb.domain.transitions import (
     set_cursor,
     set_format,
 )
-from pixelsb.ui.text import readout_text, status_text
+from pixelsb.ui.text import readout_text, status_info
 from tests.support import make_image, planes_rgb
 
 _SAMPLES = np.array(
@@ -69,8 +69,8 @@ def test_plane_selection_keeps_original_numbers_until_the_readout_changes() -> N
 
 def test_status_mentions_converted_samples() -> None:
     raw = _state()
-    assert "原始" in status_text(raw)
-    assert "位平面来自转换后的数据" not in status_text(raw)
+    assert "原始" in status_info(raw)
+    assert "位平面来自转换后的数据" not in status_info(raw)
     converted = open_image(
         ViewerState(),
         make_image(
@@ -85,4 +85,4 @@ def test_status_mentions_converted_samples() -> None:
             path=Path("cmyk.tif"),
         ),
     )
-    assert "位平面来自转换后的数据" in status_text(converted)
+    assert "位平面来自转换后的数据" in status_info(converted)

@@ -11,6 +11,9 @@ from PySide6.QtWidgets import QCheckBox, QGridLayout, QWidget
 from pixelsb.domain.models import BitChoice, SamplePlane
 from pixelsb.ui import text
 
+CELL_SIZE = 20
+HEADER_OBJECT = "headerBox"
+
 
 class BitMatrix(QWidget):
     bit_clicked = Signal(str, int, bool)
@@ -21,8 +24,8 @@ class BitMatrix(QWidget):
         super().__init__()
         self._layout = QGridLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
-        self._layout.setHorizontalSpacing(2)
-        self._layout.setVerticalSpacing(2)
+        self._layout.setHorizontalSpacing(3)
+        self._layout.setVerticalSpacing(3)
         self._boxes: dict[tuple[str, int], QCheckBox] = {}
         self._row_boxes: dict[str, QCheckBox] = {}
         self._col_boxes: dict[int, QCheckBox] = {}
@@ -72,7 +75,7 @@ class BitMatrix(QWidget):
         max_depth = max(plane.bit_depth for plane in planes)
         for bit in range(max_depth - 1, -1, -1):
             column = (max_depth - 1 - bit) + 1
-            box = QCheckBox(str(bit))
+            box = _header_box(str(bit))
             box.setToolTip(f"{text.COLUMN_TIP} bit {bit}")
             box.clicked.connect(
                 lambda _checked=False, bit=bit: self.column_toggle.emit(bit, _checked)
@@ -80,7 +83,7 @@ class BitMatrix(QWidget):
             self._layout.addWidget(box, 0, column)
             self._col_boxes[bit] = box
         for row, plane in enumerate(planes, start=1):
-            row_box = QCheckBox(plane.name)
+            row_box = _header_box(plane.name)
             row_box.setToolTip(text.CHANNEL_TIP)
             row_box.clicked.connect(
                 lambda _checked=False, name=plane.name: self.channel_toggle.emit(name, _checked)
@@ -90,7 +93,7 @@ class BitMatrix(QWidget):
             for bit in range(plane.bit_depth):
                 column = (max_depth - 1 - bit) + 1
                 box = QCheckBox()
-                box.setFixedSize(22, 22)
+                box.setFixedSize(CELL_SIZE, CELL_SIZE)
                 box.setToolTip(f"{plane.name} bit {bit}")
                 box.clicked.connect(
                     lambda _checked=False, name=plane.name, bit=bit: self._emit(name, bit)
@@ -130,6 +133,12 @@ def _members(plane: SamplePlane, bits: range, chosen: frozenset[BitChoice] | Non
     return [BitChoice(plane.name, bit) in chosen for bit in bits]
 
 
+def _header_box(label: str) -> QCheckBox:
+    box = QCheckBox(label)
+    box.setObjectName(HEADER_OBJECT)
+    return box
+
+
 def _sync_box(box: QCheckBox, checked: bool) -> None:
     state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
     if box.checkState() != state:
@@ -145,3 +154,14 @@ def _sync_group(box: QCheckBox, members: list[bool]) -> None:
         state = Qt.CheckState.Unchecked
     if box.checkState() != state:
         box.setCheckState(state)
+    _tint_group(box, on=state is not Qt.CheckState.Unchecked)
+
+
+def _tint_group(box: QCheckBox, *, on: bool) -> None:
+    """Color a header box whose whole row or column is switched on."""
+    if box.property("groupOn") == on:
+        return
+    box.setProperty("groupOn", on)
+    style = box.style()
+    style.unpolish(box)
+    style.polish(box)

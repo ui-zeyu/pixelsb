@@ -36,12 +36,14 @@ from pixelsb.domain.models import PixelCoord, RgbArray, ViewerState
 from pixelsb.domain.samples import render_rgb
 from pixelsb.ui import text
 from pixelsb.ui.painting import qimage_from_rgb
+from pixelsb.ui.theme import CANVAS, TEXT, TEXT_MUTED
 
-_BACKGROUND = QColor("#121212")
-_CURSOR = QColor("#ffb000")
-_GRID = QColor(0, 0, 0, 130)
+_BACKGROUND = QColor(CANVAS)
+_CURSOR = QColor("#f59f00")
+_CURSOR_HALO = QColor(255, 255, 255, 200)
+_GRID = QColor(17, 20, 24, 26)
 _DRAG_THRESHOLD = 4
-_DIM_DIVISOR = 12
+_DIM_KEEP = 8
 _DARK_TEXT = QColor("#111111")
 _LIGHT_TEXT = QColor("#f5f5f5")
 _LUMA_WEIGHTS = np.array([2126, 7152, 722], dtype=np.uint32)
@@ -101,7 +103,7 @@ class ImageCanvas(QWidget):
             if key != self._cache_key:
                 rgb = render_rgb(image, state.selection)
                 if match is not None and match.shape == rgb.shape[:2]:
-                    rgb[~match] //= _DIM_DIVISOR
+                    _fade_out(rgb, match)
                 self._rgb = rgb
                 self._image = qimage_from_rgb(rgb)
                 self._cache_key = key
@@ -177,8 +179,7 @@ class ImageCanvas(QWidget):
         qimage = self._image
         image = self._state.image
         if qimage is None or image is None:
-            painter.setPen(QColor("#9a9a9a"))
-            painter.drawText(event.rect(), Qt.AlignmentFlag.AlignCenter, text.CANVAS_HINT)
+            _draw_empty_state(painter, self.rect())
             return
         zoom = self._state.zoom
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
@@ -187,7 +188,7 @@ class ImageCanvas(QWidget):
             painter.drawImage(dest, qimage, source)
         if zoom >= GRID_ZOOM:
             _draw_grid(painter, source, zoom)
-        _draw_marker(painter, self._state.cursor, _CURSOR, zoom)
+        _draw_marker(painter, self._state.cursor, zoom)
         self._draw_labels(painter, self._state, source, zoom)
 
     def _draw_labels(
@@ -434,20 +435,46 @@ def _draw_grid(painter: QPainter, source: QRectF, zoom: float) -> None:
         painter.drawLine(QPointF(left, y), QPointF(right, y))
 
 
+def _fade_out(rgb: RgbArray, match: NDArray[np.bool_]) -> None:
+    """Push the pixels that fail the filter toward the canvas color, in place."""
+    rgb[~match] = 255 - (255 - rgb[~match]) // _DIM_KEEP
+
+
+def _draw_empty_state(painter: QPainter, rect: QRect) -> None:
+    """Two centered lines: what to do, and the shortcut that does it."""
+    font = QFont(painter.font())
+    font.setPixelSize(15)
+    painter.setFont(font)
+    painter.setPen(QColor(TEXT))
+    painter.drawText(_shifted(rect, -18), Qt.AlignmentFlag.AlignCenter, text.CANVAS_HINT)
+    font.setPixelSize(12)
+    painter.setFont(font)
+    painter.setPen(QColor(TEXT_MUTED))
+    painter.drawText(_shifted(rect, 18), Qt.AlignmentFlag.AlignCenter, text.CANVAS_SHORTCUT)
+
+
+def _shifted(rect: QRect, offset: int) -> QRect:
+    return QRect(rect.x(), rect.y() + offset, rect.width(), rect.height())
+
+
 def _draw_marker(
     painter: QPainter,
     coord: PixelCoord | None,
-    color: QColor,
     zoom: float,
 ) -> None:
     if coord is None:
         return
-    pen = QPen(color)
+    rect = QRectF(coord.x * zoom, coord.y * zoom, zoom, zoom)
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    halo = QPen(_CURSOR_HALO)
+    halo.setCosmetic(True)
+    halo.setWidth(3)
+    painter.setPen(halo)
+    painter.drawRect(rect.adjusted(-1, -1, 0, 0))
+    pen = QPen(_CURSOR)
     pen.setCosmetic(True)
     pen.setWidth(2)
     painter.setPen(pen)
-    painter.setBrush(Qt.BrushStyle.NoBrush)
-    rect = QRectF(coord.x * zoom, coord.y * zoom, zoom, zoom)
     painter.drawRect(rect.adjusted(0, 0, -1, -1))
 
 

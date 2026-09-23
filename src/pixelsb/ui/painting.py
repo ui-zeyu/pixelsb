@@ -2,7 +2,7 @@
 
 import numpy as np
 from numpy.typing import NDArray
-from PySide6.QtGui import QColor, QImage
+from PySide6.QtGui import QImage
 
 
 def qimage_from_rgb(array: NDArray[np.uint8]) -> QImage:
@@ -15,9 +15,3 @@ def qimage_from_rgb(array: NDArray[np.uint8]) -> QImage:
     if copied.isNull():
         raise ValueError("could not copy the image buffer")
     return copied
-
-
-def contrast_color(rgb: tuple[int, int, int]) -> QColor:
-    red, green, blue = rgb
-    luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue
-    return QColor("#111111" if luminance > 150 else "#f5f5f5")

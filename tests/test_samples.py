@@ -33,12 +33,12 @@ def test_bit_plane_rejects_a_bit_outside_the_plane() -> None:
 
 def test_checkerboard_composite_uses_integer_alpha() -> None:
     clear = np.zeros((8, 8, 4), dtype=np.uint8)
-    assert composite_on_checkerboard(clear, cell=8)[0, 0].tolist() == [32, 32, 32]
+    assert composite_on_checkerboard(clear, cell=8)[0, 0].tolist() == [232, 232, 232]
 
     wide = np.zeros((1, 16, 4), dtype=np.uint8)
     composed = composite_on_checkerboard(wide, cell=8)
-    assert composed[0, 0].tolist() == [32, 32, 32]
-    assert composed[0, 8].tolist() == [56, 56, 56]
+    assert composed[0, 0].tolist() == [232, 232, 232]
+    assert composed[0, 8].tolist() == [255, 255, 255]
 
     opaque = np.zeros((1, 1, 4), dtype=np.uint8)
     opaque[0, 0] = (255, 0, 0, 255)
@@ -46,7 +46,7 @@ def test_checkerboard_composite_uses_integer_alpha() -> None:
 
     half = np.zeros((1, 1, 4), dtype=np.uint8)
     half[0, 0] = (255, 0, 0, 128)
-    assert composite_on_checkerboard(half, cell=8)[0, 0].tolist() == [143, 15, 15]
+    assert composite_on_checkerboard(half, cell=8)[0, 0].tolist() == [243, 115, 115]
 
 
 def test_original_render_uses_channel_samples_and_one_bit_is_grayscale() -> None:
