@@ -87,8 +87,8 @@ def test_readout_layer_defaults_to_the_original_and_toggles() -> None:
     from pixelsb.domain.transitions import (
         effective_readout,
         select_only_readout,
+        set_readout_channel,
         toggle_readout_bit,
-        toggle_readout_channel,
     )
 
     state = select_only(
@@ -105,37 +105,49 @@ def test_readout_layer_defaults_to_the_original_and_toggles() -> None:
     assert excluded.readout == all_bits(image) - {BitChoice("R", 0)}
     restored = toggle_readout_bit(excluded, "R", 0)
     assert restored.readout is None
-    channel = toggle_readout_channel(state, "G")
+    channel = set_readout_channel(state, "G", on=False)
     assert channel.readout == all_bits(image) - {BitChoice("G", bit) for bit in range(8)}
     narrowed = select_only_readout(state, "G", 0)
     assert narrowed.readout == frozenset({BitChoice("G", 0)})
     assert len(effective_readout(narrowed)) == 1
 
 
-def test_channel_and_column_toggles_cover_both_layers() -> None:
+def test_channel_and_column_group_switches() -> None:
     from pixelsb.domain.selection import all_bits
     from pixelsb.domain.transitions import (
+        set_channel,
+        set_column,
         set_detached,
-        toggle_channel,
-        toggle_column,
-        toggle_readout_column,
+        set_readout_channel,
+        set_readout_column,
     )
 
     image = make_image(np.zeros((1, 1, 3), dtype=np.uint16), planes_rgb())
     state = open_image(ViewerState(), image)
-    channel = toggle_channel(state, "R")
-    expected = all_bits(image) - {BitChoice("R", bit) for bit in range(8)}
-    assert channel.selection == expected
-    column = toggle_column(channel, 0)
-    expected = expected ^ {BitChoice("R", 0), BitChoice("G", 0), BitChoice("B", 0)}
-    assert column.selection == expected
-    readout_column = toggle_readout_column(column, 1)
+    off = set_channel(state, "R", on=False)
+    assert off.selection == all_bits(image) - {BitChoice("R", bit) for bit in range(8)}
+    on = set_channel(off, "R", on=True)
+    assert on.selection is None
+    column = set_column(state, 0, on=False)
+    assert column.selection == all_bits(image) - {
+        BitChoice("R", 0),
+        BitChoice("G", 0),
+        BitChoice("B", 0),
+    }
+    readout_column = set_readout_column(state, 1, on=False)
     assert readout_column.readout == all_bits(image) - {
         BitChoice("R", 1),
         BitChoice("G", 1),
         BitChoice("B", 1),
     }
-    detached = set_detached(readout_column, True)
+    readout_channel = set_readout_channel(readout_column, "R", on=False)
+    assert readout_channel.readout == all_bits(image) - {
+        BitChoice("R", bit) for bit in range(8)
+    } - {
+        BitChoice("G", 1),
+        BitChoice("B", 1),
+    }
+    detached = set_detached(readout_channel, True)
     assert detached.detached
     assert set_detached(detached, False).detached is False
 

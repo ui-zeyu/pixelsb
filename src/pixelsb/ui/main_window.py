@@ -53,18 +53,18 @@ from pixelsb.domain.transitions import (
     select_only,
     select_only_readout,
     set_anchor,
+    set_channel,
+    set_column,
     set_cursor,
     set_detached,
     set_format,
+    set_readout_channel,
+    set_readout_column,
     set_value_mode,
     set_zoom,
     step_focus_bit,
     toggle_bit,
-    toggle_channel,
-    toggle_column,
     toggle_readout_bit,
-    toggle_readout_channel,
-    toggle_readout_column,
     toggle_value_mode,
 )
 from pixelsb.io.loading import ImageLoadError, load_image
@@ -423,29 +423,21 @@ class MainWindow(QMainWindow):
             self.apply(lambda state: toggle_readout_bit(state, plane, bit))
 
     def _on_readout_channel(self, name: str, checked: bool) -> None:
-        del checked
-        self.apply(lambda state: toggle_readout_channel(state, name))
+        self.apply(lambda state: set_readout_channel(state, name, on=checked))
 
     def _on_channel_toggle(self, name: str, checked: bool) -> None:
-        del checked
-        self.apply(lambda state: toggle_channel(state, name))
+        self.apply(lambda state: set_channel(state, name, on=checked))
 
-    def _on_channel_toggle(self, name: str, _checked: bool) -> None:
-        self.apply(lambda state: toggle_channel(state, name))
+    def _on_column_toggle(self, bit: int, checked: bool) -> None:
+        self.apply(lambda state: set_column(state, bit, on=checked))
 
-    def _on_column_toggle(self, bit: int, _checked: bool) -> None:
-        self.apply(lambda state: toggle_column(state, bit))
-
-    def _on_readout_column_toggle(self, bit: int, _checked: bool) -> None:
-        self.apply(lambda state: toggle_readout_column(state, bit))
+    def _on_readout_column_toggle(self, bit: int, checked: bool) -> None:
+        self.apply(lambda state: set_readout_column(state, bit, on=checked))
 
     def _on_detached(self, checked: bool) -> None:
         if checked is self.store.state.detached:
             return
         self.apply(lambda state: set_detached(state, checked))
-
-    def _select_name(self, name: str) -> None:
-        self.apply(lambda state: select_lsb(state, name))
 
     def _on_format(self, index: int) -> None:
         fmt = _enum_at(self._format_combo, index, DisplayFormat)

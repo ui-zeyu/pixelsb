@@ -1,9 +1,19 @@
-"""Bit grids for the canvas / number layers and the preset actions."""
+"""Bit grids for the canvas / number layers, presets, and the extract panel."""
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtGui import QFont
+from PySide6.QtWidgets import (
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPlainTextEdit,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
-from pixelsb.domain.models import ViewerState
+from pixelsb.domain.extract import extract_bytes, filter_extract, format_extract
+from pixelsb.domain.models import BitChoice, LoadedImage, ViewerState
 from pixelsb.domain.selection import all_bits, effective_selection
 from pixelsb.ui import text
 from pixelsb.ui.bits import BitMatrix
@@ -35,6 +45,19 @@ class Inspector(QWidget):
         self._number_matrix.channel_toggle.connect(self.readout_channel_toggle.emit)
         self._number_matrix.column_toggle.connect(self.readout_column_toggle.emit)
 
+        self._extract_key: tuple[object, ...] | None = None
+        self._extract_lines: list[str] = []
+        self._extract_search = QLineEdit()
+        self._extract_search.setPlaceholderText(text.EXTRACT_SEARCH_TIP)
+        self._extract_search.textChanged.connect(lambda _text: self._refresh_extract_view())
+        self._extract_view = QPlainTextEdit()
+        self._extract_view.setReadOnly(True)
+        extract_font = QFont()
+        extract_font.setStyleHint(QFont.StyleHint.Monospace)
+        extract_font.setFamilies(["Menlo", "monospace"])
+        self._extract_view.setFont(extract_font)
+        self._extract_view.setMinimumHeight(180)
+
         presets = QHBoxLayout()
         presets.setContentsMargins(0, 0, 0, 0)
         for label, signal in (
@@ -64,7 +87,9 @@ class Inspector(QWidget):
         layout.addWidget(self._canvas_matrix)
         layout.addWidget(self._number_row)
         layout.addWidget(self._number_matrix)
-        layout.addStretch(1)
+        layout.addWidget(QLabel(text.EXTRACT_NOTE))
+        layout.addWidget(self._extract_search)
+        layout.addWidget(self._extract_view, 1)
         self.setMinimumWidth(280)
 
     def set_state(self, state: ViewerState) -> None:
@@ -82,6 +107,23 @@ class Inspector(QWidget):
         self._canvas_caption.setVisible(detached)
         self._number_row.setVisible(detached)
         self._number_matrix.setVisible(detached)
+        self._sync_extract(image, canvas_bits)
+
+    def _sync_extract(
+        self,
+        image: LoadedImage | None,
+        chosen: frozenset[BitChoice] | None,
+    ) -> None:
+        key = None if image is None else (id(image), chosen)
+        if key != self._extract_key:
+            self._extract_key = key
+            data = b"" if image is None else extract_bytes(image, chosen)
+            self._extract_lines = format_extract(data)
+        self._refresh_extract_view()
+
+    def _refresh_extract_view(self) -> None:
+        lines = filter_extract(self._extract_lines, self._extract_search.text())
+        self._extract_view.setPlainText("\n".join(lines))
 
     def detail_text(self) -> str:
         return readout_text(self._state)
