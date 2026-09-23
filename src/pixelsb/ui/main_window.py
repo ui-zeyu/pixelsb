@@ -255,7 +255,9 @@ class MainWindow(QMainWindow):
         self._zoom_slider.valueChanged.connect(self._on_slider)
         self._zoom_label = _muted_label()
         self._zoom_label.setObjectName("zoomLabel")
-        self._zoom_label.setFixedWidth(44)
+        self._zoom_label.setFixedWidth(
+            52
+        )  # wide enough for the longest label, e.g. 123.46 (times sign)
         self._zoom_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self._format_combo = _combo(text.FORMAT_TIP)
         self._format_combo.currentIndexChanged.connect(self._on_format)

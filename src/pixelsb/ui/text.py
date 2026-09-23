@@ -1,7 +1,11 @@
 """User-visible Chinese copy."""
 
+from decimal import ROUND_HALF_UP, Decimal
+
 from pixelsb.domain.models import SampleOrigin, ViewerState
 from pixelsb.domain.readout import build_readout, label_zoom
+
+_TWO_PLACES = Decimal("0.01")
 
 APP_NAME = "pixelsb"
 FILE_MENU = "文件"
@@ -54,7 +58,9 @@ def filter_count(passed: int, total: int) -> str:
 
 
 def zoom_label(zoom: float) -> str:
-    return f"{zoom:g}×"
+    """The zoom with the times sign, at most two decimals, rounded half up."""
+    value = Decimal(zoom).quantize(_TWO_PLACES, rounding=ROUND_HALF_UP)
+    return f"{value:.2f}".rstrip("0").rstrip(".") + "×"
 
 
 NO_IMAGE = "未打开图像"

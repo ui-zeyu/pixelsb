@@ -17,7 +17,7 @@ from pixelsb.domain.transitions import (
     set_cursor,
     set_format,
 )
-from pixelsb.ui.text import readout_text, status_info
+from pixelsb.ui.text import readout_text, status_info, zoom_label
 from tests.support import make_image, planes_rgb
 
 _SAMPLES = np.array(
@@ -65,6 +65,15 @@ def test_plane_selection_keeps_original_numbers_until_the_readout_changes() -> N
     summary = readout_text(excluded)
     assert "画面 R0 · 数字 R1 R2 R3 R4 R5 R6 R7" in summary
     assert summary.endswith("G6 G7 B0 B1 B2 B3 B4 B5 B6 B7")
+
+
+def test_zoom_label_keeps_two_decimals_at_most() -> None:
+    assert zoom_label(4.833333333333333) == "4.83×"
+    assert zoom_label(23.4567) == "23.46×"
+    assert zoom_label(1.125) == "1.13×"
+    assert zoom_label(127.999) == "128×"
+    assert zoom_label(10.5) == "10.5×"
+    assert zoom_label(2.0) == "2×"
 
 
 def test_status_mentions_converted_samples() -> None:

@@ -156,6 +156,14 @@ def test_the_zoom_slider_spends_equal_travel_per_doubling() -> None:
         assert main_window._slider_zoom(main_window._slider_position(zoom)) == zoom
 
 
+def test_the_zoom_label_fits_the_widest_value(qtbot: QtBot) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window._zoom_label.setText(text.zoom_label(123.4567))
+    assert window._zoom_label.sizeHint().width() <= window._zoom_label.width()
+
+
 def test_the_filter_box_gets_a_light_clear_icon(qtbot: QtBot) -> None:
     window = MainWindow()
     qtbot.addWidget(window)
