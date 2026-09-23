@@ -1,0 +1,55 @@
+[project]
+name = "pixelsb"
+version = "0.1.0"
+description = "像素级图像查看器，用于查看通道数值、锚点偏移和位平面。"
+readme = "README.md"
+authors = [
+    { name = "yuyy", email = "ui.zeyu@gmail.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "numpy>=2.5.3",
+    "pillow>=12.3.0",
+    "pyside6>=6.11.2",
+]
+
+[project.scripts]
+pixelsb = "pixelsb:main"
+
+[build-system]
+requires = ["uv_build>=0.12.18,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-qt>=4.5.0",
+    "ruff>=0.16.8",
+    "ty>=0.0.83",
+]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "N", "PIE", "RET", "PTH"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/pixelsb/ui/**/*.py" = ["N802"]
+"src/pixelsb/ui/text.py" = ["N802", "RUF001"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["pixelsb", "tests"]
+
+[tool.ty.environment]
+python-version = "3.14"
+
+[tool.ty.src]
+include = ["src", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+qt_api = "pyside6"
