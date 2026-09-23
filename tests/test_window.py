@@ -1,11 +1,13 @@
+from itertools import pairwise
 from pathlib import Path
 
 from PySide6.QtCore import QPoint, Qt
+from PySide6.QtWidgets import QToolButton
 from pytestqt.qtbot import QtBot
 
 from pixelsb.domain.models import BitChoice, DisplayFormat, PixelCoord
-from pixelsb.domain.transitions import select_only, set_cursor, set_format
-from pixelsb.ui import text
+from pixelsb.domain.transitions import select_only, set_cursor, set_format, set_zoom
+from pixelsb.ui import main_window, text, theme
 from pixelsb.ui.main_window import MainWindow
 
 
@@ -130,6 +132,76 @@ def test_arrow_key_moves_the_cursor(qtbot: QtBot, rgb_png: Path) -> None:
     assert window.store.state.cursor == PixelCoord(0, 0)
     qtbot.keyClick(window, Qt.Key.Key_Right)
     assert window.store.state.cursor == PixelCoord(1, 0)
+
+
+def test_the_zoom_slider_is_geometric(qtbot: QtBot, rgb_png: Path) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.open_path(rgb_png)
+    window.apply(lambda state: set_zoom(state, 8.0))
+    assert window._zoom_slider.value() == main_window._slider_position(8.0)
+    window._zoom_slider.setValue(main_window._slider_position(16.0))
+    assert window.store.state.zoom == 16.0
+    assert window._zoom_label.text() == text.zoom_label(16.0)
+
+
+def test_the_zoom_slider_spends_equal_travel_per_doubling() -> None:
+    positions = [main_window._slider_position(zoom) for zoom in (1, 2, 4, 8, 16, 32, 64, 128)]
+    assert positions[0] == 0
+    assert positions[-1] == main_window._SLIDER_STEPS
+    gaps = [later - earlier for earlier, later in pairwise(positions)]
+    assert max(gaps) - min(gaps) <= 1
+    for zoom in (1, 2, 3, 5, 17, 100, 128):
+        assert main_window._slider_zoom(main_window._slider_position(zoom)) == zoom
+
+
+def test_the_filter_box_gets_a_light_clear_icon(qtbot: QtBot) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.resize(900, 700)
+    window.show()
+    button = window._filter_edit.findChild(QToolButton)
+    assert button is not None
+    expected = main_window._clear_icon().pixmap(16, 16).toImage()
+    assert button.icon().pixmap(16, 16).toImage() == expected
+    window._filter_edit.setText("B >= R")
+    assert button.isVisible() is True
+
+
+def test_the_clear_icon_is_a_light_cross() -> None:
+    image = main_window._clear_icon().pixmap(32, 32).toImage()
+    opaque = [
+        (color.red() + color.green() + color.blue())
+        for y in range(image.height())
+        for x in range(image.width())
+        if (color := image.pixelColor(x, y)).alpha() > 200
+    ]
+    # A muted gray cross; the style's own clear icon is a near-black disc.
+    assert opaque
+    assert min(opaque) > 250
+    assert image.pixelColor(0, 0).alpha() == 0
+
+
+def test_the_header_rows_share_one_control_height(qtbot: QtBot, rgb_png: Path) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.resize(900, 700)
+    window.show()
+    window.open_path(rgb_png)
+    heights = {
+        window._filter_edit.height(),
+        window._zoom_fit.height(),
+        window._format_combo.height(),
+        window._zoom_slider.height(),
+        window.inspector._extract_search.height(),
+    }
+    assert heights == {theme.CONTROL_HEIGHT}
+    filter_row = window._filter_edit.parentWidget()
+    action_row = window._zoom_fit.parentWidget()
+    assert filter_row is not None
+    assert action_row is not None
+    assert filter_row.height() == action_row.height() == theme.CONTROL_HEIGHT + 16
 
 
 def test_panel_and_status_widgets_track_the_state(qtbot: QtBot, rgb_png: Path) -> None:

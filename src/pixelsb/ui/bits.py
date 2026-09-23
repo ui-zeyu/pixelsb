@@ -154,14 +154,3 @@ def _sync_group(box: QCheckBox, members: list[bool]) -> None:
         state = Qt.CheckState.Unchecked
     if box.checkState() != state:
         box.setCheckState(state)
-    _tint_group(box, on=state is not Qt.CheckState.Unchecked)
-
-
-def _tint_group(box: QCheckBox, *, on: bool) -> None:
-    """Color a header box whose whole row or column is switched on."""
-    if box.property("groupOn") == on:
-        return
-    box.setProperty("groupOn", on)
-    style = box.style()
-    style.unpolish(box)
-    style.polish(box)

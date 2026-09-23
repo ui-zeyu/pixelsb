@@ -3,8 +3,17 @@ from pathlib import Path
 
 import pytest
 from PIL import Image
+from PySide6.QtWidgets import QApplication
+
+from pixelsb.ui import theme
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _themed(qapp: QApplication) -> None:
+    """Every widget test runs under the real stylesheet and style."""
+    theme.apply_theme(qapp)
 
 
 @pytest.fixture

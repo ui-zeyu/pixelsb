@@ -1,18 +1,24 @@
 """Main window: toolbar, canvas, inspector, and keyboard shortcuts."""
 
+import math
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import numpy as np
 from numpy.typing import NDArray
-from PySide6.QtCore import QEvent, QObject, Qt, QTimer
+from PySide6.QtCore import QEvent, QObject, QPointF, QSize, Qt, QTimer
 from PySide6.QtGui import (
     QCloseEvent,
+    QColor,
     QDragEnterEvent,
     QDragMoveEvent,
     QDropEvent,
+    QIcon,
     QKeyEvent,
     QKeySequence,
+    QPainter,
+    QPen,
+    QPixmap,
     QShortcut,
 )
 from PySide6.QtWidgets import (
@@ -34,6 +40,7 @@ from PySide6.QtWidgets import (
     QStatusBar,
     QTextEdit,
     QToolBar,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -84,6 +91,8 @@ type ErrorReporter = Callable[[str], None]
 
 _FILTER_ERROR_STYLE = f"QLineEdit {{ border: 1px solid {theme.DANGER}; }}"
 _TEXT_INPUTS = (QLineEdit, QAbstractSpinBox, QPlainTextEdit, QTextEdit, QComboBox)
+_SLIDER_STEPS = 1000
+_ZOOM_RATIO = MAX_ZOOM / MIN_ZOOM
 
 
 class MainWindow(QMainWindow):
@@ -205,6 +214,8 @@ class MainWindow(QMainWindow):
         self._filter_edit = QLineEdit()
         self._filter_edit.setPlaceholderText(text.FILTER_PLACEHOLDER)
         self._filter_edit.setClearButtonEnabled(True)
+        _lighten_clear_button(self._filter_edit)
+        self._filter_edit.setFixedHeight(theme.CONTROL_HEIGHT)
         self._filter_edit.setToolTip(text.FILTER_TIP)
         self._filter_edit.textEdited.connect(lambda _text: self._filter_timer.start())
         self._filter_edit.returnPressed.connect(self._commit_filter)
@@ -238,14 +249,14 @@ class MainWindow(QMainWindow):
         self._zoom_reset.setToolTip(text.ZOOM_RESET_TIP)
         self._zoom_reset.clicked.connect(_drop_checked(lambda: self._zoom_to(float(MIN_ZOOM))))
         self._zoom_slider = QSlider(Qt.Orientation.Horizontal)
-        self._zoom_slider.setRange(int(MIN_ZOOM), int(MAX_ZOOM))
+        self._zoom_slider.setRange(0, _SLIDER_STEPS)
         self._zoom_slider.setFixedWidth(150)
         self._zoom_slider.setToolTip(text.ZOOM_TIP)
-        self._zoom_slider.valueChanged.connect(self._zoom_to)
+        self._zoom_slider.valueChanged.connect(self._on_slider)
         self._zoom_label = _muted_label()
         self._zoom_label.setObjectName("zoomLabel")
-        self._zoom_label.setFixedWidth(52)
-        self._zoom_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self._zoom_label.setFixedWidth(44)
+        self._zoom_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self._format_combo = _combo(text.FORMAT_TIP)
         self._format_combo.currentIndexChanged.connect(self._on_format)
 
@@ -261,10 +272,12 @@ class MainWindow(QMainWindow):
             self._zoom_fit,
             self._zoom_reset,
         ):
+            widget.setFixedHeight(theme.CONTROL_HEIGHT)
             layout.addWidget(widget)
         layout.addStretch(1)
         layout.addWidget(_muted_label(text.VALUE))
         layout.addWidget(self._format_combo)
+        self._format_combo.setFixedHeight(theme.CONTROL_HEIGHT)
         return row
 
     def _build_body(self) -> None:
@@ -491,7 +504,7 @@ class MainWindow(QMainWindow):
         ):
             widget.setEnabled(enabled)
         self._zoom_slider.blockSignals(True)
-        self._zoom_slider.setValue(round(state.zoom))
+        self._zoom_slider.setValue(_slider_position(state.zoom))
         self._zoom_slider.blockSignals(False)
 
     def _fill(
@@ -574,6 +587,9 @@ class MainWindow(QMainWindow):
         horizontal.setValue(round(image_x * new_zoom - viewport_x))
         vertical.setValue(round(image_y * new_zoom - viewport_y))
 
+    def _on_slider(self, position: int) -> None:
+        self._zoom_to(float(_slider_zoom(position)))
+
     def _zoom_to(self, new_zoom: float) -> None:
         state = self.store.state
         if state.image is None or new_zoom == state.zoom:
@@ -654,6 +670,42 @@ class MainWindow(QMainWindow):
                 event.acceptProposedAction()
                 return
         event.ignore()
+
+
+def _slider_zoom(position: int) -> int:
+    """The whole-number zoom at a slider position; each doubling takes equal travel."""
+    return max(int(MIN_ZOOM), round(MIN_ZOOM * _ZOOM_RATIO ** (position / _SLIDER_STEPS)))
+
+
+def _slider_position(zoom: float) -> int:
+    return round(_SLIDER_STEPS * math.log(zoom / MIN_ZOOM) / math.log(_ZOOM_RATIO))
+
+
+def _lighten_clear_button(edit: QLineEdit) -> None:
+    """Swap the style's dark disc clear icon for a light cross."""
+    button = edit.findChild(QToolButton)
+    if button is None:
+        return
+    button.setIcon(_clear_icon())
+    button.setIconSize(QSize(16, 16))
+
+
+def _clear_icon() -> QIcon:
+    size = 32
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    pen = QPen(QColor(theme.TEXT_MUTED))
+    pen.setWidthF(3.0)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    painter.setPen(pen)
+    inset = 10.0
+    far = size - inset
+    painter.drawLine(QPointF(inset, inset), QPointF(far, far))
+    painter.drawLine(QPointF(far, inset), QPointF(inset, far))
+    painter.end()
+    return QIcon(pixmap)
 
 
 def _combo(tip: str) -> QComboBox:

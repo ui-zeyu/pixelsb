@@ -1,12 +1,15 @@
-"""Light theme. Every color used by the interface is a token in this table."""
+"""Light theme: the color and size tokens, the stylesheet built from them, and
+``CheckStyle``, which paints checkbox indicators by hand."""
 
-from PySide6.QtGui import QColor, QPalette
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QPointF, QRect, QRectF, Qt
+from PySide6.QtGui import QColor, QPainter, QPalette, QPen, QPolygonF
+from PySide6.QtWidgets import QApplication, QProxyStyle, QStyle, QStyleOption, QWidget
 
 SURFACE = "#ffffff"
 WINDOW = "#f5f6f8"
 CANVAS = "#ebedf0"
 FIELD = "#fbfbfc"
+INPUT = "#f2f4f7"
 HOVER = "#f2f4f7"
 PRESSED = "#e8ecf1"
 HAIRLINE = "#e3e6ea"
@@ -15,8 +18,15 @@ TEXT = "#1d1f23"
 TEXT_MUTED = "#6b7280"
 TEXT_DISABLED = "#a8adb5"
 ACCENT = "#2f6feb"
-ACCENT_SOFT = "rgba(47, 111, 235, 0.45)"
 DANGER = "#d9534f"
+
+# One height for boxes and inputs, so a row of controls reads as one band.
+CONTROL_HEIGHT = 28
+
+INDICATOR_SIZE = 15
+_INDICATOR_RADIUS = 3.5
+_TICK_WIDTH = 1.8
+_DASH_HEIGHT = 2.0
 
 STYLESHEET = f"""
 QMainWindow, QDialog, QSplitter {{
@@ -84,15 +94,18 @@ QComboBox QAbstractItemView {{
 }}
 
 QLineEdit {{
-    background: {FIELD};
-    border: 1px solid {HAIRLINE};
-    border-radius: 6px;
-    padding: 4px 8px;
+    background: {INPUT};
+    border: 1px solid transparent;
+    border-radius: 7px;
+    padding: 3px 9px;
     color: {TEXT};
     selection-background-color: {ACCENT};
     selection-color: {SURFACE};
 }}
+QLineEdit:hover {{ background: {PRESSED}; }}
 QLineEdit:focus {{ border-color: {ACCENT}; background: {SURFACE}; }}
+QLineEdit > QToolButton {{ background: transparent; border: none; }}
+QLineEdit > QToolButton:hover {{ background: {PRESSED}; border-radius: 4px; }}
 
 QPlainTextEdit {{
     background: {FIELD};
@@ -105,19 +118,7 @@ QPlainTextEdit {{
 }}
 
 QCheckBox {{ spacing: 6px; background: transparent; color: {TEXT}; }}
-QCheckBox::indicator {{
-    width: 15px;
-    height: 15px;
-    border: 1px solid {HAIRLINE_STRONG};
-    border-radius: 4px;
-    background: {SURFACE};
-}}
-QCheckBox::indicator:hover {{ border-color: {ACCENT}; }}
-QCheckBox::indicator:checked {{ background: {ACCENT}; border-color: {ACCENT}; }}
-QCheckBox::indicator:indeterminate {{ background: {ACCENT_SOFT}; border-color: {ACCENT}; }}
-QCheckBox[groupOn="true"] {{ color: {ACCENT}; }}
 QCheckBox#headerBox {{ color: {TEXT_MUTED}; font-size: 12px; spacing: 4px; }}
-QCheckBox#headerBox[groupOn="true"] {{ color: {ACCENT}; }}
 
 QSlider::groove:horizontal {{ height: 4px; background: {HAIRLINE}; border-radius: 2px; }}
 QSlider::sub-page:horizontal {{ background: {ACCENT}; border-radius: 2px; }}
@@ -164,8 +165,113 @@ QToolTip {{
 """
 
 
+class CheckStyle(QProxyStyle):
+    """Fusion, with checkbox indicators drawn by hand.
+
+    The stylesheet leaves ``QCheckBox::indicator`` alone, so Qt asks this style
+    for the box: a rounded outline when clear, the accent with a white tick when
+    checked, and an accent outline with a dash when only part of a row or column
+    is on.
+    """
+
+    def drawPrimitive(
+        self,
+        element: QStyle.PrimitiveElement,
+        option: QStyleOption,
+        painter: QPainter,
+        widget: QWidget | None = None,
+    ) -> None:
+        if element is not QStyle.PrimitiveElement.PE_IndicatorCheckBox:
+            super().drawPrimitive(element, option, painter, widget)
+            return
+        _paint_indicator(painter, option)
+
+    def pixelMetric(
+        self,
+        metric: QStyle.PixelMetric,
+        option: QStyleOption | None = None,
+        widget: QWidget | None = None,
+    ) -> int:
+        if metric in (
+            QStyle.PixelMetric.PM_IndicatorWidth,
+            QStyle.PixelMetric.PM_IndicatorHeight,
+        ):
+            return INDICATOR_SIZE
+        return super().pixelMetric(metric, option, widget)
+
+
+def _paint_indicator(painter: QPainter, option: QStyleOption) -> None:
+    state = option.state
+    enabled = bool(state & QStyle.StateFlag.State_Enabled)
+    box = _centered_box(option.rect)
+    painter.save()
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    if state & QStyle.StateFlag.State_On:
+        _paint_checked(painter, box, enabled=enabled)
+    elif state & QStyle.StateFlag.State_NoChange:
+        _paint_partial(painter, box, enabled=enabled)
+    else:
+        _paint_clear(
+            painter,
+            box,
+            enabled=enabled,
+            hovered=bool(state & QStyle.StateFlag.State_MouseOver),
+        )
+    painter.restore()
+
+
+def _centered_box(rect: QRect) -> QRectF:
+    side = min(float(INDICATOR_SIZE), float(rect.width()), float(rect.height()))
+    center = QRectF(rect).center()
+    return QRectF(center.x() - side / 2, center.y() - side / 2, side, side)
+
+
+def _paint_clear(painter: QPainter, box: QRectF, *, enabled: bool, hovered: bool) -> None:
+    border = ACCENT if hovered else HAIRLINE_STRONG
+    painter.setPen(QPen(QColor(border), 1.0))
+    painter.setBrush(QColor(SURFACE if enabled else HOVER))
+    painter.drawRoundedRect(
+        box.adjusted(0.5, 0.5, -0.5, -0.5), _INDICATOR_RADIUS, _INDICATOR_RADIUS
+    )
+
+
+def _paint_checked(painter: QPainter, box: QRectF, *, enabled: bool) -> None:
+    fill = QColor(ACCENT if enabled else TEXT_DISABLED)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(fill)
+    painter.drawRoundedRect(box, _INDICATOR_RADIUS, _INDICATOR_RADIUS)
+    pen = QPen(QColor(SURFACE))
+    pen.setWidthF(_TICK_WIDTH)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    painter.setPen(pen)
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.drawPolyline(
+        QPolygonF([_inside(box, 0.28, 0.53), _inside(box, 0.44, 0.68), _inside(box, 0.73, 0.34)])
+    )
+
+
+def _paint_partial(painter: QPainter, box: QRectF, *, enabled: bool) -> None:
+    color = QColor(ACCENT if enabled else TEXT_DISABLED)
+    painter.setPen(QPen(color, 1.2))
+    painter.setBrush(QColor(SURFACE))
+    painter.drawRoundedRect(
+        box.adjusted(0.7, 0.7, -0.7, -0.7), _INDICATOR_RADIUS, _INDICATOR_RADIUS
+    )
+    dash = QRectF(0.0, 0.0, box.width() * 0.5, _DASH_HEIGHT)
+    dash.moveCenter(box.center())
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(color)
+    painter.drawRoundedRect(dash, _DASH_HEIGHT / 2, _DASH_HEIGHT / 2)
+
+
+def _inside(box: QRectF, x: float, y: float) -> QPointF:
+    """A point in ``box``, given as fractions of its width and height."""
+    return QPointF(box.x() + box.width() * x, box.y() + box.height() * y)
+
+
 def apply_theme(application: QApplication) -> None:
-    application.setStyle("Fusion")
+    application.setStyle(CheckStyle("Fusion"))
     palette = QPalette()
     palette.setColor(QPalette.ColorRole.Window, QColor(WINDOW))
     palette.setColor(QPalette.ColorRole.WindowText, QColor(TEXT))

@@ -62,6 +62,7 @@ class Inspector(QWidget):
         self._extract_lines: list[str] = []
         self._extract_search = QLineEdit()
         self._extract_search.setPlaceholderText(text.EXTRACT_SEARCH_TIP)
+        self._extract_search.setFixedHeight(theme.CONTROL_HEIGHT)
         self._extract_search.textChanged.connect(lambda _text: self._refresh_extract_view())
         self._extract_note = _caption(text.EXTRACT_NOTE)
         self._extract_note.setWordWrap(True)
