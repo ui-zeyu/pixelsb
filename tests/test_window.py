@@ -205,6 +205,31 @@ def test_a_native_pinch_gesture_requests_a_scale(qtbot: QtBot, rgb_png: Path) ->
     assert window.store.state.zoom == pytest.approx(before * 1.04 * 1.04)
 
 
+def test_zooming_keeps_the_pointer_pixel_stationary(qtbot: QtBot, extract_png: Path) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.resize(700, 400)
+    window.show()
+    window.open_path(extract_png)
+    window.apply(lambda state: set_zoom(state, 64.0))
+    horizontal = window._scroll.horizontalScrollBar()
+    vertical = window._scroll.verticalScrollBar()
+    horizontal.setValue(120)
+    vertical.setValue(60)
+    pointer_x, pointer_y = 200, 100
+    before = (
+        (horizontal.value() + pointer_x) / 64.0,
+        (vertical.value() + pointer_y) / 64.0,
+    )
+    window._zoom_scale(2.0, pointer_x, pointer_y)
+    after = (
+        (horizontal.value() + pointer_x) / 128.0,
+        (vertical.value() + pointer_y) / 128.0,
+    )
+    assert after[0] == pytest.approx(before[0], abs=0.5)
+    assert after[1] == pytest.approx(before[1], abs=0.5)
+
+
 def test_the_filter_box_gets_a_light_clear_icon(qtbot: QtBot) -> None:
     window = MainWindow()
     qtbot.addWidget(window)

@@ -8,6 +8,7 @@ from numpy.typing import NDArray
 from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import (
     QColor,
+    QCursor,
     QDragEnterEvent,
     QDragMoveEvent,
     QDropEvent,
@@ -312,44 +313,48 @@ class ImageCanvas(QWidget):
 
     def event(self, event: QEvent) -> bool:
         if isinstance(event, QNativeGestureEvent):
-            self._native_gesture(event, QPointF(0, 0))
+            self._native_gesture(event)
             return True
         if isinstance(event, QGestureEvent):
-            self._pinch_gesture(event, QPointF(0, 0))
+            self._pinch_gesture(event)
             return True
         return super().event(event)
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if isinstance(event, (QNativeGestureEvent, QGestureEvent)):
-            origin = QPointF(self.geometry().topLeft())  # the event is viewport-local
             if isinstance(event, QNativeGestureEvent):
-                self._native_gesture(event, origin)
+                self._native_gesture(event)
             else:
-                self._pinch_gesture(event, origin)
+                self._pinch_gesture(event)
             return True
         if isinstance(event, QWheelEvent) and self._zoom_modifier(event):
             self.wheelEvent(event)
             return True
         return super().eventFilter(watched, event)
 
-    def _native_gesture(self, event: QNativeGestureEvent, origin: QPointF) -> None:
+    def _native_gesture(self, event: QNativeGestureEvent) -> None:
         """Trackpad pinch on macOS arrives as native magnification events."""
         if event.gestureType() == Qt.NativeGestureType.ZoomNativeGesture:
-            self._emit_scale(1.0 + event.value(), event.position() - origin)
+            self._emit_scale(1.0 + event.value())
         elif event.gestureType() == Qt.NativeGestureType.SmartZoomNativeGesture:
-            self._emit_scale(2.0 if event.value() > 0 else 0.5, event.position() - origin)
+            self._emit_scale(2.0 if event.value() > 0 else 0.5)
 
-    def _pinch_gesture(self, event: QGestureEvent, origin: QPointF) -> None:
+    def _pinch_gesture(self, event: QGestureEvent) -> None:
         """Touchscreen pinch, delivered through Qt's gesture framework."""
         pinch = event.gesture(Qt.GestureType.PinchGesture)
         if isinstance(pinch, QPinchGesture) and pinch.state() == Qt.GestureState.GestureUpdated:
-            self._emit_scale(pinch.scaleFactor(), pinch.centerPoint() - origin)
+            self._emit_scale(pinch.scaleFactor())
 
-    def _emit_scale(self, factor: float, position: QPointF) -> None:
+    def _emit_scale(self, factor: float) -> None:
+        """Scale around the pointer: while gesturing, that is the anchor."""
         if factor <= 0 or factor == 1.0:
             return
-        anchor = self.mapTo(self._scroll.viewport(), position.toPoint())
-        self.zoom_scale_requested.emit(factor, anchor.x(), anchor.y())
+        anchor_x, anchor_y = self._cursor_in_viewport()
+        self.zoom_scale_requested.emit(factor, anchor_x, anchor_y)
+
+    def _cursor_in_viewport(self) -> tuple[int, int]:
+        point = self._scroll.viewport().mapFromGlobal(QCursor.pos())
+        return point.x(), point.y()
 
     def _zoom_modifier(self, event: QWheelEvent) -> bool:
         modifiers = event.modifiers()
@@ -360,14 +365,15 @@ class ImageCanvas(QWidget):
     def wheelEvent(self, event: QWheelEvent) -> None:
         zooming = self._zoom_modifier(event)
         if zooming:
-            viewport_pos = self.mapTo(self._scroll.viewport(), event.position().toPoint())
             pixels = event.pixelDelta()
             if pixels.isNull():
                 step = 1 if event.angleDelta().y() > 0 else -1
-                self.zoom_requested.emit(step, viewport_pos.x(), viewport_pos.y())
+                anchor_x, anchor_y = self._cursor_in_viewport()
+                self.zoom_requested.emit(step, anchor_x, anchor_y)
             else:  # a trackpad: zoom continuously with the fingers
                 factor = math.exp(pixels.y() / 250.0)
-                self.zoom_scale_requested.emit(factor, viewport_pos.x(), viewport_pos.y())
+                anchor_x, anchor_y = self._cursor_in_viewport()
+                self.zoom_scale_requested.emit(factor, anchor_x, anchor_y)
             event.accept()
             return
         dx, dy = _pan_delta(event)
