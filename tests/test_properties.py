@@ -87,6 +87,14 @@ def test_a_literal_no_field_could_hold_is_rejected(huge: int) -> None:
         _mask(f"left >= {huge}", _image(4, 4))
 
 
+@given(bit=st.integers(min_value=0, max_value=7))
+def test_a_bit_field_is_that_bit_of_the_stored_channel(bit: int) -> None:
+    """A channel's bit index reads the stored sample's bit, whatever it holds."""
+    image = _image(4, 3, seed=7)
+    expected = ((image.samples[:, :, 0] >> np.uint16(bit)) & np.uint16(1)) == 1
+    assert np.array_equal(_mask(f"R.{bit} == 1", image), expected)
+
+
 @given(bits=_BITS)
 def test_the_render_is_the_divide_reference(bits: set[int]) -> None:
     """Whatever the selected bits, scaling them to bytes goes by the exact field."""

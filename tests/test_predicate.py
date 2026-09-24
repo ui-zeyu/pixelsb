@@ -4,7 +4,7 @@ from numpy.typing import NDArray
 
 from pixelsb.domain import predicate
 from pixelsb.domain.models import BitChoice, LoadedImage, SampleArray, SamplePlane
-from pixelsb.domain.predicate import PredicateError, compile_filter, field_names
+from pixelsb.domain.predicate import Field, PredicateError, compile_filter, field_names
 from tests.support import make_image, planes_rgb
 
 _SAMPLES = np.array(
@@ -47,41 +47,71 @@ def test_removed_aliases_are_unknown_fields() -> None:
             compile_filter(expression, planes_rgb())
 
 
-def test_channel_values_follow_the_selection() -> None:
+def test_a_bare_channel_is_the_value_as_stored() -> None:
     low_bit = frozenset({BitChoice("B", 0)})
-    assert _match("B == 0", low_bit).all()
+    # The selection drives the canvas and the dump, not a bare channel name.
+    assert _match("B == 50", low_bit).tolist() == [[True, False], [False, False]]
+    assert _match("B == 0", low_bit).tolist() == [[False, False], [False, True]]
     assert not _match("B == 1", low_bit).any()
+    assert _match("B == 50", frozenset()).tolist() == [[True, False], [False, False]]
+
+
+def test_bits_attribute_is_the_value_of_the_selection() -> None:
+    low_bit = frozenset({BitChoice("B", 0)})
+    assert _match("B.bits == 0", low_bit).all()
+    assert not _match("B.bits == 1", low_bit).any()
     every_bit = frozenset(BitChoice("B", bit) for bit in range(8))
-    assert _match("B == 50", every_bit).tolist() == [[True, False], [False, False]]
-    assert _match("B == 50").tolist() == [[True, False], [False, False]]
-    assert _match("B == 0", None).tolist() == [[False, False], [False, True]]
+    assert _match("B.bits == 50", every_bit).tolist() == [[True, False], [False, False]]
+    assert _match("B.bits == 50").tolist() == [[True, False], [False, False]]
+    assert _match("B.bits == 0", None).tolist() == [[False, False], [False, True]]
 
 
-def test_raw_attribute_ignores_the_selection() -> None:
+def test_bits_and_the_bare_name_are_different_values() -> None:
     low_bit = frozenset({BitChoice("B", 0)})
-    assert _match("B == 0", low_bit).all()
-    assert _match("B.raw == 50", low_bit).tolist() == [[True, False], [False, False]]
-    assert _match("B.raw == 0", low_bit).tolist() == [[False, False], [False, True]]
-    assert _match("B.raw == 50", frozenset()).tolist() == [[True, False], [False, False]]
-    assert _match("B.raw == 50").tolist() == [[True, False], [False, False]]
+    # B = 50, 200, 10, 0: bit 0 of each is 0, 0, 0, 0, so only the last agrees.
+    assert _match("B.bits == B", low_bit).tolist() == [[False, False], [False, True]]
+    assert _match("B.bits <= B", low_bit).all()
 
 
-def test_bits_attribute_matches_the_bare_name() -> None:
-    low_bit = frozenset({BitChoice("B", 0)})
-    assert _match("B.bits == B", low_bit).all()
-    assert _match("B.RAW >= 200", low_bit).tolist() == [[False, True], [False, False]]
-    assert _match("B.raw > B.bits", low_bit).tolist() == [[True, True], [True, False]]
+def test_a_bit_attribute_reads_one_bit_of_the_channel() -> None:
+    # B = 50, 200, 10, 0 and G = 100, 0, 10, 255.
+    assert _match("B.1 == 1").tolist() == [[True, False], [True, False]]
+    assert _match("B.3 == 1").tolist() == [[False, True], [True, False]]
+    assert _match("B.5 == 1").tolist() == [[True, False], [False, False]]
+    assert _match("G.0 == 1").tolist() == [[False, False], [False, True]]
+    assert _match("G.7 == 1 or B.7 == 1").tolist() == [[False, True], [False, True]]
+
+
+def test_the_bit_attributes_add_back_up_to_the_stored_value() -> None:
+    weighted = " + ".join(f"B.{bit} * {1 << bit}" for bit in range(8))
+    assert _match(f"{weighted} == B").all()
+
+
+def test_a_bit_past_the_channels_depth_is_rejected() -> None:
+    with pytest.raises(PredicateError, match="只有 8 位"):
+        compile_filter("R.8 == 1", planes_rgb())
+    deep = tuple(SamplePlane(plane.name, plane.index, 16, plane.origin) for plane in planes_rgb())
+    assert compile_filter("R.15 == 1", deep).fields == {"R.15"}
 
 
 def test_identifier_errors_name_the_problem() -> None:
     with pytest.raises(PredicateError, match="属性只能是"):
         compile_filter("B.value > 0", planes_rgb())
     with pytest.raises(PredicateError, match="没有属性"):
-        compile_filter("left.raw == 0", planes_rgb())
+        compile_filter("left.0 == 0", planes_rgb())
     with pytest.raises(PredicateError, match="未知字段"):
-        compile_filter("A.raw == 0", planes_rgb())
+        compile_filter("A.0 == 0", planes_rgb())
     with pytest.raises(PredicateError, match="不支持的表达式元素"):
-        compile_filter("R.raw.raw == 1", planes_rgb())
+        compile_filter("R.3.bits == 1", planes_rgb())
+
+
+def test_a_bit_index_is_marked_up_for_the_parser() -> None:
+    assert predicate._with_bit_attributes("R.3 == 1") == "R._3 == 1"
+    assert predicate._with_bit_attributes("R.0\nB.1") == "R._0\nB._1"
+    # Nothing to mark: a float after a keyword or a space is left alone.
+    assert predicate._with_bit_attributes("R and .5") == "R and .5"
+    assert predicate._with_bit_attributes("left > .5") == "left > .5"
+    assert predicate._with_bit_attributes("R .5") == "R .5"
 
 
 def test_identifiers_are_case_insensitive() -> None:
@@ -138,22 +168,23 @@ def test_a_filter_reports_the_fields_it_reads() -> None:
 
     assert fields("rect(0, 0, 1, 1)") == {"left", "top", "right", "bottom"}
     assert fields("grid(0, 0, 2, 2)") == {"left", "top"}
-    assert fields("R.raw > 1") == {"R.raw"}
+    assert fields("R > 1") == {"R"}
     assert fields("R.bits + R") == {"R", "R.bits"}
+    assert fields("R.3 + B.7") == {"R.3", "B.7"}
     assert fields("B >= R and G < 100") == {"R", "G", "B"}
     # A call's arguments are read; the function name is not a field of its own.
-    assert fields("rect(0, 0, 1, R.raw)") == {"left", "top", "right", "bottom", "R.raw"}
+    assert fields("rect(0, 0, 1, R.7)") == {"left", "top", "right", "bottom", "R.7"}
 
 
 def test_a_coordinate_filter_never_builds_a_channel(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: list[str] = []
-    read = predicate._raw_values
+    read = predicate._stored_values
 
     def spy(samples: SampleArray, plane: SamplePlane) -> NDArray[np.uint32]:
         seen.append(plane.name)
         return read(samples, plane)
 
-    monkeypatch.setattr(predicate, "_raw_values", spy)
+    monkeypatch.setattr(predicate, "_stored_values", spy)
     assert _match("rect(0, 0, 1, 1)").tolist() == [[True, False], [False, False]]
     assert _match("grid(0, 0, 1, 1) and top == 0").tolist() == [[True, True], [False, False]]
     assert seen == []
@@ -161,16 +192,31 @@ def test_a_coordinate_filter_never_builds_a_channel(monkeypatch: pytest.MonkeyPa
 
 def test_each_channel_is_built_once_per_evaluation(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: list[str] = []
-    read = predicate._raw_values
+    read = predicate._stored_values
 
     def spy(samples: SampleArray, plane: SamplePlane) -> NDArray[np.uint32]:
         seen.append(plane.name)
         return read(samples, plane)
 
-    monkeypatch.setattr(predicate, "_raw_values", spy)
-    _match("R.raw > B.raw and B.bits > 0 and B > 1")
-    # R.raw and B.raw need the stored values; both B flavours share the one copy.
+    monkeypatch.setattr(predicate, "_stored_values", spy)
+    _match("R > B.7 and B.bits > 0 and B.3 > 1 and B > 1")
+    # Every flavour of B, bit fields included, shares the one copy of the channel.
     assert sorted(seen) == ["B", "R"]
+
+
+def test_a_bit_only_filter_never_builds_the_selection(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[str] = []
+
+    def spy(
+        _channel: NDArray[np.uint32],
+        plane: str,
+        _chosen: frozenset[BitChoice] | None,
+    ) -> None:
+        seen.append(plane)
+
+    monkeypatch.setattr(predicate, "_selected_values", spy)
+    assert _match("R.0 == 1 or B.7 == 0").tolist() == [[True, False], [True, True]]
+    assert seen == []
     assert _match("0 <= left <= 0").tolist() == [[True, False], [True, False]]
     assert not _match("50 <= left <= 100").any()
 
@@ -242,6 +288,11 @@ def test_grid_errors_are_clear() -> None:
 def test_errors_name_the_problem() -> None:
     with pytest.raises(PredicateError, match="语法错误"):
         compile_filter("B >=", planes_rgb())
+    # A bit index glued to a name is marked up for the parser, one with a space
+    # before it is not, and neither is a number that only follows a name.
+    with pytest.raises(PredicateError, match="语法错误"):
+        compile_filter("R .5", planes_rgb())
+    assert _match("R and .5").tolist() == [[True, False], [True, False]]
     with pytest.raises(PredicateError, match="未知字段"):
         compile_filter("A > 0", planes_rgb())
     with pytest.raises(PredicateError, match="left"):
@@ -252,10 +303,19 @@ def test_errors_name_the_problem() -> None:
         compile_filter("[R] == 1", planes_rgb())
 
 
-def test_field_names_hold_one_name_per_field() -> None:
+def test_field_names_hold_one_field_per_name() -> None:
     names = field_names(planes_rgb())
-    assert set(names.values()) == {"left", "top", "right", "bottom", "R", "G", "B"}
-    assert names["b"] == "B"
+    assert {name.name for name in names.values()} == {
+        "left",
+        "top",
+        "right",
+        "bottom",
+        "R",
+        "G",
+        "B",
+    }
+    assert names["b"] == Field("B", 8)
+    # The coordinate fields take no attributes: they hold no bits.
+    assert names["left"] == Field("left")
     assert "x" not in names
     assert "up" not in names
-    assert "bottom" in names

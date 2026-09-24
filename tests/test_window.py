@@ -1,6 +1,7 @@
 from itertools import pairwise
 from pathlib import Path
 
+import numpy as np
 import pytest
 from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtGui import QNativeGestureEvent, QPointingDevice
@@ -71,6 +72,7 @@ def test_filter_match_follows_the_selection(qtbot: QtBot, rgb_png: Path) -> None
     window = MainWindow()
     qtbot.addWidget(window)
     window.open_path(rgb_png)
+    # A bare channel is the value as stored: the selection leaves it alone.
     window.apply(lambda state: set_filter_expr(state, "R == 255"))
     first = window._match.mask
     assert first is not None
@@ -79,7 +81,29 @@ def test_filter_match_follows_the_selection(qtbot: QtBot, rgb_png: Path) -> None
     window.apply(lambda state: select_only(state, "R", 7))
     second = window._match.mask
     assert second is not None
-    assert not second.any()
+    assert np.array_equal(first, second)
+    # .bits is the value the selection builds, so the filter moves with it.
+    window.apply(lambda state: set_filter_expr(state, "R.bits == 255"))
+    third = window._match.mask
+    assert third is not None
+    assert not third.any()
+    window.apply(lambda state: set_filter_expr(state, "R.bits == 1"))
+    fourth = window._match.mask
+    assert fourth is not None
+    assert fourth.tolist() == [[True, False], [False, False]]
+
+
+def test_a_bit_field_reads_one_bit_of_a_channel(qtbot: QtBot, rgb_png: Path) -> None:
+    from pixelsb.domain.transitions import set_filter_expr
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.open_path(rgb_png)
+    window.apply(lambda state: set_filter_expr(state, "R.7 == 0 and R.4 == 1"))
+    mask = window._match.mask
+    assert mask is not None
+    # R = 255, 0, 0, 16: only the last has the top bit clear and bit 4 set.
+    assert mask.tolist() == [[False, False], [False, True]]
 
 
 def test_bad_filter_shows_an_error_and_keeps_the_image(

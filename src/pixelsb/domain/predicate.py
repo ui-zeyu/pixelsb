@@ -2,19 +2,22 @@
 
 Fields: ``left``, ``top``, ``right``, ``bottom`` (a pixel occupies
 ``[left, right) x [top, bottom)``), and the channel names. A bare channel name is
-the current selection masked onto the plane, and channels without any selected bit
-read as 0; ``R.raw`` is the channel as stored, ``R.bits`` spells the selection
-value out. The expression is parsed with :mod:`ast` and every node is compiled
-into a numpy closure — strings are never evaluated. Only the fields an
-expression mentions are built for it, so a filter over coordinates alone never
-touches the image samples.
+the channel as stored; ``R.bits`` is the selection value instead, where a channel
+with no selected bit reads as 0; and ``R.3`` is bit 3 of the stored channel alone.
+The expression is parsed with :mod:`ast` and every node is compiled into a numpy
+closure — strings are never evaluated. Only the fields an expression mentions are
+built for it, so a filter over coordinates alone never touches the image samples.
 """
 
 import ast
+import io
+import keyword
+import re
+import tokenize
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from functools import reduce
-from itertools import pairwise
+from itertools import accumulate, pairwise
 from typing import Any, NamedTuple
 
 import numpy as np
@@ -37,9 +40,11 @@ _GRID = "grid"
 _GRID_PARAMS = ("x", "y", "step_x", "step_y")
 _GRID_AXES = ("left", "top")
 _BITS = "bits"
-_RAW = "raw"
-# Attributes a channel name accepts: the selection value, and the stored value.
-_CHANNEL_ATTRIBUTES = (_BITS, _RAW)
+# A bit index is a digit after the dot, which Python's grammar has no attribute
+# for, so ``R.3`` is compiled as ``R._3``: _BIT_MARK is the underscore that turns
+# the digits into an attribute name (see :func:`_with_bit_attributes`).
+_BIT_MARK = "_"
+_BIT_TOKEN = re.compile(r"\.\d+\Z")
 # A literal outside this range cannot mean anything a field could hold.
 _INT_MIN, _INT_MAX = -(2**63), 2**63 - 1
 
@@ -69,23 +74,68 @@ _COMPARISONS: dict[type[ast.cmpop], CompareOp] = {
 }
 
 
-def field_names(planes: tuple[SamplePlane, ...]) -> dict[str, str]:
-    """Lowercase field name -> key prefix in the field environment.
+@dataclass(frozen=True, slots=True)
+class Field:
+    """One field an expression may name: its canonical name, and its bits.
+
+    ``bits`` is how many bits the field holds, so a channel takes attributes and
+    a coordinate takes none; a channel value other than the whole channel is held
+    under its own key (see :func:`_value_key`).
+    """
+
+    name: str
+    bits: int = 0
+
+
+def field_names(planes: tuple[SamplePlane, ...]) -> dict[str, Field]:
+    """Lowercase field name -> the field itself.
 
     The names are ``left``, ``top``, ``right``, ``bottom``, and the channel
-    names; matching ignores case, so ``b`` and ``B`` are the same field. Channel
-    values come in two flavours, named by their attribute (see
-    :func:`_value_key`).
+    names; matching ignores case, so ``b`` and ``B`` are the same field.
     """
-    names = {"left": "left", "top": "top", "right": "right", "bottom": "bottom"}
+    names = {edge: Field(edge) for edge in _RECT_EDGES}
     for plane in planes:
-        names.setdefault(plane.name.lower(), plane.name)
+        names.setdefault(plane.name.lower(), Field(plane.name, plane.bit_depth))
     return names
 
 
 def _value_key(plane: str, attribute: str) -> str:
-    """Environment key for one flavour of a channel value, e.g. ``B.raw``."""
+    """Environment key for one flavour of a channel value, e.g. ``B.bits``, ``B.3``."""
     return f"{plane}.{attribute}"
+
+
+def _with_bit_attributes(expression: str) -> str:
+    """``R.3`` written as ``R._3``: the attribute form the grammar accepts.
+
+    A digit cannot follow a dot in Python's grammar, so a bit index only parses
+    with a name in front of it. The underscore is glued in right after the dot,
+    and every other character is left as it was, so a syntax error still points
+    at the text the expression was written in.
+
+    Only a name that the digits are glued to is touched: a keyword or a space
+    before them, as in ``R and .5``, leaves the numbers alone.
+    """
+    try:
+        tokens = tuple(tokenize.generate_tokens(io.StringIO(expression).readline))
+    except SyntaxError, IndentationError, tokenize.TokenError:
+        # Not tokenizable at all: let the parser report it in its own words.
+        return expression
+    line_starts = list(
+        accumulate((len(line) for line in expression.splitlines(keepends=True)), initial=0)
+    )
+    marks: list[int] = []
+    for previous, token in pairwise(tokens):
+        if previous.type != tokenize.NAME or keyword.iskeyword(previous.string):
+            continue
+        if token.type != tokenize.NUMBER or previous.end != token.start:
+            continue
+        if _BIT_TOKEN.fullmatch(token.string):
+            row, column = token.start
+            # The token is the dot and the digits, so the mark goes just after it.
+            marks.append(line_starts[row - 1] + column + 1)
+    for offset in reversed(marks):
+        expression = expression[:offset] + _BIT_MARK + expression[offset:]
+    return expression
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,7 +173,7 @@ class Filter:
 def compile_filter(expression: str, planes: tuple[SamplePlane, ...]) -> Filter:
     """Compile ``expression`` against the planes' field names."""
     try:
-        tree = ast.parse(expression, mode="eval")
+        tree = ast.parse(_with_bit_attributes(expression), mode="eval")
     except SyntaxError as exc:
         raise PredicateError(f"语法错误：{exc.msg}") from exc
     names = field_names(planes)
@@ -134,7 +184,7 @@ def compile_filter(expression: str, planes: tuple[SamplePlane, ...]) -> Filter:
     )
 
 
-def _compile_node(node: ast.expr, names: dict[str, str]) -> Evaluator:
+def _compile_node(node: ast.expr, names: dict[str, Field]) -> Evaluator:
     match node:
         case ast.Constant(value=int() | float() as value):
             if isinstance(value, int) and not _INT_MIN <= value <= _INT_MAX:
@@ -142,8 +192,8 @@ def _compile_node(node: ast.expr, names: dict[str, str]) -> Evaluator:
             constant = np.asarray(value)
             return lambda _env: constant
         case ast.Name():
-            canonical = _canonical_name(node.id, names)
-            return lambda env: env[canonical]
+            name = _canonical_name(node.id, names).name
+            return lambda env: env[name]
         case ast.Attribute(value=ast.Name(id=field), attr=attribute):
             return _compile_attribute(field, attribute, names)
         case ast.UnaryOp(op=ast.Not(), operand=operand):
@@ -177,18 +227,21 @@ def _compile_node(node: ast.expr, names: dict[str, str]) -> Evaluator:
             raise PredicateError(f"不支持的表达式元素：{type(node).__name__}")
 
 
-def _wanted_fields(node: ast.AST, names: dict[str, str]) -> frozenset[str]:
+def _wanted_fields(node: ast.AST, names: dict[str, Field]) -> frozenset[str]:
     """The environment keys an expression reads, so the rest can be skipped.
 
     A call's name is a function rather than a field, and an attribute's subject
-    is not a field of its own: ``R.raw`` reads ``R.raw`` and nothing else, which
-    is what keeps a raw-only filter off the selection mask.
+    is not a field of its own: ``R.3`` reads ``R.3`` and nothing else, which is
+    what keeps a bit-only filter off the selection mask.
     """
     match node:
         case ast.Name():
-            return frozenset({_canonical_name(node.id, names)})
+            return frozenset({_canonical_name(node.id, names).name})
         case ast.Attribute(value=ast.Name(id=field), attr=attribute):
-            return frozenset({_value_key(_canonical_name(field, names), attribute.lower())})
+            canonical = _canonical_name(field, names)
+            bit = _bit_index(attribute)
+            suffix = attribute.lower() if bit is None else str(bit)
+            return frozenset({_value_key(canonical.name, suffix)})
         case ast.Call(func=ast.Name(id=name), args=arguments, keywords=keywords):
             function = _FUNCTIONS.get(name.lower())
             if function is None:
@@ -199,30 +252,55 @@ def _wanted_fields(node: ast.AST, names: dict[str, str]) -> frozenset[str]:
             return _union_fields(ast.iter_child_nodes(node), names)
 
 
-def _union_fields(nodes: Iterable[ast.AST], names: dict[str, str]) -> frozenset[str]:
+def _union_fields(nodes: Iterable[ast.AST], names: dict[str, Field]) -> frozenset[str]:
     return frozenset().union(*(_wanted_fields(node, names) for node in nodes))
 
 
-def _canonical_name(field: str, names: dict[str, str]) -> str:
-    """The field's canonical name, or a clear error naming the alternatives."""
+def _canonical_name(field: str, names: dict[str, Field]) -> Field:
+    """The field the name refers to, or a clear error naming the alternatives."""
     canonical = names.get(field.lower())
     if canonical is None:
-        available = ", ".join(sorted(set(names.values())))
+        available = ", ".join(sorted(name.name for name in names.values()))
         raise PredicateError(f"未知字段：{field}（可用：{available}）")
     return canonical
 
 
-def _compile_attribute(field: str, attribute: str, names: dict[str, str]) -> Evaluator:
-    """A channel attribute: ``R.raw`` (as stored) or ``R.bits`` (the selection)."""
+def _compile_attribute(field: str, attribute: str, names: dict[str, Field]) -> Evaluator:
+    """A channel attribute: ``R.bits`` (the selection value) or ``R.3`` (one bit)."""
     canonical = _canonical_name(field, names)
-    if canonical in _RECT_EDGES:
-        raise PredicateError(f"字段 {canonical} 没有属性")
-    lowered = attribute.lower()
-    if lowered not in _CHANNEL_ATTRIBUTES:
-        options = "、".join(_CHANNEL_ATTRIBUTES)
-        raise PredicateError(f"字段 {canonical} 的属性只能是 {options}（收到：{attribute}）")
-    key = _value_key(canonical, lowered)
+    if not canonical.bits:
+        raise PredicateError(f"字段 {canonical.name} 没有属性")
+    key = _value_key(canonical.name, _attribute_key(canonical, attribute))
     return lambda env: env[key]
+
+
+def _attribute_key(field: Field, attribute: str) -> str:
+    """The flavour of a channel value an attribute names, as its key suffix.
+
+    Anything else is an error, and the message spells out the bit range the
+    field does have.
+    """
+    bit = _bit_index(attribute)
+    if bit is not None:
+        if bit >= field.bits:
+            raise PredicateError(
+                f"{field.name} 只有 {field.bits} 位：位号是 0～{field.bits - 1}"
+                f"（收到 {field.name}.{bit}）"
+            )
+        return str(bit)
+    if attribute.lower() == _BITS:
+        return _BITS
+    raise PredicateError(
+        f"字段 {field.name} 的属性只能是 {_BITS} 或位号，"
+        f"如 {field.name}.0～{field.name}.{field.bits - 1}（收到：{attribute}）"
+    )
+
+
+def _bit_index(attribute: str) -> int | None:
+    """The bit an attribute names, or ``None`` when it names something else."""
+    if len(attribute) > 1 and attribute[0] == _BIT_MARK and attribute[1:].isdigit():
+        return int(attribute[1:])
+    return None
 
 
 def _function_args(
@@ -230,7 +308,7 @@ def _function_args(
     params: tuple[str, ...],
     args: list[ast.expr],
     keywords: list[ast.keyword],
-    names: dict[str, str],
+    names: dict[str, Field],
 ) -> list[Evaluator]:
     """One compiled evaluator per parameter, given positionally or by name."""
     if keywords:
@@ -356,20 +434,34 @@ def _field_values(
     }
     values: FieldEnv = {name: array for name, array in edges.items() if name in wanted}
     for plane in image.planes:
-        selected_keys = wanted & {plane.name, _value_key(plane.name, _BITS)}
-        raw_key = _value_key(plane.name, _RAW)
-        if not selected_keys and raw_key not in wanted:
+        selection_key = _value_key(plane.name, _BITS)
+        bits = _wanted_bits(wanted, plane.name)
+        if plane.name not in wanted and selection_key not in wanted and not bits:
             continue
-        channel = _raw_values(image.samples, plane)
-        if raw_key in wanted:
-            values[raw_key] = channel
-        if selected_keys:
-            selected = _selected_values(channel, plane.name, chosen)
-            values.update(dict.fromkeys(selected_keys, selected))
+        # One copy of the channel serves the stored value and every bit of it.
+        stored = _stored_values(image.samples, plane)
+        if plane.name in wanted:
+            values[plane.name] = stored
+        if selection_key in wanted:
+            values[selection_key] = _selected_values(stored, plane.name, chosen)
+        for bit in bits:
+            values[_value_key(plane.name, str(bit))] = (stored >> np.uint32(bit)) & np.uint32(1)
     return values
 
 
-def _raw_values(samples: SampleArray, plane: SamplePlane) -> Value:
+def _wanted_bits(wanted: frozenset[str], plane: str) -> tuple[int, ...]:
+    """The bits of one channel the expression reads, smallest first."""
+    prefix = plane + "."
+    return tuple(
+        sorted(
+            int(key.removeprefix(prefix))
+            for key in wanted
+            if key.startswith(prefix) and key.removeprefix(prefix).isdigit()
+        )
+    )
+
+
+def _stored_values(samples: SampleArray, plane: SamplePlane) -> Value:
     """The channel exactly as stored, ignoring the bit selection."""
     return samples[:, :, plane.index].astype(np.uint32)
 

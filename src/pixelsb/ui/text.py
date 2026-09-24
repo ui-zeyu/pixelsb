@@ -47,19 +47,20 @@ EXTRACT_ENCODINGS: tuple[tuple[ExtractEncoding, str], ...] = (
     (ExtractEncoding.UTF16_BE, "UTF-16BE"),
 )
 EXTRACT_ENCODING_LABELS: dict[ExtractEncoding, str] = dict(EXTRACT_ENCODINGS)
-FILTER_PLACEHOLDER = "显示过滤器：rect(50, 50, 100, 100) and B.raw >= R.raw"
+FILTER_PLACEHOLDER = "显示过滤器：rect(50, 50, 100, 100) and B >= R"
 FILTER_ERROR = "过滤错误："
 FILTER_TIP = (
     "显示过滤器同时作用于画布和提取。字段：left、top、right、bottom 与各通道名（R、G、B…）；"
     "像素占据 [left, right) × [top, bottom)，即 right = left + 1、bottom = top + 1。"
-    "通道名默认是勾选位算出的值，加 .raw 取原始通道值、加 .bits 显式表示勾选位的值。"
+    "通道名就是通道原始值；加 .bits 换成勾选位算出的值，加位号取该通道的某一位，"
+    "如 R.0 是最低位、R.7 是最高位（16 位通道到 .15）。"
     "rect 选中矩形，四条边可具名：rect(left=50, top=50, right=100, bottom=100)，"
     "也可按顺序写 rect(50, 50, 100, 100)，与四个字段的比较完全等价。"
     "grid(x, y, step_x, step_y) 从 (x, y) 开始，横向、纵向各按步长取点："
     "grid(10, 20, 6, 6) 每 6 个像素取 1 个，步长 1 即逐像素，四项均可具名。"
     "画布切到「选区」工具后拖动框选：拖动与松开时只是预览（画布保留选区框、状态栏显示范围与命中数），"
     "回车把 (原表达式) and rect 追加进过滤器，Esc 取消预览。"
-    "例：rect(50, 50, 100, 100) and B >= R 或 grid(10, 20, 6, 6) and B >= 8。"
+    "例：rect(50, 50, 100, 100) and B >= R、grid(10, 20, 6, 6) and R.0 == 1。"
     "⌘F 聚焦，回车应用，Esc 清空并回到画布，留空即不过滤。"
 )
 DECIMAL = "十进制"
