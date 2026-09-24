@@ -51,6 +51,12 @@ def test_the_stylesheet_leaves_the_indicator_to_the_style() -> None:
     assert "QCheckBox::indicator" not in theme.STYLESHEET
 
 
+def test_ghost_buttons_are_frameless_and_tinted_on_hover() -> None:
+    assert "border: none" in _rule_block("QPushButton#ghost")
+    assert theme.HOVER in _rule_block("QPushButton#ghost:hover")
+    assert theme.PRESSED in _rule_block("QPushButton#ghost:pressed")
+
+
 def _indicator_pixels(state: Qt.CheckState) -> list[tuple[int, int, int]]:
     box = QCheckBox()
     box.setCheckState(state)

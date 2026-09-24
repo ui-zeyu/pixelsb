@@ -4,6 +4,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtGui import QImage, QTextCursor
+from PySide6.QtWidgets import QPushButton
 from pytestqt.qtbot import QtBot
 
 from pixelsb.domain.extract import ASCII_START, BYTES_PER_ROW
@@ -22,6 +23,7 @@ def _inspector(qtbot: QtBot, path: Path) -> Inspector:
     inspector.resize(360, 700)
     inspector.show()
     inspector.set_state(open_image(ViewerState(), load_image(path), zoom=4.0))
+    qtbot.wait(20)  # let the layout apply the grids before geometry is read
     return inspector
 
 
@@ -105,6 +107,22 @@ def test_the_gutter_paints_the_offsets(qtbot: QtBot, extract_png: Path) -> None:
     assert gutter
     assert max(gutter) < viewport.left()
     assert view._gutter.geometry().top() == viewport.top()
+
+
+def test_the_bit_grids_sit_in_cards_that_hug_the_left(qtbot: QtBot, extract_png: Path) -> None:
+    inspector = _inspector(qtbot, extract_png)
+    card = inspector._canvas_card
+    assert card.objectName() == "card"
+    assert card.x() == 16  # the panel's own margin, no stretching to the right
+    assert 240 <= card.width() <= inspector.width() - 40  # natural size, hugging left
+
+
+def test_the_presets_and_detach_share_the_section_header(qtbot: QtBot, extract_png: Path) -> None:
+    inspector = _inspector(qtbot, extract_png)
+    trailing = inspector._detach.parentWidget()
+    assert trailing is not None
+    buttons = [button.text() for button in trailing.findChildren(QPushButton)]
+    assert buttons == [text.ORIGINAL, text.ALL_LSB]
 
 
 def test_note_rows_have_no_offset(qtbot: QtBot, extract_png: Path) -> None:

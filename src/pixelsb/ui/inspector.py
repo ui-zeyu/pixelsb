@@ -76,7 +76,12 @@ class Inspector(QWidget):
         self._number_matrix.channel_toggle.connect(self.readout_channel_toggle.emit)
         self._number_matrix.column_toggle.connect(self.readout_column_toggle.emit)
         self._canvas_caption = _caption(text.CANVAS_LAYER)
-        self._number_row = self._build_number_row()
+        self._number_caption = _caption(text.NUMBER_LAYER)
+        self._number_reset = self._reset_button()
+        self._canvas_card = self._matrix_card(self._canvas_caption, None, self._canvas_matrix)
+        self._number_card = self._matrix_card(
+            self._number_caption, self._number_reset, self._number_matrix
+        )
         self._detach = QCheckBox(text.DETACH)
         self._detach.setToolTip(text.DETACH_TIP)
         self._detach.toggled.connect(self.detached_toggled.emit)
@@ -101,12 +106,9 @@ class Inspector(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(8)
-        layout.addLayout(self._section_header(text.SECTION_BITS, self._detach))
-        layout.addLayout(self._preset_row())
-        layout.addWidget(self._canvas_caption)
-        layout.addWidget(self._canvas_matrix)
-        layout.addWidget(self._number_row)
-        layout.addWidget(self._number_matrix)
+        layout.addLayout(self._bits_header())
+        layout.addWidget(self._canvas_card, 0, Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(self._number_card, 0, Qt.AlignmentFlag.AlignLeft)
         layout.addSpacing(14)
         layout.addWidget(_hairline())
         layout.addSpacing(14)
@@ -133,8 +135,7 @@ class Inspector(QWidget):
                 number_bits = all_bits(image) if state.readout is None else state.readout
             self._number_matrix.set_layer(planes, number_bits)
         self._canvas_caption.setVisible(detached)
-        self._number_row.setVisible(detached)
-        self._number_matrix.setVisible(detached)
+        self._number_card.setVisible(detached)
         self._detach.blockSignals(True)
         self._detach.setChecked(detached)
         self._detach.blockSignals(False)
@@ -148,10 +149,12 @@ class Inspector(QWidget):
         header.addWidget(trailing)
         return header
 
-    def _preset_row(self) -> QHBoxLayout:
-        row = QHBoxLayout()
+    def _bits_header(self) -> QHBoxLayout:
+        """Section title, the presets, and the detach switch, all in one row."""
+        trailing = QWidget()
+        row = QHBoxLayout(trailing)
         row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(0)
+        row.setSpacing(10)
         for label, name, signal in (
             (text.ORIGINAL, "segmentLeft", self.original_requested),
             (text.ALL_LSB, "segmentRight", self.lsbs_requested),
@@ -160,22 +163,32 @@ class Inspector(QWidget):
             button.setObjectName(name)
             button.clicked.connect(lambda _checked=False, signal=signal: signal.emit())
             row.addWidget(button)
-        row.addStretch(1)
-        return row
+        row.addWidget(self._detach)
+        return self._section_header(text.SECTION_BITS, trailing)
 
-    def _build_number_row(self) -> QWidget:
-        row = QWidget()
-        layout = QHBoxLayout(row)
-        layout.setContentsMargins(0, 0, 0, 0)
+    def _matrix_card(self, caption: QWidget, trailing: QWidget | None, matrix: BitMatrix) -> QFrame:
+        """A soft gray card around one bit grid, caption row on top."""
+        card = QFrame()
+        card.setObjectName("card")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(10, 8, 10, 10)
         layout.setSpacing(6)
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(caption)
+        row.addStretch(1)
+        if trailing is not None:
+            row.addWidget(trailing)
+        layout.addLayout(row)
+        layout.addWidget(matrix)
+        return card
+
+    def _reset_button(self) -> QPushButton:
         reset = QPushButton(text.READOUT_RESET)
         reset.setObjectName("linkButton")
         reset.setToolTip(text.READOUT_RESET_TIP)
         reset.clicked.connect(lambda _checked=False: self.reset_readout_requested.emit())
-        layout.addWidget(_caption(text.NUMBER_LAYER))
-        layout.addWidget(reset)
-        layout.addStretch(1)
-        return row
+        return reset
 
     def _sync_extract(
         self,

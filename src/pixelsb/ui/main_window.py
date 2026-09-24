@@ -42,8 +42,6 @@ from PySide6.QtWidgets import (
     QTextEdit,
     QToolBar,
     QToolButton,
-    QVBoxLayout,
-    QWidget,
 )
 
 from pixelsb.domain.geometry import initial_zoom
@@ -219,19 +217,15 @@ class MainWindow(QMainWindow):
         toolbar.setMovable(False)
         toolbar.setFloatable(False)
         self.addToolBar(toolbar)
-        host = QWidget()
-        rows = QVBoxLayout(host)
-        rows.setContentsMargins(0, 0, 0, 0)
-        rows.setSpacing(0)
-        rows.addWidget(self._filter_row())
-        rows.addWidget(self._action_row())
-        toolbar.addWidget(host)
+        toolbar.addWidget(self._toolbar_row())
 
-    def _filter_row(self) -> QFrame:
+    def _toolbar_row(self) -> QFrame:
+        """One row: the display filter on the left, the view controls on the right."""
         self._filter_edit = QLineEdit()
         self._filter_edit.setPlaceholderText(text.FILTER_PLACEHOLDER)
         self._filter_edit.setClearButtonEnabled(True)
         _lighten_clear_button(self._filter_edit)
+        self._filter_edit.setMinimumWidth(220)
         self._filter_edit.setFixedHeight(theme.CONTROL_HEIGHT)
         self._filter_edit.setToolTip(text.FILTER_TIP)
         self._filter_edit.textEdited.connect(lambda _text: self._filter_timer.start())
@@ -244,30 +238,16 @@ class MainWindow(QMainWindow):
         find_shortcut.activated.connect(self._focus_filter)
         self._filter_count = _muted_label()
 
-        row = _row_frame("filterRow")
-        layout = QHBoxLayout(row)
-        layout.setContentsMargins(14, 8, 14, 8)
-        layout.setSpacing(8)
-        layout.addWidget(_muted_label(text.FILTER_LABEL))
-        layout.addWidget(self._filter_edit, 1)
-        layout.addWidget(self._filter_count)
-        return row
-
-    def _action_row(self) -> QFrame:
-        self._zoom_in = QPushButton(text.ZOOM_IN)
-        self._zoom_in.setFixedWidth(28)
-        self._zoom_in.clicked.connect(_drop_checked(lambda: self._zoom_by(1)))
-        self._zoom_out = QPushButton(text.ZOOM_OUT)
-        self._zoom_out.setFixedWidth(28)
-        self._zoom_out.clicked.connect(_drop_checked(lambda: self._zoom_by(-1)))
-        self._zoom_fit = QPushButton(text.ZOOM_FIT)
-        self._zoom_fit.clicked.connect(_drop_checked(self._fit))
-        self._zoom_reset = QPushButton(text.ZOOM_RESET)
+        self._zoom_in = self._ghost_button(text.ZOOM_IN, 28, lambda: self._zoom_by(1))
+        self._zoom_out = self._ghost_button(text.ZOOM_OUT, 28, lambda: self._zoom_by(-1))
+        self._zoom_fit = self._ghost_button(text.ZOOM_FIT, 0, self._fit)
+        self._zoom_reset = self._ghost_button(
+            text.ZOOM_RESET, 0, lambda: self._zoom_to(float(MIN_ZOOM))
+        )
         self._zoom_reset.setToolTip(text.ZOOM_RESET_TIP)
-        self._zoom_reset.clicked.connect(_drop_checked(lambda: self._zoom_to(float(MIN_ZOOM))))
         self._zoom_slider = QSlider(Qt.Orientation.Horizontal)
         self._zoom_slider.setRange(0, _SLIDER_STEPS)
-        self._zoom_slider.setFixedWidth(150)
+        self._zoom_slider.setFixedWidth(160)
         self._zoom_slider.setToolTip(text.ZOOM_TIP)
         self._zoom_slider.valueChanged.connect(self._on_slider)
         self._zoom_label = _muted_label()
@@ -279,10 +259,12 @@ class MainWindow(QMainWindow):
         self._format_combo = _combo(text.FORMAT_TIP)
         self._format_combo.currentIndexChanged.connect(self._on_format)
 
-        row = _row_frame("actionRow")
+        row = _row_frame("toolbarRow")
         layout = QHBoxLayout(row)
-        layout.setContentsMargins(14, 8, 14, 8)
+        layout.setContentsMargins(14, 10, 14, 10)
         layout.setSpacing(8)
+        layout.addWidget(self._filter_edit, 1)
+        layout.addWidget(self._filter_count)
         for widget in (
             self._zoom_out,
             self._zoom_slider,
@@ -290,14 +272,19 @@ class MainWindow(QMainWindow):
             self._zoom_label,
             self._zoom_fit,
             self._zoom_reset,
+            self._format_combo,
         ):
             widget.setFixedHeight(theme.CONTROL_HEIGHT)
             layout.addWidget(widget)
-        layout.addStretch(1)
-        layout.addWidget(_muted_label(text.VALUE))
-        layout.addWidget(self._format_combo)
-        self._format_combo.setFixedHeight(theme.CONTROL_HEIGHT)
         return row
+
+    def _ghost_button(self, label: str, width: int, slot: Callable[[], None]) -> QPushButton:
+        button = QPushButton(label)
+        button.setObjectName("ghost")
+        if width:
+            button.setFixedWidth(width)
+        button.clicked.connect(_drop_checked(slot))
+        return button
 
     def _build_body(self) -> None:
         self._scroll = QScrollArea()

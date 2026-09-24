@@ -51,8 +51,8 @@ QMenu::item:selected {{ background: {HOVER}; color: {ACCENT}; }}
 QMenu::separator {{ height: 1px; background: {HAIRLINE}; margin: 5px 8px; }}
 
 QToolBar {{ background: {SURFACE}; border: none; padding: 0; spacing: 0; }}
-QFrame#filterRow {{ background: {SURFACE}; border-bottom: 1px solid {HAIRLINE}; }}
-QFrame#actionRow {{ background: {SURFACE}; border-bottom: 1px solid {HAIRLINE}; }}
+QFrame#toolbarRow {{ background: {SURFACE}; border-bottom: 1px solid {HAIRLINE}; }}
+QFrame#card {{ background: {FIELD}; border: none; border-radius: 8px; }}
 QFrame#hairline {{ background: {HAIRLINE}; border: none; }}
 
 QLabel {{ background: transparent; color: {TEXT}; }}
@@ -81,6 +81,9 @@ QPushButton#segmentRight {{
 }}
 QPushButton#linkButton {{ border: none; background: transparent; color: {ACCENT}; padding: 0 4px; }}
 QPushButton#linkButton:hover {{ background: {HOVER}; }}
+QPushButton#ghost {{ border: none; background: transparent; color: {TEXT}; padding: 2px 8px; }}
+QPushButton#ghost:hover {{ background: {HOVER}; }}
+QPushButton#ghost:pressed {{ background: {PRESSED}; }}
 
 QComboBox::drop-down {{ border: none; width: 16px; }}
 QComboBox QAbstractItemView {{
@@ -96,7 +99,7 @@ QComboBox QAbstractItemView {{
 QLineEdit {{
     background: {INPUT};
     border: 1px solid transparent;
-    border-radius: 7px;
+    border-radius: 6px;
     padding: 3px 9px;
     color: {TEXT};
     selection-background-color: {ACCENT};

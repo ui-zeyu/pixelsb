@@ -32,7 +32,6 @@ EXTRACT_NOTE = "按通道顺序、位从低到高，每 8 位拼 1 字节，高�
 EXTRACT_SEARCH_TIP = "搜索十六进制或 ASCII"
 EXTRACT_OFFSET = "偏移"
 EXTRACT_ASCII = "ASCII"
-FILTER_LABEL = "过滤"
 FILTER_PLACEHOLDER = "显示过滤器：rect(50, 50, 100, 100) and B.raw >= R.raw"
 FILTER_ERROR = "过滤错误："
 FILTER_TIP = (
@@ -44,7 +43,6 @@ FILTER_TIP = (
     "例：rect(50, 50, 100, 100) and B >= R 或 B.raw >= 200。"
     "⌘F 聚焦，回车应用，Esc 清空并回到画布，留空即不过滤。"
 )
-VALUE = "数值"
 DECIMAL = "十进制"
 HEX = "十六进制"
 BINARY = "二进制"

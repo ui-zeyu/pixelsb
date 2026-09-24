@@ -191,12 +191,26 @@ def test_the_clear_icon_is_a_light_cross() -> None:
     assert image.pixelColor(0, 0).alpha() == 0
 
 
-def test_the_header_rows_share_one_control_height(qtbot: QtBot, rgb_png: Path) -> None:
+def test_the_toolbar_is_a_single_row_of_shared_height(qtbot: QtBot, rgb_png: Path) -> None:
     window = MainWindow()
     qtbot.addWidget(window)
-    window.resize(900, 700)
+    window.resize(1200, 800)
     window.show()
     window.open_path(rgb_png)
+    row = window._filter_edit.parentWidget()
+    assert row is not None
+    assert row.objectName() == "toolbarRow"
+    for widget in (
+        window._filter_count,
+        window._zoom_out,
+        window._zoom_slider,
+        window._zoom_in,
+        window._zoom_label,
+        window._zoom_fit,
+        window._zoom_reset,
+        window._format_combo,
+    ):
+        assert widget.parentWidget() is row
     heights = {
         window._filter_edit.height(),
         window._zoom_fit.height(),
@@ -205,11 +219,7 @@ def test_the_header_rows_share_one_control_height(qtbot: QtBot, rgb_png: Path) -
         window.inspector._extract_search.height(),
     }
     assert heights == {theme.CONTROL_HEIGHT}
-    filter_row = window._filter_edit.parentWidget()
-    action_row = window._zoom_fit.parentWidget()
-    assert filter_row is not None
-    assert action_row is not None
-    assert filter_row.height() == action_row.height() == theme.CONTROL_HEIGHT + 16
+    assert row.height() == theme.CONTROL_HEIGHT + 20
 
 
 def test_panel_and_status_widgets_track_the_state(qtbot: QtBot, rgb_png: Path) -> None:
