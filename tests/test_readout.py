@@ -2,7 +2,7 @@ from pathlib import Path
 
 import numpy as np
 
-from pixelsb.domain.labels import widest_text
+from pixelsb.domain.labels import pixel_text, widest_text
 from pixelsb.domain.models import (
     DisplayFormat,
     PixelCoord,
@@ -10,7 +10,6 @@ from pixelsb.domain.models import (
     SamplePlane,
     ViewerState,
 )
-from pixelsb.domain.readout import cursor_label
 from pixelsb.domain.transitions import (
     open_image,
     select_only,
@@ -46,7 +45,7 @@ def test_empty_states_have_hints() -> None:
 def test_numbers_follow_the_canvas_selection() -> None:
     state = set_format(set_cursor(_state(), PixelCoord(0, 0)), DisplayFormat.BINARY)
     state = select_only(state, "R", 0)
-    assert cursor_label(state) == "1"
+    assert pixel_text(state, PixelCoord(0, 0)) == "1"
     assert readout_text(state).endswith("画面 R0")
     assert widest_text(state) == "1"
 

@@ -15,7 +15,6 @@ def test_rgb_and_rgba_keep_raw_channels(tmp_path: Path) -> None:
     loaded = load_image(rgb_path)
     assert [plane.name for plane in loaded.planes] == ["R", "G", "B"]
     assert loaded.samples[0, 0].tolist() == [1, 2, 3]
-    assert loaded.preview_rgba[0, 0].tolist() == [1, 2, 3, 255]
     assert not loaded.samples.flags.writeable
 
     rgba = Image.new("RGBA", (1, 1), (1, 2, 3, 4))
@@ -37,8 +36,6 @@ def test_mode_one_uses_a_single_bit(tmp_path: Path) -> None:
     assert loaded.planes[0].bit_depth == 1
     assert int(loaded.samples[0, 0, 0]) == 1
     assert int(loaded.samples[0, 1, 0]) == 0
-    assert int(loaded.preview_rgba[0, 0, 0]) == 255
-    assert int(loaded.preview_rgba[0, 1, 0]) == 0
 
 
 def test_la_keeps_luminance_and_alpha(tmp_path: Path) -> None:
@@ -78,7 +75,6 @@ def test_sixteen_bit_png_and_big_endian_tiff_keep_numeric_samples(tmp_path: Path
     assert loaded_png.planes[0].bit_depth == 16
     assert int(loaded_png.samples[0, 0, 0]) == 0x1234
     assert int(loaded_png.samples[0, 1, 0]) == 0x0100
-    assert int(loaded_png.preview_rgba[0, 1, 0]) == 0
 
     tiff = Image.new("I;16B", (2, 1))
     tiff.putpixel((0, 0), 0x1234)

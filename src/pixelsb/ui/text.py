@@ -2,7 +2,7 @@
 
 from decimal import ROUND_HALF_UP, Decimal
 
-from pixelsb.domain.models import ExtractEncoding, SampleOrigin, ViewerState
+from pixelsb.domain.models import BitChoice, ExtractEncoding, SampleOrigin, ViewerState
 from pixelsb.domain.readout import build_readout, label_zoom
 
 _TWO_PLACES = Decimal("0.01")
@@ -135,6 +135,19 @@ ORIGIN_LABEL = {
 }
 
 
+LAYER_ALL = "原图"
+LAYER_NONE = "未选择"
+
+
+def layer_text(bits: tuple[BitChoice, ...] | None) -> str:
+    """Which bits drive the canvas: every bit, none, or the list by name."""
+    if bits is None:
+        return LAYER_ALL
+    if not bits:
+        return LAYER_NONE
+    return " ".join(f"{choice.plane}{choice.bit}" for choice in bits)
+
+
 def readout_text(state: ViewerState) -> str:
     if state.image is None:
         return NO_IMAGE
@@ -142,8 +155,8 @@ def readout_text(state: ViewerState) -> str:
     if readout is None:
         return NO_CURSOR
     lines = [f"光标 ({readout.cursor.x}, {readout.cursor.y})"]
-    lines.extend(f"{channel.name}  {channel.absolute}" for channel in readout.channels)
-    lines.append(readout.summary)
+    lines.extend(f"{channel.name}  {channel.text}" for channel in readout.channels)
+    lines.append(f"画面 {layer_text(readout.bits)}")
     return "\n".join(lines)
 
 

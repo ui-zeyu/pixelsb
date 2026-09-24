@@ -8,7 +8,6 @@ import numpy as np
 from numpy.typing import NDArray
 
 type SampleArray = NDArray[np.uint16]
-type PreviewArray = NDArray[np.uint8]
 type RgbArray = NDArray[np.uint8]
 
 MIN_ZOOM = 1.0
@@ -82,29 +81,21 @@ class LoadedImage:
     height: int
     samples: SampleArray
     planes: tuple[SamplePlane, ...]
-    preview_rgba: PreviewArray
     frame_count: int
     frame_index: int
 
     def __post_init__(self) -> None:
         if self.samples.dtype != np.uint16 or self.samples.ndim != 3:
             raise ValueError("samples must be a uint16 array of shape (height, width, planes)")
-        if self.preview_rgba.dtype != np.uint8 or self.preview_rgba.ndim != 3:
-            raise ValueError("preview must be a uint8 array of shape (height, width, 4)")
         samples = np.ascontiguousarray(self.samples)
-        preview = np.ascontiguousarray(self.preview_rgba)
         samples.setflags(write=False)
-        preview.setflags(write=False)
         object.__setattr__(self, "samples", samples)
-        object.__setattr__(self, "preview_rgba", preview)
         if self.width < 1 or self.height < 1:
             raise ValueError("image has no pixels")
         if not self.planes:
             raise ValueError("image has no planes")
         if samples.shape != (self.height, self.width, len(self.planes)):
             raise ValueError("sample shape does not match the image size and planes")
-        if preview.shape != (self.height, self.width, 4):
-            raise ValueError("preview shape does not match the image size")
         if len({plane.name for plane in self.planes}) != len(self.planes):
             raise ValueError("plane names must be unique")
         if any(plane.index != index for index, plane in enumerate(self.planes)):

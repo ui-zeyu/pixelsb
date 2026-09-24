@@ -1,6 +1,6 @@
 import pytest
 
-from pixelsb.domain.formatting import binary_bit_index, format_sample
+from pixelsb.domain.formatting import format_sample
 from pixelsb.domain.models import DisplayFormat
 
 
@@ -15,13 +15,7 @@ def test_format_sample_widths() -> None:
 
 
 def test_format_rejects_values_outside_the_bit_depth() -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="does not fit"):
         format_sample(256, 8, DisplayFormat.HEX)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="does not fit"):
         format_sample(-1, 8, DisplayFormat.DECIMAL)
-
-
-def test_binary_bit_index_counts_from_the_lsb() -> None:
-    assert binary_bit_index(8, 0) == 7
-    assert binary_bit_index(8, 7) == 0
-    assert binary_bit_index(1, 0) == 0

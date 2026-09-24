@@ -17,15 +17,6 @@ def format_sample(value: int, bit_depth: int, fmt: DisplayFormat) -> str:
             raise ValueError(f"unknown format: {fmt}")
 
 
-def binary_bit_index(bit_depth: int, bit: int) -> int:
-    """Index of ``bit`` in an MSB-first binary string. Bit 0 is the last character."""
-    if not 1 <= bit_depth <= 256:
-        raise ValueError("bit depth must be from 1 to 256")
-    if not 0 <= bit < bit_depth:
-        raise ValueError(f"bit {bit} is outside 0..{bit_depth - 1}")
-    return bit_depth - 1 - bit
-
-
 def _check_sample(value: int, bit_depth: int) -> None:
     if not 1 <= bit_depth <= 256:
         raise ValueError("bit depth must be from 1 to 256")
