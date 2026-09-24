@@ -11,6 +11,7 @@ into a numpy closure — strings are never evaluated.
 import ast
 from collections.abc import Callable
 from functools import reduce
+from itertools import pairwise
 from typing import Any
 
 import numpy as np
@@ -239,8 +240,7 @@ def _compile_compare(ops: list[ast.cmpop], operands: list[Evaluator]) -> Evaluat
     def evaluate(env: FieldEnv) -> Value:
         values = [operand(env) for operand in operands]
         parts = [
-            compare(a, b)
-            for compare, a, b in zip(comparisons, values[:-1], values[1:], strict=True)
+            compare(a, b) for compare, (a, b) in zip(comparisons, pairwise(values), strict=True)
         ]
         return reduce(np.logical_and, parts, np.asarray(True))
 

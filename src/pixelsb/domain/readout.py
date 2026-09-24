@@ -80,7 +80,7 @@ def _channels(state: ViewerState) -> tuple[ChannelReadout, ...]:
     chosen = effective_selection(image, number_bits(state))
     if not chosen:
         return ()
-    cursor_row = tuple(int(sample) for sample in image.samples[cursor.y, cursor.x])
+    cursor_row = tuple(image.samples[cursor.y, cursor.x].tolist())
     rows: list[ChannelReadout] = []
     for plane in image.planes:
         bits = bits_for(chosen, plane.name)

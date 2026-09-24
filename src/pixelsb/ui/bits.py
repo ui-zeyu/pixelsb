@@ -60,10 +60,7 @@ class BitMatrix(QWidget):
             _sync_group(box, members)
 
     def _rebuild(self, planes: tuple[SamplePlane, ...]) -> None:
-        while self._layout.count():
-            item = self._layout.takeAt(0)
-            if item is None:
-                break
+        while item := self._layout.takeAt(0):
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()

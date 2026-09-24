@@ -1,6 +1,7 @@
 """StegSolve-style bit extraction: selected bits packed into bytes."""
 
 from dataclasses import dataclass
+from itertools import batched
 
 import numpy as np
 from numpy.typing import NDArray
@@ -63,8 +64,8 @@ def format_extract(data: bytes, limit: int = DISPLAY_LINES) -> list[ExtractRow]:
     """Rows of hex and ASCII; the offset stays out of ``text`` for the gutter."""
     shown = data[: limit * BYTES_PER_ROW]
     rows = [
-        ExtractRow(offset, _row_text(shown[offset : offset + BYTES_PER_ROW]))
-        for offset in range(0, len(shown), BYTES_PER_ROW)
+        ExtractRow(index * BYTES_PER_ROW, _row_text(bytes(chunk)))
+        for index, chunk in enumerate(batched(shown, BYTES_PER_ROW, strict=False))
     ]
     if not rows:
         rows.append(ExtractRow(None, "（无数据）"))

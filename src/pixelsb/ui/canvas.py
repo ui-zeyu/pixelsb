@@ -403,8 +403,7 @@ class ImageCanvas(QWidget):
 
     def dropEvent(self, event: QDropEvent) -> None:
         for url in event.mimeData().urls():
-            local = url.toLocalFile()
-            if local:
+            if local := url.toLocalFile():
                 self.file_dropped.emit(local)
                 event.acceptProposedAction()
                 return

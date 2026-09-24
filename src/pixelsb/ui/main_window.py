@@ -676,8 +676,7 @@ class MainWindow(QMainWindow):
 
     def _open_dropped(self, event: QDropEvent) -> None:
         for url in event.mimeData().urls():
-            local = url.toLocalFile()
-            if local and Path(local).is_file():
+            if (local := url.toLocalFile()) and Path(local).is_file():
                 self.open_path(Path(local))
                 event.acceptProposedAction()
                 return
