@@ -4,6 +4,8 @@ Row and column checkboxes toggle whole channels and bit columns; they show a
 partial state when only part of the group is selected.
 """
 
+from typing import override
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import QApplication, QCheckBox, QGridLayout, QSizePolicy, QWidget
@@ -46,7 +48,7 @@ class BitMatrix(QWidget):
             return
         for (plane, bit), box in self._boxes.items():
             checked = True if chosen is None else BitChoice(plane, bit) in chosen
-            _sync_box(box, checked)
+            _sync_box(box, checked=checked)
         for name, box in self._row_boxes.items():
             plane = next(candidate for candidate in planes if candidate.name == name)
             members = _members(plane, plane.bit_depth, chosen)
@@ -103,6 +105,7 @@ class BitMatrix(QWidget):
         for column in range(1, max_depth + 1):
             self._layout.setColumnStretch(column, 1)
 
+    @override
     def mousePressEvent(self, event: QMouseEvent) -> None:
         # Swallow clicks on empty grid cells so they do not reach the parent.
         if self.childAt(event.position().toPoint()) is None:
@@ -137,7 +140,7 @@ def _header_box(label: str) -> QCheckBox:
     return box
 
 
-def _sync_box(box: QCheckBox, checked: bool) -> None:
+def _sync_box(box: QCheckBox, *, checked: bool) -> None:
     state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
     if box.checkState() != state:
         box.setCheckState(state)

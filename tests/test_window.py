@@ -64,11 +64,11 @@ def test_filter_match_follows_the_selection(qtbot: QtBot, rgb_png: Path) -> None
     qtbot.addWidget(window)
     window.open_path(rgb_png)
     window.apply(lambda state: set_filter_expr(state, "R == 255"))
-    first = window._match
+    first = window._match.mask
     assert first is not None
     assert first[0, 0] and not first[1, 0]
     window.apply(lambda state: select_only(state, "R", 7))
-    second = window._match
+    second = window._match.mask
     assert second is not None
     assert not second.any()
 
@@ -83,9 +83,9 @@ def test_bad_filter_shows_an_error_and_keeps_the_image(
     qtbot.addWidget(window)
     window.open_path(rgb_png)
     window.apply(lambda state: set_filter_expr(state, "A > 0"))
-    assert window._match is None
-    assert window._match_error is not None
-    assert "未知字段" in window._match_error
+    assert window._match.mask is None
+    assert window._match.error is not None
+    assert "未知字段" in window._match.error
     assert window.store.state.filter_expr == "A > 0"
 
 
@@ -134,7 +134,7 @@ def test_only_matched_toggle_needs_a_filter_and_drives_the_canvas(
     # The display toggle never touches the extracted byte stream.
     window.apply(lambda state: set_filter_expr(state, "grid(0, 0, 2, 2)"))
     before = window.inspector._extract_rows
-    window.apply(lambda state: set_only_matched(state, True))
+    window.apply(lambda state: set_only_matched(state, on=True))
     assert window.inspector._extract_rows == before
 
 
@@ -169,7 +169,7 @@ def test_select_mode_previews_then_appends_on_enter(qtbot: QtBot, rgb_png: Path)
     assert "回车追加到过滤器" in window._status_view.text()
     assert "通过 4/4" in window._status_view.text()
     assert window.store.state.filter_expr == ""
-    assert window._match is None
+    assert window._match.mask is None
     assert window._filter_count.text() == ""
     qtbot.keyClick(window.canvas, Qt.Key.Key_Return)
     assert window._filter_edit.text() == "rect(0, 0, 2, 2)"
@@ -187,16 +187,16 @@ def test_committing_a_region_appends_to_the_expression(qtbot: QtBot, rgb_png: Pa
     window.show()
     window.open_path(rgb_png)
     window.apply(lambda state: set_filter_expr(state, "B >= 200"))
-    assert window._match is not None
-    assert int(window._match.sum()) == 1  # only the blue pixel at (0, 1)
+    assert window._match.mask is not None
+    assert int(window._match.mask.sum()) == 1  # only the blue pixel at (0, 1)
     extract = window.inspector._extract_rows
     window._on_region_selected(1, 0, 1, 1)  # the right column holds no match
     assert window.store.state.filter_expr == "B >= 200"  # preview only
     assert "通过 0/4" in window._status_view.text()
     window._on_region_committed(1, 0, 1, 1)
     assert window.store.state.filter_expr == "(B >= 200) and rect(1, 0, 2, 2)"
-    assert window._match is not None
-    assert int(window._match.sum()) == 0
+    assert window._match.mask is not None
+    assert int(window._match.mask.sum()) == 0
     assert window.inspector._extract_rows != extract
 
 
@@ -211,8 +211,8 @@ def test_escape_drops_the_preview_without_touching_the_filter(qtbot: QtBot, rgb_
     window._on_region_selected(1, 0, 1, 1)
     window._on_region_canceled()
     assert window.store.state.filter_expr == "B >= 200"
-    assert window._match is not None
-    assert int(window._match.sum()) == 1
+    assert window._match.mask is not None
+    assert int(window._match.mask.sum()) == 1
     assert window._status_view.text().startswith("光标")
 
 

@@ -1,8 +1,10 @@
 """Zoomable image canvas. One image pixel maps to ``zoom`` logical pixels."""
 
 import math
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from functools import lru_cache
+from typing import override
 
 import numpy as np
 from numpy.typing import NDArray
@@ -58,6 +60,44 @@ _DARK_TEXT = QColor("#111111")
 _LIGHT_TEXT = QColor("#f5f5f5")
 _LUMA_WEIGHTS = np.array([2126, 7152, 722], dtype=np.uint32)
 _LUMA_THRESHOLD = 1_500_000
+_EMPTY_TARGET = QSize(320, 240)
+
+
+@dataclass(frozen=True, slots=True)
+class _Frame:
+    """Everything one viewer state draws, and the keys that say when to rebuild.
+
+    ``qimage`` is what the painter blits, ``rgb`` and ``match`` are what the
+    numeric labels read, and ``target`` is the canvas size the zoom asks for.
+    The empty state has no pixels, so it holds a placeholder size instead.
+    """
+
+    qimage: QImage | None = None
+    rgb: RgbArray | None = None
+    view: MatchView | None = None
+    match: NDArray[np.bool_] | None = None
+    no_match: bool = False
+    target: QSize = _EMPTY_TARGET
+    content_key: tuple[object, ...] | None = None
+    label_key: tuple[object, ...] | None = None
+
+    @property
+    def width(self) -> int:
+        if self.view is not None:
+            return self.view.width
+        return 0 if self.rgb is None else self.rgb.shape[1]
+
+    @property
+    def height(self) -> int:
+        if self.view is not None:
+            return self.view.height
+        return 0 if self.rgb is None else self.rgb.shape[0]
+
+    def at_zoom(self, zoom: float) -> QSize:
+        """The canvas size these pixels ask for at ``zoom``."""
+        if self.qimage is None:
+            return _EMPTY_TARGET
+        return QSize(math.ceil(self.width * zoom), math.ceil(self.height * zoom))
 
 
 class CanvasMode(StrEnum):
@@ -81,15 +121,8 @@ class ImageCanvas(QWidget):
         super().__init__()
         self._scroll = scroll
         self._state = ViewerState()
-        self._image: QImage | None = None
-        self._rgb: RgbArray | None = None
+        self._frame = _Frame()
         self._bright: NDArray[np.bool_] | None = None
-        self._match: NDArray[np.bool_] | None = None
-        self._view: MatchView | None = None
-        self._no_match = False
-        self._cache_key: tuple[object, ...] | None = None
-        self._label_key: tuple[object, ...] | None = None
-        self._target = QSize(320, 240)
         self._space_down = False
         self._panning = False
         self._pan_origin = QPoint()
@@ -113,16 +146,14 @@ class ImageCanvas(QWidget):
 
     def displayed_size(self) -> tuple[int, int] | None:
         image = self._state.image
-        if image is None or self._image is None:
+        frame = self._frame
+        if image is None or frame.qimage is None:
             return None
-        view = self._view
-        if view is not None:
-            return view.width, view.height
-        return image.width, image.height
+        return frame.width, frame.height
 
     def displayed_at(self, coord: PixelCoord) -> tuple[int, int] | None:
         """Where a source pixel sits on the canvas now; ``None`` when hidden."""
-        view = self._view
+        view = self._frame.view
         if view is not None:
             return view.display_of(coord)
         image = self._state.image
@@ -163,78 +194,90 @@ class ImageCanvas(QWidget):
         match: NDArray[np.bool_] | None = None,
     ) -> None:
         previous = self._state
-        image = state.image
-        rebuilt = False
-        if image is None:
-            rebuilt = self._image is not None
-            self._image = None
-            self._rgb = None
-            self._bright = None
-            self._view = None
-            self._no_match = False
+        if state.image is None or state.image is not previous.image:
+            # The region belongs to the image it was dragged on.
             self._marquee_origin = None
             self._marquee = None
-            self._cache_key = None
-            self._target = QSize(320, 240)
-        else:
-            if previous.image is not image:
-                # The region belongs to the image it was dragged on.
-                self._marquee_origin = None
-                self._marquee = None
-            # The image object itself is the identity: id() values get recycled
-            # after the previous image is freed, which would hit a stale cache.
-            key = (image, state.selection, state.filter_expr, state.only_matched)
-            if key != self._cache_key:
-                view = self._compacted_view(image, state, match)
-                if view is not None:
-                    self._no_match = False
-                    self._rgb = view.rgb
-                    self._view = view
-                    self._bright = None
-                    self._image = qimage_from_rgb(view.rgb)
-                else:
-                    # Exact test for the empty state: a shape-stale match falls
-                    # back to the plain render instead.
-                    no_match = state.only_matched and match is not None and not match.any()
-                    rgb = render_rgb(image, state.selection)
-                    if match is not None and match.shape == rgb.shape[:2] and not no_match:
-                        _fade_out(rgb, match)
-                    self._no_match = no_match
-                    self._rgb = None if no_match else rgb
-                    self._view = None
-                    self._bright = None
-                    self._image = qimage_from_rgb(rgb) if self._rgb is not None else None
-                self._cache_key = key
-                rebuilt = True
-            if self._no_match:
-                self._target = QSize(320, 240)
-            else:
-                view = self._view
-                width = view.width if view is not None else image.width
-                height = view.height if view is not None else image.height
-                self._target = QSize(
-                    math.ceil(width * state.zoom),
-                    math.ceil(height * state.zoom),
-                )
-        label_key = (
-            state.value_format,
-            state.selection,
-            state.filter_expr,
-            match is not None,
-        )
-        self._match = match
-        labels_changed = label_key != self._label_key
-        self._label_key = label_key
-        self._state = state
-        if self.size() != self._target:
-            self.resize(self._target)
+        frame = self._frame_for(state, match)
+        if frame.rgb is not self._frame.rgb:
+            self._bright = None
+        rebuilt = frame.content_key != self._frame.content_key
+        relabelled = frame.label_key != self._frame.label_key
+        resized = self.size() != frame.target
+        if resized:
+            self.resize(frame.target)
             self.updateGeometry()
-            rebuilt = True
-        if rebuilt or previous.zoom != state.zoom or labels_changed:
+        self._frame = frame
+        self._state = state
+        if rebuilt or relabelled or resized or previous.zoom != state.zoom:
             self.update()
             return
         for coord in (previous.cursor, state.cursor):
             self._repaint_pixel(coord, state.zoom)
+
+    def _frame_for(
+        self,
+        state: ViewerState,
+        match: NDArray[np.bool_] | None,
+    ) -> _Frame:
+        """The frame for one state, rendering again only when its content moved."""
+        image = state.image
+        if image is None:
+            return _Frame()
+        # The image object itself is the identity: id() values get recycled
+        # after the previous image is freed, which would hit a stale cache.
+        content = (image, state.selection, state.filter_expr, state.only_matched)
+        labels = (state.value_format, state.selection, state.filter_expr, match is not None)
+        frame = self._frame
+        if content == frame.content_key:
+            # The same pixels: only the zoom, the match, or the numbers changed.
+            return replace(frame, match=match, label_key=labels, target=frame.at_zoom(state.zoom))
+        return self._render_frame(image, state, match, content, labels)
+
+    def _render_frame(
+        self,
+        image: LoadedImage,
+        state: ViewerState,
+        match: NDArray[np.bool_] | None,
+        content: tuple[object, ...],
+        labels: tuple[object, ...],
+    ) -> _Frame:
+        """Render one state's pixels, at whatever the current zoom asks for."""
+        frame = self._rendered_frame(image, state, match, content, labels)
+        return replace(frame, target=frame.at_zoom(state.zoom))
+
+    def _rendered_frame(
+        self,
+        image: LoadedImage,
+        state: ViewerState,
+        match: NDArray[np.bool_] | None,
+        content: tuple[object, ...],
+        labels: tuple[object, ...],
+    ) -> _Frame:
+        view = self._compacted_view(image, state, match)
+        if view is not None:
+            return _Frame(
+                qimage=qimage_from_rgb(view.rgb),
+                rgb=view.rgb,
+                view=view,
+                match=match,
+                content_key=content,
+                label_key=labels,
+            )
+        if state.only_matched and match is not None and not match.any():
+            return _Frame(match=match, no_match=True, content_key=content, label_key=labels)
+        # A shape-stale match falls back to the plain render rather than fading
+        # pixels it does not describe.
+        rgb = render_rgb(image, state.selection)
+        if match is not None and match.shape == rgb.shape[:2]:
+            _fade_out(rgb, match)
+        return _Frame(
+            qimage=qimage_from_rgb(rgb),
+            rgb=rgb,
+            match=match,
+            content_key=content,
+            label_key=labels,
+        )
 
     def _repaint_pixel(self, coord: PixelCoord | None, zoom: float) -> None:
         if coord is None:
@@ -266,12 +309,15 @@ class ImageCanvas(QWidget):
     def _drag_distance(self, event: QMouseEvent, press: QPoint) -> float:
         return (event.globalPosition().toPoint() - press).manhattanLength()
 
+    @override
     def sizeHint(self) -> QSize:
-        return self._target
+        return self._frame.target
 
+    @override
     def minimumSizeHint(self) -> QSize:
-        return self._target
+        return self._frame.target
 
+    @override
     def paintEvent(self, event: QPaintEvent) -> None:
         painter = QPainter(self)
         try:
@@ -282,10 +328,11 @@ class ImageCanvas(QWidget):
 
     def _paint(self, painter: QPainter, event: QPaintEvent) -> None:
         painter.fillRect(event.rect(), _BACKGROUND)
-        qimage = self._image
+        frame = self._frame
+        qimage = frame.qimage
         image = self._state.image
         if qimage is None or image is None:
-            if self._no_match:
+            if frame.no_match:
                 _draw_empty_state(painter, self.rect(), hint=text.FILTER_NO_MATCH, shortcut="")
             else:
                 _draw_empty_state(painter, self.rect())
@@ -297,7 +344,7 @@ class ImageCanvas(QWidget):
             painter.drawImage(dest, qimage, source)
         if zoom >= GRID_ZOOM:
             _draw_grid(painter, source, zoom)
-        _draw_marker(painter, self._view, self._state.cursor, zoom)
+        _draw_marker(painter, frame.view, self._state.cursor, zoom)
         _draw_marquee(painter, self._marquee, zoom)
         self._draw_labels(painter, self._state, source, zoom)
 
@@ -308,7 +355,8 @@ class ImageCanvas(QWidget):
         source: QRectF,
         zoom: float,
     ) -> None:
-        rgb = self._rgb
+        frame = self._frame
+        rgb = frame.rgb
         image = state.image
         font = _label_font(widest_text(state), zoom)
         if font is None or rgb is None or image is None:
@@ -324,10 +372,10 @@ class ImageCanvas(QWidget):
         rows = y1 - y0
         if columns <= 0 or rows <= 0:
             return
-        view = self._view
+        view = frame.view
         if view is None:
             texts = region_texts(state, x0, y0, x1, y1)
-            match = self._match
+            match = frame.match
             if match is not None and match.shape != (height, width):
                 match = None
         else:
@@ -366,6 +414,7 @@ class ImageCanvas(QWidget):
         finally:
             painter.restore()
 
+    @override
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         if self._marquee_origin is not None:
             self._move_marquee(event.position().toPoint())
@@ -390,6 +439,7 @@ class ImageCanvas(QWidget):
             return
         self._hover(event.position().toPoint())
 
+    @override
     def mousePressEvent(self, event: QMouseEvent) -> None:
         self.setFocus(Qt.FocusReason.MouseFocusReason)
         if event.button() == Qt.MouseButton.MiddleButton or (
@@ -412,6 +462,7 @@ class ImageCanvas(QWidget):
             return
         super().mousePressEvent(event)
 
+    @override
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if self._marquee_origin is not None and event.button() == Qt.MouseButton.LeftButton:
             self._finish_marquee()
@@ -431,11 +482,13 @@ class ImageCanvas(QWidget):
             self.setCursor(self._mode_cursor())
         super().mouseReleaseEvent(event)
 
+    @override
     def event(self, event: QEvent) -> bool:
         if self._handle_gesture(event):
             return True
         return super().event(event)
 
+    @override
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if self._handle_gesture(event):
             return True
@@ -484,6 +537,7 @@ class ImageCanvas(QWidget):
             modifiers & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.MetaModifier)
         )
 
+    @override
     def wheelEvent(self, event: QWheelEvent) -> None:
         zooming = self._zoom_modifier(event)
         if zooming:
@@ -505,18 +559,21 @@ class ImageCanvas(QWidget):
         vertical.setValue(vertical.value() - dy)
         event.accept()
 
+    @override
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
             return
         event.ignore()
 
+    @override
     def dragMoveEvent(self, event: QDragMoveEvent) -> None:
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
             return
         event.ignore()
 
+    @override
     def dropEvent(self, event: QDropEvent) -> None:
         for url in event.mimeData().urls():
             if local := url.toLocalFile():
@@ -525,6 +582,7 @@ class ImageCanvas(QWidget):
                 return
         event.ignore()
 
+    @override
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() == Qt.Key.Key_Escape and (
             self._marquee_origin is not None or self._marquee is not None
@@ -548,6 +606,7 @@ class ImageCanvas(QWidget):
             return
         super().keyPressEvent(event)
 
+    @override
     def keyReleaseEvent(self, event: QKeyEvent) -> None:
         if event.key() == Qt.Key.Key_Space and not event.isAutoRepeat():
             self._space_down = False
@@ -567,7 +626,7 @@ class ImageCanvas(QWidget):
         image = self._state.image
         if image is None:
             return None
-        view = self._view
+        view = self._frame.view
         width = view.width if view is not None else image.width
         height = view.height if view is not None else image.height
         cell = pixel_at(point.x(), point.y(), self._state.zoom, width, height)
@@ -582,7 +641,7 @@ class ImageCanvas(QWidget):
         image = self._state.image
         if image is None:
             return None
-        view = self._view
+        view = self._frame.view
         width = view.width if view is not None else image.width
         height = view.height if view is not None else image.height
         zoom = self._state.zoom

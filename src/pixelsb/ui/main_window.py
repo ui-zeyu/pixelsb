@@ -2,7 +2,10 @@
 
 import math
 from collections.abc import Callable
+from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
+from typing import override
 
 import numpy as np
 from numpy.typing import NDArray
@@ -94,6 +97,7 @@ _TEXT_INPUTS = (QLineEdit, QAbstractSpinBox, QPlainTextEdit, QTextEdit, QComboBo
 _SLIDER_STEPS = 1000
 _ZOOM_RATIO = MAX_ZOOM / MIN_ZOOM
 _CANVAS_MIN_WIDTH = 260
+_NUDGE_STEP = 8  # a shift-arrow moves this many pixels instead of one
 _FORMAT_ITEMS = tuple(
     (fmt.value, label)
     for fmt, label in (
@@ -102,6 +106,36 @@ _FORMAT_ITEMS = tuple(
         (DisplayFormat.BINARY, text.BINARY),
     )
 )
+# Keys the canvas never sees: what each one does is the whole table's story.
+_ARROW_KEYS = {
+    Qt.Key.Key_Left: (-1, 0),
+    Qt.Key.Key_Right: (1, 0),
+    Qt.Key.Key_Up: (0, -1),
+    Qt.Key.Key_Down: (0, 1),
+}
+_FOCUS_BIT_KEYS = {Qt.Key.Key_BracketLeft: -1, Qt.Key.Key_BracketRight: 1}
+_ZOOM_KEYS = {Qt.Key.Key_Plus: 1, Qt.Key.Key_Equal: 1, Qt.Key.Key_Minus: -1}
+_COMMAND_MODIFIERS = (
+    Qt.KeyboardModifier.ControlModifier
+    | Qt.KeyboardModifier.MetaModifier
+    | Qt.KeyboardModifier.AltModifier
+)
+_CHANNEL_LETTERS = ("R", "G", "A", "L")
+_ORDERED_LETTERS = tuple(str(index) for index in range(1, 10))
+
+
+@dataclass(frozen=True, slots=True)
+class _Match:
+    """The applied display filter's verdict for one state.
+
+    An empty verdict means nothing is being filtered; an ``error`` means the
+    expression does not compile, and ``passed`` is how many pixels ``mask``
+    holds when there is no error.
+    """
+
+    mask: NDArray[np.bool_] | None = None
+    error: str | None = None
+    passed: int = 0
 
 
 class MainWindow(QMainWindow):
@@ -109,10 +143,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.store = Store()
         self._reporter = reporter or self._report_with_dialog
-        self._match: NDArray[np.bool_] | None = None
+        self._match = _Match()
         self._match_key: object = None
-        self._match_error: str | None = None
-        self._match_passed = 0
         self._panel_sized = False
         self.setWindowTitle(text.APP_NAME)
         self.resize(1200, 800)
@@ -137,12 +169,13 @@ class MainWindow(QMainWindow):
             self._reporter(text.open_failed(str(exc)))
             return
         zoom = self._fit_zoom((image.width, image.height))
-        self.apply(lambda state: open_image(state, image, zoom=zoom))
+        self.apply(partial(open_image, image=image, zoom=zoom))
         self._scroll.horizontalScrollBar().setValue(0)
         self._scroll.verticalScrollBar().setValue(0)
         self.canvas.setFocus(Qt.FocusReason.OtherFocusReason)
         QTimer.singleShot(0, self._fit)
 
+    @override
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if (
             event.type() == QEvent.Type.KeyPress
@@ -172,6 +205,7 @@ class MainWindow(QMainWindow):
                 return True
         return super().eventFilter(watched, event)
 
+    @override
     def showEvent(self, event: QShowEvent) -> None:
         if not self._panel_sized:
             self._panel_sized = True
@@ -186,15 +220,18 @@ class MainWindow(QMainWindow):
         panel = min(max(wanted, self.inspector.minimumWidth()), limit)
         self._splitter.setSizes([max(width - panel, 1), panel])
 
+    @override
     def closeEvent(self, event: QCloseEvent) -> None:
         application = _application()
         if application is not None:
             application.removeEventFilter(self)
         super().closeEvent(event)
 
+    @override
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         self._accept_file_drag(event)
 
+    @override
     def dropEvent(self, event: QDropEvent) -> None:
         self._open_dropped(event)
 
@@ -210,10 +247,10 @@ class MainWindow(QMainWindow):
 
         view_menu = self.menuBar().addMenu(text.VIEW_MENU)
         view_menu.addAction(text.ORIGINAL).triggered.connect(
-            _drop_checked(lambda: self.apply(select_all_bits))
+            _drop_checked(partial(self.apply, select_all_bits))
         )
         view_menu.addAction(text.ALL_LSB).triggered.connect(
-            _drop_checked(lambda: self.apply(select_lsbs))
+            _drop_checked(partial(self.apply, select_lsbs))
         )
 
         help_menu = self.menuBar().addMenu(text.HELP_MENU)
@@ -229,6 +266,18 @@ class MainWindow(QMainWindow):
 
     def _toolbar_row(self) -> QFrame:
         """One row: the display filter on the left, the view controls on the right."""
+        row = _row_frame("toolbarRow")
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(14, 10, 14, 10)
+        layout.setSpacing(8)
+        for widget in (*self._filter_widgets(), *self._mode_widgets(), *self._zoom_widgets()):
+            layout.addWidget(widget)
+        # The filter box takes whatever width the controls to its right leave.
+        layout.setStretch(0, 1)
+        return row
+
+    def _filter_widgets(self) -> tuple[QWidget, ...]:
+        """The expression box, its debounce, and the pass count beside it."""
         self._filter_edit = QLineEdit()
         self._filter_edit.setPlaceholderText(text.FILTER_PLACEHOLDER)
         self._filter_edit.setClearButtonEnabled(True)
@@ -245,9 +294,13 @@ class MainWindow(QMainWindow):
         find_shortcut = QShortcut(QKeySequence.StandardKey.Find, self)
         find_shortcut.activated.connect(self._focus_filter)
         self._filter_count = _muted_label()
+        return self._filter_edit, self._filter_count
 
+    def _mode_widgets(self) -> tuple[QWidget, ...]:
+        """The compacted-view switch and the exclusive 移动 / 选区 pair."""
         self._only_matched = QCheckBox(text.ONLY_MATCHED)
         self._only_matched.setToolTip(text.ONLY_MATCHED_TIP)
+        self._only_matched.setFixedHeight(theme.CONTROL_HEIGHT)
         self._only_matched.toggled.connect(self._on_only_matched)
 
         self._mode_move = QPushButton(text.MODE_MOVE)
@@ -258,6 +311,7 @@ class MainWindow(QMainWindow):
         ):
             button.setCheckable(True)
             button.setToolTip(tip)
+            button.setFixedHeight(theme.CONTROL_HEIGHT)
         self._mode_move.setObjectName("segmentLeft")
         self._mode_select.setObjectName("segmentRight")
         self._mode_move.setChecked(True)
@@ -266,12 +320,15 @@ class MainWindow(QMainWindow):
         self._mode_group.addButton(self._mode_select)
         self._mode_group.setExclusive(True)
         self._mode_group.buttonClicked.connect(self._on_mode)
+        return self._only_matched, self._mode_move, self._mode_select
 
-        self._zoom_in = self._ghost_button(text.ZOOM_IN, 28, lambda: self._zoom_by(1))
-        self._zoom_out = self._ghost_button(text.ZOOM_OUT, 28, lambda: self._zoom_by(-1))
+    def _zoom_widgets(self) -> tuple[QWidget, ...]:
+        """The zoom steppers, the slider, the readout, and the format switch."""
+        self._zoom_in = self._ghost_button(text.ZOOM_IN, 28, partial(self._zoom_by, 1))
+        self._zoom_out = self._ghost_button(text.ZOOM_OUT, 28, partial(self._zoom_by, -1))
         self._zoom_fit = self._ghost_button(text.ZOOM_FIT, 0, self._fit)
         self._zoom_reset = self._ghost_button(
-            text.ZOOM_RESET, 0, lambda: self._zoom_to(float(MIN_ZOOM))
+            text.ZOOM_RESET, 0, partial(self._zoom_to, float(MIN_ZOOM))
         )
         self._zoom_reset.setToolTip(text.ZOOM_RESET_TIP)
         self._zoom_slider = QSlider(Qt.Orientation.Horizontal)
@@ -289,19 +346,7 @@ class MainWindow(QMainWindow):
         for value, label in _FORMAT_ITEMS:
             self._format_combo.addItem(label, value)
         self._format_combo.currentIndexChanged.connect(self._on_format)
-
-        row = _row_frame("toolbarRow")
-        layout = QHBoxLayout(row)
-        layout.setContentsMargins(14, 10, 14, 10)
-        layout.setSpacing(8)
-        layout.addWidget(self._filter_edit, 1)
-        layout.addWidget(self._filter_count)
-        self._only_matched.setFixedHeight(theme.CONTROL_HEIGHT)
-        layout.addWidget(self._only_matched)
-        for button in (self._mode_move, self._mode_select):
-            button.setFixedHeight(theme.CONTROL_HEIGHT)
-            layout.addWidget(button)
-        for widget in (
+        widgets = (
             self._zoom_out,
             self._zoom_slider,
             self._zoom_in,
@@ -309,10 +354,10 @@ class MainWindow(QMainWindow):
             self._zoom_fit,
             self._zoom_reset,
             self._format_combo,
-        ):
+        )
+        for widget in widgets:
             widget.setFixedHeight(theme.CONTROL_HEIGHT)
-            layout.addWidget(widget)
-        return row
+        return widgets
 
     def _ghost_button(self, label: str, width: int, slot: Callable[[], None]) -> QPushButton:
         button = QPushButton(label)
@@ -345,8 +390,8 @@ class MainWindow(QMainWindow):
         self.inspector.bit_clicked.connect(self._on_bit)
         self.inspector.channel_toggle.connect(self._on_channel_toggle)
         self.inspector.column_toggle.connect(self._on_column_toggle)
-        self.inspector.original_requested.connect(lambda: self.apply(select_all_bits))
-        self.inspector.lsbs_requested.connect(lambda: self.apply(select_lsbs))
+        self.inspector.original_requested.connect(partial(self.apply, select_all_bits))
+        self.inspector.lsbs_requested.connect(partial(self.apply, select_lsbs))
         self.inspector.plane_step.connect(self._on_plane_step)
         self.inspector.channel_step.connect(self._on_channel_step)
         self.inspector.encoding_requested.connect(self._on_encoding)
@@ -390,115 +435,83 @@ class MainWindow(QMainWindow):
     def _handle_key(self, event: QKeyEvent) -> bool:
         key = event.key()
         modifiers = event.modifiers()
-        command = bool(
-            modifiers
-            & (
-                Qt.KeyboardModifier.ControlModifier
-                | Qt.KeyboardModifier.MetaModifier
-                | Qt.KeyboardModifier.AltModifier
-            )
-        )
-        if command and key == Qt.Key.Key_C:
-            self._copy()
-            return True
-        if command:
+        if modifiers & _COMMAND_MODIFIERS:
+            if key == Qt.Key.Key_C:
+                self._copy()
+                return True
             return False
-        shift = bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
-        match key:
-            case Qt.Key.Key_Left:
-                self._nudge(-8 if shift else -1, 0)
-                return True
-            case Qt.Key.Key_Right:
-                self._nudge(8 if shift else 1, 0)
-                return True
-            case Qt.Key.Key_Up:
-                self._nudge(0, -8 if shift else -1)
-                return True
-            case Qt.Key.Key_Down:
-                self._nudge(0, 8 if shift else 1)
-                return True
-            case Qt.Key.Key_BracketLeft:
-                self.apply(lambda state: step_focus_bit(state, -1))
-                return True
-            case Qt.Key.Key_BracketRight:
-                self.apply(lambda state: step_focus_bit(state, 1))
-                return True
-            case Qt.Key.Key_Plus | Qt.Key.Key_Equal:
-                self._zoom_by(1)
-                return True
-            case Qt.Key.Key_Minus:
-                self._zoom_by(-1)
-                return True
-            case Qt.Key.Key_0:
-                self._fit()
-                return True
-            case _:
-                return self._handle_text_key(event)
+        if (arrows := _ARROW_KEYS.get(key)) is not None:
+            step = _NUDGE_STEP if modifiers & Qt.KeyboardModifier.ShiftModifier else 1
+            self._nudge(arrows[0] * step, arrows[1] * step)
+            return True
+        if (bit_step := _FOCUS_BIT_KEYS.get(key)) is not None:
+            self.apply(partial(step_focus_bit, delta=bit_step))
+            return True
+        if (direction := _ZOOM_KEYS.get(key)) is not None:
+            self._zoom_by(direction)
+            return True
+        if key == Qt.Key.Key_0:
+            self._fit()
+            return True
+        return self._handle_text_key(event)
 
     def _handle_text_key(self, event: QKeyEvent) -> bool:
         if event.isAutoRepeat():
             return False
         label = event.text().upper()
-        match label:
-            case "F":
-                self.apply(cycle_format)
-            case "R" | "G" | "A" | "L":
-                self.apply(lambda state, name=label: select_lsb(state, name))
-            case "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9":
-                self.apply(lambda state, index=int(label) - 1: select_lsb_at(state, index))
-            case _:
-                return False
-        return True
+        if label == "F":
+            self.apply(cycle_format)
+            return True
+        if label in _CHANNEL_LETTERS:
+            self.apply(partial(select_lsb, name=label))
+            return True
+        if label in _ORDERED_LETTERS:
+            self.apply(partial(select_lsb_at, index=int(label) - 1))
+            return True
+        return False
 
     def _apply(self, state: ViewerState) -> None:
-        match, filter_error = self._filter_match(state)
+        match = self._filter_match(state)
         self._sync_controls(state)
-        self.canvas.set_state(state, match)
-        self.inspector.set_state(state, match)
+        self.canvas.set_state(state, match.mask)
+        self.inspector.set_state(state, match.mask)
         info = status_info(state)
         filtering = bool(state.filter_expr.strip())
-        if filtering and filter_error is not None:
-            info = f"{info}  {text.FILTER_ERROR}{filter_error}"
+        if filtering and match.error is not None:
+            info = f"{info}  {text.FILTER_ERROR}{match.error}"
         self._status_info.setText(info)
         self._status_view.setText(status_view(state))
-        self._filter_count.setText(self._count_text(state, filter_error))
-        has_error = filtering and filter_error is not None
-        self._filter_edit.setStyleSheet(_FILTER_ERROR_STYLE if has_error else "")
+        self._filter_count.setText(self._count_text(state, match))
+        self._filter_edit.setStyleSheet(_FILTER_ERROR_STYLE if match.error else "")
         image = state.image
         title = text.APP_NAME if image is None else f"{image.path.name} — {text.APP_NAME}"
         if self.windowTitle() != title:
             self.setWindowTitle(title)
 
-    def _count_text(self, state: ViewerState, filter_error: str | None) -> str:
+    def _count_text(self, state: ViewerState, match: _Match) -> str:
         """The pass count at the right end of the filter row, empty when idle."""
         image = state.image
-        if image is None or not state.filter_expr.strip() or filter_error is not None:
+        if image is None or not state.filter_expr.strip() or match.error is not None:
             return ""
-        return text.filter_count(self._match_passed, image.width * image.height)
+        return text.filter_count(match.passed, image.width * image.height)
 
-    def _filter_match(
-        self,
-        state: ViewerState,
-    ) -> tuple[NDArray[np.bool_] | None, str | None]:
-        """Compiled-filter match for the canvas layer; ``None`` = everything passes."""
+    def _filter_match(self, state: ViewerState) -> _Match:
+        """The compiled filter's verdict, cached on the expression it was built for."""
         image = state.image
         if image is None or not state.filter_expr.strip():
-            return None, None
+            return _Match()
         key = (state.filter_expr, image, state.selection)
-        if self._match_key == key:
-            return self._match, self._match_error
+        if key == self._match_key:
+            return self._match
         self._match_key = key
-        self._match_error = None
-        match: NDArray[np.bool_] | None = None
         try:
             compiled = compile_filter(state.filter_expr, image.planes)
-            match = compiled.evaluate(image, effective_selection(image, state.selection))
+            mask = compiled.evaluate(image, effective_selection(image, state.selection))
         except PredicateError as exc:
-            self._match_error = str(exc)
-        if match is not None:
-            self._match_passed = int(match.sum())
-        self._match = match
-        return match, self._match_error
+            self._match = _Match(error=str(exc))
+        else:
+            self._match = _Match(mask=mask, passed=int(mask.sum()))
+        return self._match
 
     def _commit_filter(self) -> None:
         """Enter applies the filter right away and keeps the caret in the box."""
@@ -515,19 +528,19 @@ class MainWindow(QMainWindow):
     def _apply_filter_text(self) -> None:
         expression = self._filter_edit.text()
         state = self.store.state
-        empty = not expression.strip()
-        if expression == state.filter_expr and (not empty or not state.only_matched):
+        cleared = not expression.strip()
+        if expression == state.filter_expr and (not cleared or not state.only_matched):
             return
 
         def update(current: ViewerState) -> ViewerState:
             updated = set_filter_expr(current, expression)
             # A cleared filter has nothing to show exclusively, so uncheck.
-            return set_only_matched(updated, False) if empty else updated
+            return set_only_matched(updated, on=False) if cleared else updated
 
         self.apply(update)
 
     def _on_only_matched(self, checked: bool) -> None:
-        self.apply(lambda state: set_only_matched(state, checked))
+        self.apply(partial(set_only_matched, on=checked))
         self._fit()
 
     def _focus_filter(self) -> None:
@@ -564,7 +577,7 @@ class MainWindow(QMainWindow):
         self._zoom_slider.setValue(_slider_position(state.zoom))
         self._zoom_slider.blockSignals(False)
         only = self._only_matched
-        only.setEnabled(enabled and bool(state.filter_expr.strip()) and self._match_error is None)
+        only.setEnabled(enabled and bool(state.filter_expr.strip()) and self._match.error is None)
         only.blockSignals(True)
         if only.isChecked() != state.only_matched:
             only.setChecked(state.only_matched)
@@ -572,36 +585,36 @@ class MainWindow(QMainWindow):
 
     def _on_bit(self, plane: str, bit: int, exclusive: bool) -> None:
         if exclusive:
-            self.apply(lambda state: select_only(state, plane, bit))
+            self.apply(partial(select_only, plane=plane, bit=bit))
         else:
-            self.apply(lambda state: toggle_bit(state, plane, bit))
+            self.apply(partial(toggle_bit, plane=plane, bit=bit))
 
     def _on_channel_toggle(self, name: str, checked: bool) -> None:
-        self.apply(lambda state: set_channel(state, name, on=checked))
+        self.apply(partial(set_channel, name=name, on=checked))
 
     def _on_column_toggle(self, bit: int, checked: bool) -> None:
-        self.apply(lambda state: set_column(state, bit, on=checked))
+        self.apply(partial(set_column, bit=bit, on=checked))
 
     def _on_plane_step(self, delta: int) -> None:
-        self.apply(lambda state: step_plane(state, delta))
+        self.apply(partial(step_plane, delta=delta))
 
     def _on_channel_step(self, delta: int) -> None:
-        self.apply(lambda state: step_channel(state, delta))
+        self.apply(partial(step_channel, delta=delta))
 
     def _on_format(self, index: int) -> None:
         fmt = _enum_at(self._format_combo, index, DisplayFormat)
         if fmt is None or fmt is self.store.state.value_format:
             return
-        self.apply(lambda state: set_format(state, fmt))
+        self.apply(partial(set_format, fmt=fmt))
 
     def _on_encoding(self, value: str) -> None:
         encoding = ExtractEncoding(value)
         if encoding is self.store.state.extract_encoding:
             return
-        self.apply(lambda state: set_extract_encoding(state, encoding))
+        self.apply(partial(set_extract_encoding, encoding=encoding))
 
     def _on_hover(self, x: int, y: int) -> None:
-        self.apply(lambda state: set_cursor(state, PixelCoord(x, y)))
+        self.apply(partial(set_cursor, coord=PixelCoord(x, y)))
 
     def _on_region_selecting(self, x0: int, y0: int, x1: int, y1: int) -> None:
         self._status_view.setText(text.selection_status(x0, y0, x1, y1))
@@ -630,12 +643,12 @@ class MainWindow(QMainWindow):
     def _region_hits(self, x0: int, y0: int, x1: int, y1: int) -> int | None:
         """Pixels the appended rect would leave selected, against the applied filter."""
         image = self.store.state.image
-        if image is None or self._match_error is not None:
+        if image is None or self._match.error is not None:
             return None
-        match = self._match
-        if match is None:
+        mask = self._match.mask
+        if mask is None:
             return (y1 - y0 + 1) * (x1 - x0 + 1)
-        return int(match[y0 : y1 + 1, x0 : x1 + 1].sum())
+        return int(mask[y0 : y1 + 1, x0 : x1 + 1].sum())
 
     def _on_mode(self, button: QPushButton) -> None:
         self.canvas.set_mode(CanvasMode.SELECT if button is self._mode_select else CanvasMode.PAN)
@@ -643,7 +656,7 @@ class MainWindow(QMainWindow):
         self.canvas.setFocus(Qt.FocusReason.OtherFocusReason)
 
     def _nudge(self, dx: int, dy: int) -> None:
-        self.apply(lambda state: move_cursor(state, dx, dy))
+        self.apply(partial(move_cursor, dx=dx, dy=dy))
         self._reveal_cursor()
 
     def _zoom_by(
@@ -675,7 +688,7 @@ class MainWindow(QMainWindow):
         vertical = self._scroll.verticalScrollBar()
         image_x = (horizontal.value() + anchor_x) / state.zoom
         image_y = (vertical.value() + anchor_y) / state.zoom
-        self.apply(lambda current: set_zoom(current, new_zoom))
+        self.apply(partial(set_zoom, zoom=new_zoom))
         horizontal.setValue(round(image_x * new_zoom - anchor_x))
         vertical.setValue(round(image_y * new_zoom - anchor_y))
 
@@ -711,7 +724,7 @@ class MainWindow(QMainWindow):
         if size is None:
             return
         zoom = self._fit_zoom(size)
-        self.apply(lambda state: set_zoom(state, zoom))
+        self.apply(partial(set_zoom, zoom=zoom))
         self._scroll.horizontalScrollBar().setValue(0)
         self._scroll.verticalScrollBar().setValue(0)
 

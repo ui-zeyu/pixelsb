@@ -1,6 +1,7 @@
 """Bit selection for both layers, the layer switch, and the extract panel."""
 
 from math import ceil
+from typing import override
 
 import numpy as np
 from numpy.typing import NDArray
@@ -343,6 +344,7 @@ class _HexPane(QPlainTextEdit):
         self.setPlainText("\n".join(row.hex_text for row in self._rows))
         self._sync_chrome()
 
+    @override
     def changeEvent(self, event: QEvent) -> None:
         super().changeEvent(event)
         if event.type() == QEvent.Type.FontChange:
@@ -381,6 +383,7 @@ class _HexPane(QPlainTextEdit):
         margin = self.document().documentMargin() - self.horizontalScrollBar().value()
         return margin + self._gutter_width
 
+    @override
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
         self._place_chrome()
@@ -496,6 +499,7 @@ class _TextPane(QPlainTextEdit):
         """Where the encoding list should drop from."""
         return self._header.mapToGlobal(QPoint(0, self._header.height()))
 
+    @override
     def changeEvent(self, event: QEvent) -> None:
         super().changeEvent(event)
         if event.type() == QEvent.Type.FontChange:
@@ -524,6 +528,7 @@ class _TextPane(QPlainTextEdit):
     def _set_insets(self) -> None:
         self.setViewportMargins(0, self._header_height, 0, self._bottom_inset)
 
+    @override
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
         self._place_header()
@@ -595,14 +600,17 @@ class _PaneHeader(QWidget):
     def label(self) -> str:
         return self._label
 
+    @override
     def enterEvent(self, event: QEvent) -> None:
         self._hovered = True
         self.update()
 
+    @override
     def leaveEvent(self, event: QEvent) -> None:
         self._hovered = False
         self.update()
 
+    @override
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit()
@@ -610,6 +618,7 @@ class _PaneHeader(QWidget):
             return
         super().mousePressEvent(event)
 
+    @override
     def paintEvent(self, event: QPaintEvent) -> None:
         painter = QPainter(self)
         painter.fillRect(event.rect(), QColor(theme.HOVER if self._hovered else theme.FIELD))
@@ -646,6 +655,7 @@ class _OffsetGutter(QWidget):
         super().__init__(editor)
         self._editor = editor
 
+    @override
     def paintEvent(self, event: QPaintEvent) -> None:
         painter = QPainter(self)
         painter.fillRect(event.rect(), QColor(theme.FIELD))
@@ -678,6 +688,7 @@ class _ColumnHeader(QWidget):
         super().__init__(editor)
         self._editor = editor
 
+    @override
     def paintEvent(self, event: QPaintEvent) -> None:
         painter = QPainter(self)
         painter.fillRect(event.rect(), QColor(theme.FIELD))

@@ -117,7 +117,7 @@ def set_filter_expr(state: ViewerState, expression: str) -> ViewerState:
     return replace(state, filter_expr=expression)
 
 
-def set_only_matched(state: ViewerState, on: bool) -> ViewerState:
+def set_only_matched(state: ViewerState, *, on: bool) -> ViewerState:
     """Show only the pixels that pass the filter; the canvas compacts to them."""
     if state.only_matched is on:
         return state

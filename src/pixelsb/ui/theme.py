@@ -1,6 +1,8 @@
 """Light theme: the color and size tokens, the stylesheet built from them, and
 ``CheckStyle``, which paints checkbox indicators by hand."""
 
+from typing import override
+
 from PySide6.QtCore import QPointF, QRect, QRectF, Qt
 from PySide6.QtGui import QColor, QPainter, QPalette, QPen, QPolygonF
 from PySide6.QtWidgets import QApplication, QProxyStyle, QStyle, QStyleOption, QWidget
@@ -191,6 +193,7 @@ class CheckStyle(QProxyStyle):
     is on.
     """
 
+    @override
     def drawPrimitive(
         self,
         element: QStyle.PrimitiveElement,
@@ -203,6 +206,7 @@ class CheckStyle(QProxyStyle):
             return
         _paint_indicator(painter, option)
 
+    @override
     def pixelMetric(
         self,
         metric: QStyle.PixelMetric,

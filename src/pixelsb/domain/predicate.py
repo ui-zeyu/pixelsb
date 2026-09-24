@@ -15,7 +15,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from functools import reduce
 from itertools import pairwise
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 from numpy.typing import NDArray
@@ -26,6 +26,7 @@ from pixelsb.domain.selection import bits_for
 type Value = NDArray[Any]
 type FieldEnv = dict[str, Value]
 type Evaluator = Callable[[FieldEnv], Value]
+type CallCompiler = Callable[[list[Evaluator]], Evaluator]
 type BinaryOp = Callable[[Value, Value], Value]
 type CompareOp = Callable[[Value, Value], Value]
 
@@ -35,12 +36,6 @@ _RECT_EDGES = ("left", "top", "right", "bottom")
 _GRID = "grid"
 _GRID_PARAMS = ("x", "y", "step_x", "step_y")
 _GRID_AXES = ("left", "top")
-_FUNCTIONS = (_RECT, _GRID)
-# Fields a function reads on its own, beyond the arguments the expression passes.
-_FUNCTION_FIELDS: dict[str, frozenset[str]] = {
-    _RECT: frozenset(_RECT_EDGES),
-    _GRID: frozenset(_GRID_AXES),
-}
 _BITS = "bits"
 _RAW = "raw"
 # Attributes a channel name accepts: the selection value, and the stored value.
@@ -161,18 +156,14 @@ def _compile_node(node: ast.expr, names: dict[str, str]) -> Evaluator:
             operands.extend(_compile_node(item, names) for item in comparators)
             return _compile_compare(ops, operands)
         case ast.Call(func=ast.Name(id=name), args=call_args, keywords=call_keywords):
-            lowered = name.lower()
-            if lowered == _RECT:
-                return _compile_rect(
-                    _function_args(_RECT, _RECT_EDGES, call_args, call_keywords, names)
-                )
-            if lowered == _GRID:
-                return _compile_grid(
-                    _function_args(_GRID, _GRID_PARAMS, call_args, call_keywords, names)
-                )
-            raise PredicateError(f"不支持的函数：{name}（可用：{'、'.join(_FUNCTIONS)}）")
+            function = _FUNCTIONS.get(name.lower())
+            if function is None:
+                available = "、".join(_FUNCTIONS)
+                raise PredicateError(f"不支持的函数：{name}（可用：{available}）")
+            bounds = _function_args(name.lower(), function.params, call_args, call_keywords, names)
+            return function.compile(bounds)
         case ast.Call():
-            raise PredicateError(f"不支持的函数调用（可用：{_FUNCTIONS[0]}(x0, y0, x1, y1) 等）")
+            raise PredicateError(f"不支持的函数调用（可用：{_RECT}(x0, y0, x1, y1) 等）")
         case _:
             raise PredicateError(f"不支持的表达式元素：{type(node).__name__}")
 
@@ -190,9 +181,11 @@ def _wanted_fields(node: ast.AST, names: dict[str, str]) -> frozenset[str]:
         case ast.Attribute(value=ast.Name(id=field), attr=attribute):
             return frozenset({_value_key(_canonical_name(field, names), attribute.lower())})
         case ast.Call(func=ast.Name(id=name), args=arguments, keywords=keywords):
+            function = _FUNCTIONS.get(name.lower())
+            if function is None:
+                return _union_fields((*arguments, *(kw.value for kw in keywords)), names)
             named = (keyword.value for keyword in keywords)
-            implicit = _FUNCTION_FIELDS.get(name.lower(), frozenset())
-            return implicit | _union_fields((*arguments, *named), names)
+            return function.fields | _union_fields((*arguments, *named), names)
         case _:
             return _union_fields(ast.iter_child_nodes(node), names)
 
@@ -295,6 +288,21 @@ def _compile_grid(bounds: list[Evaluator]) -> Evaluator:
         return (left >= x) & ((left - x) % step_x == 0) & (top >= y) & ((top - y) % step_y == 0)
 
     return evaluate
+
+
+class _Function(NamedTuple):
+    """A filter function: what it takes, what it reads itself, and how it compiles."""
+
+    params: tuple[str, ...]
+    fields: frozenset[str]
+    compile: CallCompiler
+
+
+# The whole function vocabulary; adding one is a line here plus its compiler.
+_FUNCTIONS: dict[str, _Function] = {
+    _RECT: _Function(_RECT_EDGES, frozenset(_RECT_EDGES), _compile_rect),
+    _GRID: _Function(_GRID_PARAMS, frozenset(_GRID_AXES), _compile_grid),
+}
 
 
 def _compile_bool_op(op: ast.boolop, operands: list[Evaluator]) -> Evaluator:

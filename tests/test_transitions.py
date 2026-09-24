@@ -50,10 +50,10 @@ def test_open_image_clears_navigation_and_keeps_view_settings() -> None:
 
 def test_only_matched_is_idempotent_and_survives_opening_an_image() -> None:
     image = make_image(np.zeros((2, 2, 3), dtype=np.uint16), planes_rgb())
-    state = set_only_matched(ViewerState(), True)
+    state = set_only_matched(ViewerState(), on=True)
     assert state.only_matched
-    assert set_only_matched(state, True) is state
-    assert not set_only_matched(state, False).only_matched
+    assert set_only_matched(state, on=True) is state
+    assert not set_only_matched(state, on=False).only_matched
     assert open_image(state, image).only_matched
 
 

@@ -1,5 +1,7 @@
 """Bit planes and preview compositing."""
 
+from dataclasses import dataclass
+
 import numpy as np
 from numpy.typing import NDArray
 
@@ -10,19 +12,41 @@ from pixelsb.domain.models import (
     SampleArray,
     SamplePlane,
 )
-from pixelsb.domain.selection import bits_for, effective_selection, mask_of
+from pixelsb.domain.selection import bits_for, effective_selection
 
 type IndexArray = NDArray[np.intp]
+type ChannelArray = NDArray[np.uint8]
 
 _CHECKER_DARK = 232
 _CHECKER_LIGHT = 255
+# Where a plane's bytes land in the rendered image.
+_COLOR_SLOTS = ("R", "G", "B")
+_GRAY_SLOTS = ("L", "Index")
+
+
+@dataclass(frozen=True, slots=True)
+class RenderRequest:
+    """One render: which bits of which planes, over which pixels.
+
+    ``rows`` and ``columns`` are the source indices when the render is of a
+    gathered sub-block rather than the whole image; the checkerboard pattern
+    needs them to keep its phase.
+    """
+
+    samples: SampleArray
+    planes: tuple[SamplePlane, ...]
+    chosen: frozenset[BitChoice]
+    height: int
+    width: int
+    rows: IndexArray | None = None
+    columns: IndexArray | None = None
 
 
 def bit_plane(
     samples: SampleArray,
     plane: SamplePlane,
     bit: int,
-) -> NDArray[np.uint8]:
+) -> ChannelArray:
     """Return an HxW image of 0 and 255. Bit 0 is the least significant bit."""
     if not 0 <= bit < plane.bit_depth:
         raise ValueError(f"bit {bit} is outside 0..{plane.bit_depth - 1}")
@@ -68,12 +92,14 @@ def render_rgb(
     selection: frozenset[BitChoice] | None,
 ) -> RgbArray:
     """Selected bits keep their original channel and weight. One bit renders as a bitmap."""
-    return _render_rgb(
-        image.samples,
-        image.planes,
-        effective_selection(image, selection),
-        image.height,
-        image.width,
+    return _render(
+        RenderRequest(
+            samples=image.samples,
+            planes=image.planes,
+            chosen=effective_selection(image, selection),
+            height=image.height,
+            width=image.width,
+        )
     )
 
 
@@ -88,33 +114,60 @@ def render_rgb_at(
     Compacted views need a fraction of the pixels — gathering the samples first
     keeps the bit-plane work proportional to the view, not the image.
     """
-    return _render_rgb(
-        image.samples[np.ix_(ys, xs)],
-        image.planes,
-        effective_selection(image, selection),
-        ys.size,
-        xs.size,
-        rows=ys,
-        columns=xs,
+    return _render(
+        RenderRequest(
+            samples=image.samples[np.ix_(ys, xs)],
+            planes=image.planes,
+            chosen=effective_selection(image, selection),
+            height=ys.size,
+            width=xs.size,
+            rows=ys,
+            columns=xs,
+        )
     )
 
 
-def _render_rgb(
-    samples: SampleArray,
-    planes: tuple[SamplePlane, ...],
-    chosen: frozenset[BitChoice],
-    height: int,
-    width: int,
-    rows: IndexArray | None = None,
-    columns: IndexArray | None = None,
-) -> RgbArray:
-    if not chosen:
-        return np.zeros((height, width, 3), dtype=np.uint8)
-    if len(chosen) == 1:
-        choice = next(iter(chosen))
-        gray = bit_plane(samples, _plane(planes, choice.plane), choice.bit)
+def _render(request: RenderRequest) -> RgbArray:
+    if not request.chosen:
+        return np.zeros((request.height, request.width, 3), dtype=np.uint8)
+    if len(request.chosen) == 1:
+        choice = next(iter(request.chosen))
+        gray = bit_plane(request.samples, _plane(request.planes, choice.plane), choice.bit)
         return np.stack([gray, gray, gray], axis=-1)
-    return _mask_rgb(samples, planes, chosen, height, width, rows=rows, columns=columns)
+    return _compose(request)
+
+
+def _compose(request: RenderRequest) -> RgbArray:
+    """Assemble the channels the selection touches, in plane order."""
+    scaled = _scaled_planes(request)
+    color = scaled.get("R"), scaled.get("G"), scaled.get("B")
+    # A gray plane stands in for the whole image, as it does on screen.
+    gray = next((value for name, value in scaled.items() if name in _GRAY_SLOTS), None)
+    alpha = scaled.get("A")
+    if any(channel is not None for channel in color):
+        blank = np.zeros((request.height, request.width), dtype=np.uint8)
+        painted = np.stack([blank if channel is None else channel for channel in color], axis=-1)
+    elif gray is not None:
+        painted = np.stack([gray, gray, gray], axis=-1)
+    elif alpha is not None:
+        # Alpha alone reads as a gray image rather than compositing with itself.
+        painted = np.stack([alpha, alpha, alpha], axis=-1)
+    else:
+        return np.zeros((request.height, request.width, 3), dtype=np.uint8)
+    if alpha is None or (gray is None and not any(channel is not None for channel in color)):
+        return painted
+    return composite_on_checkerboard(
+        np.dstack([painted, alpha]), rows=request.rows, columns=request.columns
+    )
+
+
+def _scaled_planes(request: RenderRequest) -> dict[str, ChannelArray]:
+    """One scaled byte array per plane the selection touches."""
+    return {
+        plane.name: _scale_to_byte(*_masked_channel(request.samples[:, :, plane.index], bits))
+        for plane in request.planes
+        if (bits := bits_for(request.chosen, plane.name))
+    }
 
 
 def _plane(planes: tuple[SamplePlane, ...], name: str) -> SamplePlane:
@@ -122,49 +175,6 @@ def _plane(planes: tuple[SamplePlane, ...], name: str) -> SamplePlane:
         if plane.name == name:
             return plane
     raise KeyError(name)
-
-
-def _mask_rgb(
-    samples: SampleArray,
-    planes: tuple[SamplePlane, ...],
-    chosen: frozenset[BitChoice],
-    height: int,
-    width: int,
-    rows: IndexArray | None = None,
-    columns: IndexArray | None = None,
-) -> RgbArray:
-    color = np.zeros((height, width, 3), dtype=np.uint8)
-    alpha = np.full((height, width), 255, dtype=np.uint8)
-    wrote_color = False
-    luma: NDArray[np.uint8] | None = None
-    wrote_alpha = False
-    for plane in planes:
-        bits = bits_for(chosen, plane.name)
-        if not bits:
-            continue
-        scaled = _scale_to_byte(*_masked_channel(samples[:, :, plane.index], bits))
-        if plane.name == "R":
-            color[:, :, 0] = scaled
-            wrote_color = True
-        elif plane.name == "G":
-            color[:, :, 1] = scaled
-            wrote_color = True
-        elif plane.name == "B":
-            color[:, :, 2] = scaled
-            wrote_color = True
-        elif plane.name == "A":
-            alpha = scaled
-            wrote_alpha = True
-        elif plane.name == "L" or (plane.name == "Index" and luma is None):
-            luma = scaled
-    if not wrote_color and luma is not None:
-        color = np.stack([luma, luma, luma], axis=-1)
-    elif not wrote_color and wrote_alpha:
-        color = np.stack([alpha, alpha, alpha], axis=-1)
-    if wrote_alpha and (wrote_color or luma is not None):
-        rgba = np.dstack([color, alpha])
-        return composite_on_checkerboard(rgba, rows=rows, columns=columns)
-    return color
 
 
 def _masked_channel(
@@ -183,11 +193,11 @@ def _masked_channel(
         width = high - low + 1
         run = channel if low == 0 else channel >> np.uint16(low)
         return run & np.uint16((1 << width) - 1), (1 << width) - 1
-    mask = mask_of(bits)
+    mask = sum(1 << bit for bit in bits)
     return channel & np.uint16(mask), mask
 
 
-def _scale_to_byte(value: NDArray[np.uint16], maximum: int) -> NDArray[np.uint8]:
+def _scale_to_byte(value: NDArray[np.uint16], maximum: int) -> ChannelArray:
     """Map the masked range 0..maximum onto 0..255."""
     if maximum <= 0:
         return np.zeros(value.shape, dtype=np.uint8)
