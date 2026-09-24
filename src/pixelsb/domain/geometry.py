@@ -1,8 +1,12 @@
 """Widget-to-pixel mapping and zoom helpers. Zoom is fractional."""
 
+import math
+
 from pixelsb.domain.models import MAX_ZOOM, MIN_ZOOM, PixelCoord
 
 GRID_ZOOM = 8
+SLIDER_STEPS = 1000
+_ZOOM_RATIO = MAX_ZOOM / MIN_ZOOM
 
 
 def pixel_at(
@@ -35,3 +39,13 @@ def initial_zoom(
         return MIN_ZOOM
     fit = min(view_w / image_w, view_h / image_h)
     return min(max(fit, MIN_ZOOM), cap, MAX_ZOOM)
+
+
+def slider_zoom(position: int) -> int:
+    """The whole-number zoom at a slider position; each doubling takes equal travel."""
+    return max(int(MIN_ZOOM), round(MIN_ZOOM * _ZOOM_RATIO ** (position / SLIDER_STEPS)))
+
+
+def slider_position(zoom: float) -> int:
+    """Where a zoom sits on the slider, the inverse of :func:`slider_zoom`."""
+    return round(SLIDER_STEPS * math.log(zoom / MIN_ZOOM) / math.log(_ZOOM_RATIO))

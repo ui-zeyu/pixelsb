@@ -1,6 +1,5 @@
 """Main window: toolbar, canvas, inspector, and keyboard shortcuts."""
 
-import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
@@ -9,19 +8,14 @@ from typing import override
 
 import numpy as np
 from numpy.typing import NDArray
-from PySide6.QtCore import QEvent, QObject, QPointF, QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer
 from PySide6.QtGui import (
     QCloseEvent,
-    QColor,
     QDragEnterEvent,
     QDragMoveEvent,
     QDropEvent,
-    QIcon,
     QKeyEvent,
     QKeySequence,
-    QPainter,
-    QPen,
-    QPixmap,
     QShortcut,
     QShowEvent,
 )
@@ -46,11 +40,10 @@ from PySide6.QtWidgets import (
     QStatusBar,
     QTextEdit,
     QToolBar,
-    QToolButton,
     QWidget,
 )
 
-from pixelsb.domain.geometry import initial_zoom
+from pixelsb.domain.geometry import SLIDER_STEPS, initial_zoom, slider_position, slider_zoom
 from pixelsb.domain.models import (
     MAX_ZOOM,
     MIN_ZOOM,
@@ -87,6 +80,7 @@ from pixelsb.io.loading import ImageLoadError, load_image
 from pixelsb.ui import text, theme
 from pixelsb.ui.canvas import CanvasMode, ImageCanvas
 from pixelsb.ui.inspector import Inspector
+from pixelsb.ui.painting import lighten_clear_button
 from pixelsb.ui.store import Store, Transition
 from pixelsb.ui.text import readout_text, status_info, status_view
 
@@ -94,8 +88,6 @@ type ErrorReporter = Callable[[str], None]
 
 _FILTER_ERROR_STYLE = f"QLineEdit {{ border: 1px solid {theme.DANGER}; }}"
 _TEXT_INPUTS = (QLineEdit, QAbstractSpinBox, QPlainTextEdit, QTextEdit, QComboBox)
-_SLIDER_STEPS = 1000
-_ZOOM_RATIO = MAX_ZOOM / MIN_ZOOM
 _CANVAS_MIN_WIDTH = 260
 _NUDGE_STEP = 8  # a shift-arrow moves this many pixels instead of one
 _FORMAT_ITEMS = tuple(
@@ -281,7 +273,7 @@ class MainWindow(QMainWindow):
         self._filter_edit = QLineEdit()
         self._filter_edit.setPlaceholderText(text.FILTER_PLACEHOLDER)
         self._filter_edit.setClearButtonEnabled(True)
-        _lighten_clear_button(self._filter_edit)
+        lighten_clear_button(self._filter_edit)
         self._filter_edit.setMinimumWidth(220)
         self._filter_edit.setFixedHeight(theme.CONTROL_HEIGHT)
         self._filter_edit.setToolTip(text.FILTER_TIP)
@@ -332,7 +324,7 @@ class MainWindow(QMainWindow):
         )
         self._zoom_reset.setToolTip(text.ZOOM_RESET_TIP)
         self._zoom_slider = QSlider(Qt.Orientation.Horizontal)
-        self._zoom_slider.setRange(0, _SLIDER_STEPS)
+        self._zoom_slider.setRange(0, SLIDER_STEPS)
         self._zoom_slider.setFixedWidth(160)
         self._zoom_slider.setToolTip(text.ZOOM_TIP)
         self._zoom_slider.valueChanged.connect(self._on_slider)
@@ -574,7 +566,7 @@ class MainWindow(QMainWindow):
         ):
             widget.setEnabled(enabled)
         self._zoom_slider.blockSignals(True)
-        self._zoom_slider.setValue(_slider_position(state.zoom))
+        self._zoom_slider.setValue(slider_position(state.zoom))
         self._zoom_slider.blockSignals(False)
         only = self._only_matched
         only.setEnabled(enabled and bool(state.filter_expr.strip()) and self._match.error is None)
@@ -714,7 +706,7 @@ class MainWindow(QMainWindow):
         )
 
     def _on_slider(self, position: int) -> None:
-        self._zoom_to(float(_slider_zoom(position)))
+        self._zoom_to(float(slider_zoom(position)))
 
     def _zoom_to(self, new_zoom: float) -> None:
         self._zoom_around(new_zoom, None, None)
@@ -781,42 +773,6 @@ class MainWindow(QMainWindow):
                 event.acceptProposedAction()
                 return
         event.ignore()
-
-
-def _slider_zoom(position: int) -> int:
-    """The whole-number zoom at a slider position; each doubling takes equal travel."""
-    return max(int(MIN_ZOOM), round(MIN_ZOOM * _ZOOM_RATIO ** (position / _SLIDER_STEPS)))
-
-
-def _slider_position(zoom: float) -> int:
-    return round(_SLIDER_STEPS * math.log(zoom / MIN_ZOOM) / math.log(_ZOOM_RATIO))
-
-
-def _lighten_clear_button(edit: QLineEdit) -> None:
-    """Swap the style's dark disc clear icon for a light cross."""
-    button = edit.findChild(QToolButton)
-    if button is None:
-        return
-    button.setIcon(_clear_icon())
-    button.setIconSize(QSize(16, 16))
-
-
-def _clear_icon() -> QIcon:
-    size = 32
-    pixmap = QPixmap(size, size)
-    pixmap.fill(Qt.GlobalColor.transparent)
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    pen = QPen(QColor(theme.TEXT_MUTED))
-    pen.setWidthF(3.0)
-    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-    painter.setPen(pen)
-    inset = 10.0
-    far = size - inset
-    painter.drawLine(QPointF(inset, inset), QPointF(far, far))
-    painter.drawLine(QPointF(far, inset), QPointF(inset, far))
-    painter.end()
-    return QIcon(pixmap)
 
 
 def _combo(tip: str) -> QComboBox:

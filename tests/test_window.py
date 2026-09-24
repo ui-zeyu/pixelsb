@@ -7,10 +7,11 @@ from PySide6.QtGui import QNativeGestureEvent, QPointingDevice
 from PySide6.QtWidgets import QToolButton
 from pytestqt.qtbot import QtBot
 
+from pixelsb.domain import geometry
 from pixelsb.domain.extract import format_extract
 from pixelsb.domain.models import BitChoice, DisplayFormat, ExtractEncoding, PixelCoord
 from pixelsb.domain.transitions import select_only, set_cursor, set_format, set_zoom
-from pixelsb.ui import main_window, text, theme
+from pixelsb.ui import painting, text, theme
 from pixelsb.ui.main_window import MainWindow
 
 
@@ -295,20 +296,20 @@ def test_the_zoom_slider_is_geometric(qtbot: QtBot, rgb_png: Path) -> None:
     window.show()
     window.open_path(rgb_png)
     window.apply(lambda state: set_zoom(state, 8.0))
-    assert window._zoom_slider.value() == main_window._slider_position(8.0)
-    window._zoom_slider.setValue(main_window._slider_position(16.0))
+    assert window._zoom_slider.value() == geometry.slider_position(8.0)
+    window._zoom_slider.setValue(geometry.slider_position(16.0))
     assert window.store.state.zoom == 16.0
     assert window._zoom_label.text() == text.zoom_label(16.0)
 
 
 def test_the_zoom_slider_spends_equal_travel_per_doubling() -> None:
-    positions = [main_window._slider_position(zoom) for zoom in (1, 2, 4, 8, 16, 32, 64, 128)]
+    positions = [geometry.slider_position(zoom) for zoom in (1, 2, 4, 8, 16, 32, 64, 128)]
     assert positions[0] == 0
-    assert positions[-1] == main_window._SLIDER_STEPS
+    assert positions[-1] == geometry.SLIDER_STEPS
     gaps = [later - earlier for earlier, later in pairwise(positions)]
     assert max(gaps) - min(gaps) <= 1
     for zoom in (1, 2, 3, 5, 17, 100, 128):
-        assert main_window._slider_zoom(main_window._slider_position(zoom)) == zoom
+        assert geometry.slider_zoom(geometry.slider_position(zoom)) == zoom
 
 
 def test_the_zoom_label_fits_the_widest_value(qtbot: QtBot) -> None:
@@ -390,14 +391,14 @@ def test_the_filter_box_gets_a_light_clear_icon(qtbot: QtBot) -> None:
     window.show()
     button = window._filter_edit.findChild(QToolButton)
     assert button is not None
-    expected = main_window._clear_icon().pixmap(16, 16).toImage()
+    expected = painting.clear_icon().pixmap(16, 16).toImage()
     assert button.icon().pixmap(16, 16).toImage() == expected
     window._filter_edit.setText("B >= R")
     assert button.isVisible() is True
 
 
 def test_the_clear_icon_is_a_light_cross() -> None:
-    image = main_window._clear_icon().pixmap(32, 32).toImage()
+    image = painting.clear_icon().pixmap(32, 32).toImage()
     opaque = [
         (color.red() + color.green() + color.blue())
         for y in range(image.height())

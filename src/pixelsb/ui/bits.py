@@ -28,7 +28,7 @@ class BitMatrix(QWidget):
         self._layout.setContentsMargins(0, 0, 0, 0)
         self._layout.setHorizontalSpacing(3)
         self._layout.setVerticalSpacing(3)
-        self._boxes: dict[tuple[str, int], QCheckBox] = {}
+        self._boxes: dict[BitChoice, QCheckBox] = {}
         self._row_boxes: dict[str, QCheckBox] = {}
         self._col_boxes: dict[int, QCheckBox] = {}
         self._signature: tuple[tuple[str, int], ...] = ()
@@ -46,20 +46,26 @@ class BitMatrix(QWidget):
             self._signature = signature
         if not planes:
             return
-        for (plane, bit), box in self._boxes.items():
-            checked = True if chosen is None else BitChoice(plane, bit) in chosen
-            _sync_box(box, checked=checked)
+        # One map decides everything: a box is its own entry, a row is a channel's
+        # bits, a column is that bit of every channel that has it.
+        checked = {
+            BitChoice(plane.name, bit): chosen is None or BitChoice(plane.name, bit) in chosen
+            for plane in planes
+            for bit in range(plane.bit_depth)
+        }
+        rows = {
+            plane.name: [checked[BitChoice(plane.name, bit)] for bit in range(plane.bit_depth)]
+            for plane in planes
+        }
+        for choice, box in self._boxes.items():
+            _sync(box, _check_state(checked[choice]))
         for name, box in self._row_boxes.items():
-            plane = next(candidate for candidate in planes if candidate.name == name)
-            members = _members(plane, plane.bit_depth, chosen)
-            _sync_group(box, members)
+            _sync(box, _group_state(rows[name]))
         for bit, box in self._col_boxes.items():
-            members = [
-                True if chosen is None else BitChoice(plane.name, bit) in chosen
-                for plane in planes
-                if bit < plane.bit_depth
-            ]
-            _sync_group(box, members)
+            _sync(
+                box,
+                _group_state([rows[plane.name][bit] for plane in planes if bit < plane.bit_depth]),
+            )
 
     def _rebuild(self, planes: tuple[SamplePlane, ...]) -> None:
         while item := self._layout.takeAt(0):
@@ -98,7 +104,7 @@ class BitMatrix(QWidget):
                     lambda _checked=False, name=plane.name, bit=bit: self._emit(name, bit)
                 )
                 self._layout.addWidget(box, row, column)
-                self._boxes[(plane.name, bit)] = box
+                self._boxes[BitChoice(plane.name, bit)] = box
         # Spread the bit columns over whatever width the panel gives the grid;
         # the channel-label column keeps its own width.
         self._layout.setColumnStretch(0, 0)
@@ -126,10 +132,20 @@ class BitMatrix(QWidget):
         self.bit_clicked.emit(plane, bit, exclusive)
 
 
-def _members(plane: SamplePlane, count: int, chosen: frozenset[BitChoice] | None) -> list[bool]:
-    if chosen is None:
-        return [True] * count
-    return [BitChoice(plane.name, bit) in chosen for bit in range(count)]
+def _check_state(checked: bool) -> Qt.CheckState:
+    return Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+
+
+def _group_state(members: list[bool]) -> Qt.CheckState:
+    """Checked when the whole group is on, partial when only part of it is."""
+    if all(members):
+        return Qt.CheckState.Checked
+    return Qt.CheckState.PartiallyChecked if any(members) else Qt.CheckState.Unchecked
+
+
+def _sync(box: QCheckBox, state: Qt.CheckState) -> None:
+    if box.checkState() != state:
+        box.setCheckState(state)
 
 
 def _header_box(label: str) -> QCheckBox:
@@ -138,20 +154,3 @@ def _header_box(label: str) -> QCheckBox:
     # Fixed, so the label column stays narrow while the bit columns spread.
     box.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
     return box
-
-
-def _sync_box(box: QCheckBox, *, checked: bool) -> None:
-    state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
-    if box.checkState() != state:
-        box.setCheckState(state)
-
-
-def _sync_group(box: QCheckBox, members: list[bool]) -> None:
-    if all(members):
-        state = Qt.CheckState.Checked
-    elif any(members):
-        state = Qt.CheckState.PartiallyChecked
-    else:
-        state = Qt.CheckState.Unchecked
-    if box.checkState() != state:
-        box.setCheckState(state)
