@@ -70,6 +70,12 @@ def test_format_truncates_with_a_note() -> None:
     assert rows[4].text == "…已截断，共 256 字节"
 
 
+def test_format_does_not_claim_truncation_on_an_exact_fit() -> None:
+    rows = format_extract(bytes(64), limit=4)
+    assert [row.offset for row in rows] == [0, 16, 32, 48]
+    assert all(row.offset is not None for row in rows)
+
+
 def test_filter_matches_hex_ascii_or_offset() -> None:
     rows = format_extract(b"flag{abc}" + bytes([0xDE]) * 8)
     assert filter_extract(rows, "flag") == rows[:1]

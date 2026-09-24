@@ -1,6 +1,7 @@
 """Text drawn inside each image pixel once the zoom can hold it."""
 
 import math
+from functools import cache
 
 import numpy as np
 
@@ -69,15 +70,15 @@ def region_texts(state: ViewerState, x0: int, y0: int, x1: int, y1: int) -> list
     joined: list[str] | None = None
     for plane in active:
         bits = bits_for(chosen, plane.name)
-        mask = mask_of(bits)
-        depth = max(bits) + 1 if len(bits) > 1 else 1
-        channel = region[:, :, plane.index].astype(np.uint32)
+        channel = region[:, :, plane.index]
         if len(bits) == 1:
-            shown = (channel >> np.uint32(bits[0])) & np.uint32(1)
+            shown = (channel >> np.uint16(bits[0])) & np.uint16(1)
+            depth = 1
         else:
-            shown = channel & np.uint32(mask)
-        memo = _FormatMemo(depth, state.value_format)
-        strings = [memo[value] for value in shown.ravel().tolist()]
+            shown = channel & np.uint16(mask_of(bits))
+            depth = max(bits) + 1
+        table = _format_table(depth, state.value_format)
+        strings = list(map(table.__getitem__, shown.ravel().tolist()))
         if len(active) > 1:
             name = plane.name + ":"
             strings = [name + text for text in strings]
@@ -90,16 +91,10 @@ def region_texts(state: ViewerState, x0: int, y0: int, x1: int, y1: int) -> list
     return joined
 
 
-class _FormatMemo(dict[int, str]):
-    def __init__(self, depth: int, fmt: DisplayFormat) -> None:
-        super().__init__()
-        self._depth = depth
-        self._fmt = fmt
-
-    def __missing__(self, value: int) -> str:
-        text = format_sample(value, self._depth, self._fmt)
-        self[value] = text
-        return text
+@cache
+def _format_table(depth: int, fmt: DisplayFormat) -> tuple[str, ...]:
+    """One rendered string per value of a ``depth``-bit field, reused across paints."""
+    return tuple(format_sample(value, depth, fmt) for value in range(1 << depth))
 
 
 def widest_text(state: ViewerState) -> str:

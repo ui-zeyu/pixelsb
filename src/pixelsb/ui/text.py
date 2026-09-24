@@ -113,8 +113,7 @@ def readout_text(state: ViewerState) -> str:
     if readout is None:
         return NO_CURSOR
     lines = [f"光标 ({readout.cursor.x}, {readout.cursor.y})"]
-    for channel in readout.channels:
-        lines.append(f"{channel.name}  {channel.absolute}")
+    lines.extend(f"{channel.name}  {channel.absolute}" for channel in readout.channels)
     lines.append(readout.summary)
     return "\n".join(lines)
 

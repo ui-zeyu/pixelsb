@@ -64,6 +64,7 @@ class ImageCanvas(QWidget):
         self._state = ViewerState()
         self._image: QImage | None = None
         self._rgb: RgbArray | None = None
+        self._bright: NDArray[np.bool_] | None = None
         self._match: NDArray[np.bool_] | None = None
         self._cache_key: tuple[object, ...] | None = None
         self._label_key: tuple[object, ...] | None = None
@@ -100,6 +101,7 @@ class ImageCanvas(QWidget):
             rebuilt = self._image is not None
             self._image = None
             self._rgb = None
+            self._bright = None
             self._cache_key = None
             self._target = QSize(320, 240)
         else:
@@ -111,6 +113,7 @@ class ImageCanvas(QWidget):
                 if match is not None and match.shape == rgb.shape[:2]:
                     _fade_out(rgb, match)
                 self._rgb = rgb
+                self._bright = None
                 self._image = qimage_from_rgb(rgb)
                 self._cache_key = key
                 rebuilt = True
@@ -223,8 +226,9 @@ class ImageCanvas(QWidget):
         texts = region_texts(state, x0, y0, x1, y1)
         if not any(texts):
             return
-        region = rgb[y0:y1, x0:x1].astype(np.uint32)
-        bright = (region * _LUMA_WEIGHTS).sum(axis=-1) > _LUMA_THRESHOLD
+        if self._bright is None:
+            self._bright = _bright_map(rgb)
+        bright = self._bright[y0:y1, x0:x1]
         match = self._match
         if match is not None and match.shape != (height, width):
             match = None
@@ -312,25 +316,27 @@ class ImageCanvas(QWidget):
         super().mouseReleaseEvent(event)
 
     def event(self, event: QEvent) -> bool:
+        if self._handle_gesture(event):
+            return True
+        return super().event(event)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if self._handle_gesture(event):
+            return True
+        if isinstance(event, QWheelEvent) and self._zoom_modifier(event):
+            self.wheelEvent(event)
+            return True
+        return super().eventFilter(watched, event)
+
+    def _handle_gesture(self, event: QEvent) -> bool:
+        """True for pinch events, whether they land on the canvas or the viewport."""
         if isinstance(event, QNativeGestureEvent):
             self._native_gesture(event)
             return True
         if isinstance(event, QGestureEvent):
             self._pinch_gesture(event)
             return True
-        return super().event(event)
-
-    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
-        if isinstance(event, (QNativeGestureEvent, QGestureEvent)):
-            if isinstance(event, QNativeGestureEvent):
-                self._native_gesture(event)
-            else:
-                self._pinch_gesture(event)
-            return True
-        if isinstance(event, QWheelEvent) and self._zoom_modifier(event):
-            self.wheelEvent(event)
-            return True
-        return super().eventFilter(watched, event)
+        return False
 
     def _native_gesture(self, event: QNativeGestureEvent) -> None:
         """Trackpad pinch on macOS arrives as native magnification events."""
@@ -493,6 +499,12 @@ def _draw_grid(painter: QPainter, source: QRectF, zoom: float) -> None:
     for row in range(int(source.top()), int(source.bottom()) + 2):
         y = row * zoom
         painter.drawLine(QPointF(left, y), QPointF(right, y))
+
+
+def _bright_map(rgb: RgbArray) -> NDArray[np.bool_]:
+    """Per-pixel "light enough for dark text", computed once per rendered image."""
+    weighted = rgb.astype(np.uint32) * _LUMA_WEIGHTS
+    return weighted.sum(axis=-1) > _LUMA_THRESHOLD
 
 
 def _fade_out(rgb: RgbArray, match: NDArray[np.bool_]) -> None:

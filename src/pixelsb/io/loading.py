@@ -41,7 +41,7 @@ def _decode(path: Path, image: Image.Image) -> LoadedImage:
     match image.mode:
         case "1" | "L" | "LA" | "RGB" | "RGBA":
             samples, planes, preview = _raw_color(image)
-        case "I;16" | "I;16L" | "I;16B":
+        case "I;16" | "I;16L" | "I;16B" | "I;16N":
             samples, planes, preview = _gray16(image)
         case "P" | "PA":
             samples, planes, preview = _palette(image)

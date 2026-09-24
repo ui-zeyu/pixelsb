@@ -13,6 +13,9 @@ BYTES_PER_ROW = 16
 HEX_WIDTH = BYTES_PER_ROW * 3 - 1
 ASCII_START = HEX_WIDTH + 2
 
+# Byte value -> itself when printable, a dot otherwise, for the ASCII column.
+_DOT_TABLE = bytes(byte if 32 <= byte <= 126 else ord(".") for byte in range(256))
+
 
 @dataclass(frozen=True, slots=True)
 class ExtractRow:
@@ -42,33 +45,38 @@ def extract_bytes(
     selection = effective_selection(image, chosen)
     if not selection:
         return b""
-    planes: list[np.ndarray] = []
-    for plane in image.planes:
-        for bit in range(plane.bit_depth):
-            if BitChoice(plane.name, bit) not in selection:
-                continue
-            channel = image.samples[:, :, plane.index]
-            planes.append(((channel >> np.uint16(bit)) & np.uint16(1)).astype(np.uint8))
-    stream = np.stack(planes, axis=-1)
-    if match is not None:
-        stream = stream[match]
+    # Select the surviving pixels first: expanding every bit plane of a large
+    # image just to discard most of it is slow and allocation heavy.
+    samples = image.samples
+    rows = samples[match] if match is not None else samples.reshape(-1, samples.shape[2])
+    columns = [
+        ((rows[:, plane.index] >> np.uint16(bit)) & np.uint16(1)).astype(np.uint8)
+        for plane in image.planes
+        for bit in range(plane.bit_depth)
+        if BitChoice(plane.name, bit) in selection
+    ]
+    stream = np.stack(columns, axis=-1)
     return np.packbits(stream.reshape(-1)).tobytes()
 
 
 def format_extract(data: bytes, limit: int = DISPLAY_LINES) -> list[ExtractRow]:
     """Rows of hex and ASCII; the offset stays out of ``text`` for the gutter."""
-    rows: list[ExtractRow] = []
-    for offset in range(0, len(data), BYTES_PER_ROW):
-        chunk = data[offset : offset + BYTES_PER_ROW]
-        hex_part = " ".join(f"{byte:02x}" for byte in chunk)
-        ascii_part = "".join(chr(byte) if 32 <= byte <= 126 else "." for byte in chunk)
-        rows.append(ExtractRow(offset, f"{hex_part:<{HEX_WIDTH}}  {ascii_part}"))
-        if len(rows) >= limit:
-            rows.append(ExtractRow(None, f"…已截断，共 {len(data)} 字节"))
-            return rows
+    shown = data[: limit * BYTES_PER_ROW]
+    rows = [
+        ExtractRow(offset, _row_text(shown[offset : offset + BYTES_PER_ROW]))
+        for offset in range(0, len(shown), BYTES_PER_ROW)
+    ]
     if not rows:
         rows.append(ExtractRow(None, "（无数据）"))
+    elif len(data) > len(shown):
+        rows.append(ExtractRow(None, f"…已截断，共 {len(data)} 字节"))
     return rows
+
+
+def _row_text(chunk: bytes) -> str:
+    hex_part = chunk.hex(" ")
+    ascii_part = chunk.translate(_DOT_TABLE).decode("ascii")
+    return f"{hex_part:<{HEX_WIDTH}}  {ascii_part}"
 
 
 def filter_extract(rows: list[ExtractRow], query: str) -> list[ExtractRow]:

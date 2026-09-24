@@ -98,9 +98,8 @@ class LoadedImage:
             raise ValueError("preview shape does not match the image size")
         if len({plane.name for plane in self.planes}) != len(self.planes):
             raise ValueError("plane names must be unique")
-        for index, plane in enumerate(self.planes):
-            if plane.index != index:
-                raise ValueError("plane index must match its position")
+        if any(plane.index != index for index, plane in enumerate(self.planes)):
+            raise ValueError("plane index must match its position")
         if self.frame_count < 1 or not 0 <= self.frame_index < self.frame_count:
             raise ValueError("frame index is outside the image")
 

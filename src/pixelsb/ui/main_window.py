@@ -1,7 +1,7 @@
 """Main window: toolbar, canvas, inspector, and keyboard shortcuts."""
 
 import math
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
     QTextEdit,
     QToolBar,
     QToolButton,
+    QWidget,
 )
 
 from pixelsb.domain.geometry import initial_zoom
@@ -93,6 +94,14 @@ _TEXT_INPUTS = (QLineEdit, QAbstractSpinBox, QPlainTextEdit, QTextEdit, QComboBo
 _SLIDER_STEPS = 1000
 _ZOOM_RATIO = MAX_ZOOM / MIN_ZOOM
 _CANVAS_MIN_WIDTH = 260
+_FORMAT_ITEMS = tuple(
+    (fmt.value, label)
+    for fmt, label in (
+        (DisplayFormat.DECIMAL, text.DECIMAL),
+        (DisplayFormat.HEX, text.HEX),
+        (DisplayFormat.BINARY, text.BINARY),
+    )
+)
 
 
 class MainWindow(QMainWindow):
@@ -100,7 +109,6 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.store = Store()
         self._reporter = reporter or self._report_with_dialog
-        self._combo_items: dict[int, tuple[tuple[str, str], ...]] = {}
         self._match: NDArray[np.bool_] | None = None
         self._match_key: object = None
         self._match_error: str | None = None
@@ -257,6 +265,8 @@ class MainWindow(QMainWindow):
         )  # wide enough for the longest label, e.g. 123.46 (times sign)
         self._zoom_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self._format_combo = _combo(text.FORMAT_TIP)
+        for value, label in _FORMAT_ITEMS:
+            self._format_combo.addItem(label, value)
         self._format_combo.currentIndexChanged.connect(self._on_format)
 
         row = _row_frame("toolbarRow")
@@ -485,15 +495,12 @@ class MainWindow(QMainWindow):
 
     def _sync_controls(self, state: ViewerState) -> None:
         image = state.image
-        self._fill(
-            self._format_combo,
-            (
-                (DisplayFormat.DECIMAL.value, text.DECIMAL),
-                (DisplayFormat.HEX.value, text.HEX),
-                (DisplayFormat.BINARY.value, text.BINARY),
-            ),
-            state.value_format.value,
-        )
+        combo = self._format_combo
+        combo.blockSignals(True)
+        index = combo.findData(state.value_format.value)
+        if index >= 0 and combo.currentIndex() != index:
+            combo.setCurrentIndex(index)
+        combo.blockSignals(False)
         self._zoom_label.setText(text.zoom_label(state.zoom))
         self._filter_edit.blockSignals(True)
         if self._filter_edit.text() != state.filter_expr:
@@ -513,23 +520,6 @@ class MainWindow(QMainWindow):
         self._zoom_slider.blockSignals(True)
         self._zoom_slider.setValue(_slider_position(state.zoom))
         self._zoom_slider.blockSignals(False)
-
-    def _fill(
-        self, combo: QComboBox, items: Sequence[tuple[str, str]], current: str | None
-    ) -> None:
-        signature = tuple(items)
-        combo.blockSignals(True)
-        try:
-            if self._combo_items.get(id(combo)) != signature:
-                combo.clear()
-                for value, label in items:
-                    combo.addItem(label, value)
-                self._combo_items[id(combo)] = signature
-            index = -1 if current is None else combo.findData(current)
-            if index >= 0 and combo.currentIndex() != index:
-                combo.setCurrentIndex(index)
-        finally:
-            combo.blockSignals(False)
 
     def _on_bit(self, plane: str, bit: int, exclusive: bool) -> None:
         if exclusive:
@@ -597,40 +587,41 @@ class MainWindow(QMainWindow):
         if state.image is None or new_zoom == state.zoom:
             return
         viewport = self._scroll.viewport()
-        if viewport_x is None or viewport_y is None:
-            viewport_x = viewport.width() // 2
-            viewport_y = viewport.height() // 2
+        anchor_x, anchor_y = self._anchor(state, viewport, viewport_x, viewport_y)
         horizontal = self._scroll.horizontalScrollBar()
         vertical = self._scroll.verticalScrollBar()
-        image_x = (horizontal.value() + viewport_x) / state.zoom
-        image_y = (vertical.value() + viewport_y) / state.zoom
+        image_x = (horizontal.value() + anchor_x) / state.zoom
+        image_y = (vertical.value() + anchor_y) / state.zoom
         self.apply(lambda current: set_zoom(current, new_zoom))
-        horizontal.setValue(round(image_x * new_zoom - viewport_x))
-        vertical.setValue(round(image_y * new_zoom - viewport_y))
+        horizontal.setValue(round(image_x * new_zoom - anchor_x))
+        vertical.setValue(round(image_y * new_zoom - anchor_y))
+
+    def _anchor(
+        self,
+        state: ViewerState,
+        viewport: QWidget,
+        viewport_x: int | None,
+        viewport_y: int | None,
+    ) -> tuple[float, float]:
+        """The viewport point that zooming keeps still, or the cursor if there is one."""
+        if viewport_x is not None and viewport_y is not None:
+            return viewport_x, viewport_y
+        if state.cursor is None:
+            return viewport.width() // 2, viewport.height() // 2
+        horizontal = self._scroll.horizontalScrollBar()
+        vertical = self._scroll.verticalScrollBar()
+        x = state.cursor.x * state.zoom - horizontal.value() + state.zoom // 2
+        y = state.cursor.y * state.zoom - vertical.value() + state.zoom // 2
+        return (
+            min(max(x, 0), max(viewport.width() - 1, 0)),
+            min(max(y, 0), max(viewport.height() - 1, 0)),
+        )
 
     def _on_slider(self, position: int) -> None:
         self._zoom_to(float(_slider_zoom(position)))
 
     def _zoom_to(self, new_zoom: float) -> None:
-        state = self.store.state
-        if state.image is None or new_zoom == state.zoom:
-            return
-        viewport = self._scroll.viewport()
-        horizontal = self._scroll.horizontalScrollBar()
-        vertical = self._scroll.verticalScrollBar()
-        if state.cursor is not None:
-            viewport_x = state.cursor.x * state.zoom - horizontal.value() + state.zoom // 2
-            viewport_y = state.cursor.y * state.zoom - vertical.value() + state.zoom // 2
-            viewport_x = min(max(viewport_x, 0), max(viewport.width() - 1, 0))
-            viewport_y = min(max(viewport_y, 0), max(viewport.height() - 1, 0))
-        else:
-            viewport_x = viewport.width() // 2
-            viewport_y = viewport.height() // 2
-        image_x = (horizontal.value() + viewport_x) / state.zoom
-        image_y = (vertical.value() + viewport_y) / state.zoom
-        self.apply(lambda current: set_zoom(current, new_zoom))
-        horizontal.setValue(round(image_x * new_zoom - viewport_x))
-        vertical.setValue(round(image_y * new_zoom - viewport_y))
+        self._zoom_around(new_zoom, None, None)
 
     def _fit(self) -> None:
         image = self.store.state.image

@@ -42,11 +42,9 @@ def _layer_text(
         return original
     if not chosen:
         return "未选择"
-    parts: list[str] = []
-    for plane in image.planes:
-        for bit in bits_for(chosen, plane.name):
-            parts.append(f"{plane.name}{bit}")
-    return " ".join(parts)
+    return " ".join(
+        f"{plane.name}{bit}" for plane in image.planes for bit in bits_for(chosen, plane.name)
+    )
 
 
 def build_readout(state: ViewerState) -> Readout | None:

@@ -6,7 +6,7 @@ partial state when only part of the group is selected.
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QMouseEvent
-from PySide6.QtWidgets import QCheckBox, QGridLayout, QSizePolicy, QWidget
+from PySide6.QtWidgets import QApplication, QCheckBox, QGridLayout, QSizePolicy, QWidget
 
 from pixelsb.domain.models import BitChoice, SamplePlane
 from pixelsb.ui import text
@@ -49,7 +49,7 @@ class BitMatrix(QWidget):
             _sync_box(box, checked)
         for name, box in self._row_boxes.items():
             plane = next(candidate for candidate in planes if candidate.name == name)
-            members = _members(plane, bit_range(plane), chosen)
+            members = _members(plane, plane.bit_depth, chosen)
             _sync_group(box, members)
         for bit, box in self._col_boxes.items():
             members = [
@@ -114,8 +114,6 @@ class BitMatrix(QWidget):
         super().mousePressEvent(event)
 
     def _emit(self, plane: str, bit: int) -> None:
-        from PySide6.QtWidgets import QApplication
-
         modifiers = QApplication.keyboardModifiers()
         exclusive = bool(
             modifiers
@@ -128,14 +126,10 @@ class BitMatrix(QWidget):
         self.bit_clicked.emit(plane, bit, exclusive)
 
 
-def bit_range(plane: SamplePlane) -> range:
-    return range(plane.bit_depth)
-
-
-def _members(plane: SamplePlane, bits: range, chosen: frozenset[BitChoice] | None) -> list[bool]:
+def _members(plane: SamplePlane, count: int, chosen: frozenset[BitChoice] | None) -> list[bool]:
     if chosen is None:
-        return [True for _ in bits]
-    return [BitChoice(plane.name, bit) in chosen for bit in bits]
+        return [True] * count
+    return [BitChoice(plane.name, bit) in chosen for bit in range(count)]
 
 
 def _header_box(label: str) -> QCheckBox:

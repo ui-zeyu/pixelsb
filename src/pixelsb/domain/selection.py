@@ -34,10 +34,7 @@ def bits_for(selection: frozenset[BitChoice], plane: str) -> tuple[int, ...]:
 
 
 def mask_of(bits: tuple[int, ...]) -> int:
-    mask = 0
-    for bit in bits:
-        mask |= 1 << bit
-    return mask
+    return sum(1 << bit for bit in bits)
 
 
 def stored_selection(
@@ -56,11 +53,9 @@ def bit_value(sample: int, bit: int) -> int:
 def shown_channel_value(sample: int, bits: tuple[int, ...]) -> tuple[int, int]:
     """Return the number to display for one plane, and the bit width used to format it.
 
-    A single selected bit is ``0`` or ``1``. Several bits keep their original weights.
+    A single selected bit is ``0`` or ``1``. Several bits keep their original weights,
+    which is exactly the stored sample masked onto the selected bits.
     """
     if len(bits) == 1:
         return bit_value(sample, bits[0]), 1
-    shown = 0
-    for bit in bits:
-        shown |= bit_value(sample, bit) << bit
-    return shown, max(bits) + 1
+    return sample & mask_of(bits), max(bits) + 1

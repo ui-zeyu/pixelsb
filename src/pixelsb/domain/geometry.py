@@ -34,4 +34,4 @@ def initial_zoom(
     if image_w < 1 or image_h < 1 or view_w < 1 or view_h < 1:
         return MIN_ZOOM
     fit = min(view_w / image_w, view_h / image_h)
-    return min(max(fit, MIN_ZOOM), min(cap, MAX_ZOOM))
+    return min(max(fit, MIN_ZOOM), cap, MAX_ZOOM)

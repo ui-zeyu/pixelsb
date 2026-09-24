@@ -110,12 +110,7 @@ def toggle_readout_bit(state: ViewerState, plane: str, bit: int) -> ViewerState:
 def set_readout_channel(state: ViewerState, name: str, *, on: bool) -> ViewerState:
     """Switch every bit of one channel in the number layer on or off."""
     image = _image(state)
-    try:
-        sample_plane = image.plane(name)
-    except KeyError as exc:
-        raise ValueError(f"unknown plane: {name}") from exc
-    channel_bits = frozenset(BitChoice(name, bit) for bit in range(sample_plane.bit_depth))
-    updated = _set_members(effective_readout(state), channel_bits, on=on)
+    updated = _set_members(effective_readout(state), _channel_members(image, name), on=on)
     return replace(state, readout=_stored_readout(image, updated))
 
 
@@ -140,12 +135,9 @@ def _stored_readout(
 def set_channel(state: ViewerState, name: str, *, on: bool) -> ViewerState:
     """Switch every bit of one channel in the canvas layer on or off."""
     image = _image(state)
-    try:
-        sample_plane = image.plane(name)
-    except KeyError as exc:
-        raise ValueError(f"unknown plane: {name}") from exc
-    channel_bits = frozenset(BitChoice(name, bit) for bit in range(sample_plane.bit_depth))
-    updated = _set_members(effective_selection(image, state.selection), channel_bits, on=on)
+    updated = _set_members(
+        effective_selection(image, state.selection), _channel_members(image, name), on=on
+    )
     return replace(state, selection=stored_selection(image, updated))
 
 
@@ -178,6 +170,15 @@ def _set_members(
     on: bool,
 ) -> frozenset[BitChoice]:
     return current | members if on else current - members
+
+
+def _channel_members(image: LoadedImage, name: str) -> frozenset[BitChoice]:
+    """Every bit of one plane, validating the name."""
+    try:
+        plane = image.plane(name)
+    except KeyError as exc:
+        raise ValueError(f"unknown plane: {name}") from exc
+    return frozenset(BitChoice(name, bit) for bit in range(plane.bit_depth))
 
 
 def step_focus_bit(state: ViewerState, delta: int) -> ViewerState:
