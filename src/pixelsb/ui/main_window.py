@@ -20,6 +20,7 @@ from PySide6.QtGui import (
     QPen,
     QPixmap,
     QShortcut,
+    QShowEvent,
 )
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
@@ -93,6 +94,7 @@ _FILTER_ERROR_STYLE = f"QLineEdit {{ border: 1px solid {theme.DANGER}; }}"
 _TEXT_INPUTS = (QLineEdit, QAbstractSpinBox, QPlainTextEdit, QTextEdit, QComboBox)
 _SLIDER_STEPS = 1000
 _ZOOM_RATIO = MAX_ZOOM / MIN_ZOOM
+_CANVAS_MIN_WIDTH = 260
 
 
 class MainWindow(QMainWindow):
@@ -105,6 +107,7 @@ class MainWindow(QMainWindow):
         self._match_key: object = None
         self._match_error: str | None = None
         self._match_passed = 0
+        self._panel_sized = False
         self.setWindowTitle(text.APP_NAME)
         self.resize(1200, 800)
         self.setAcceptDrops(True)
@@ -162,6 +165,20 @@ class MainWindow(QMainWindow):
                 self._accept_file_drag(event)
                 return True
         return super().eventFilter(watched, event)
+
+    def showEvent(self, event: QShowEvent) -> None:
+        if not self._panel_sized:
+            self._panel_sized = True
+            self._size_panel()
+        super().showEvent(event)
+
+    def _size_panel(self) -> None:
+        """Give the inspector the width its dump needs, once, before any dragging."""
+        width = self.width()
+        wanted = self.inspector.preferred_width()
+        limit = max(width - self._splitter.handleWidth() - _CANVAS_MIN_WIDTH, 1)
+        panel = min(max(wanted, self.inspector.minimumWidth()), limit)
+        self._splitter.setSizes([max(width - panel, 1), panel])
 
     def closeEvent(self, event: QCloseEvent) -> None:
         application = _application()
@@ -314,12 +331,12 @@ class MainWindow(QMainWindow):
         inspector_scroll.setFrameShape(QFrame.Shape.NoFrame)
 
         splitter = QSplitter()
+        self._splitter = splitter
         splitter.addWidget(self._scroll)
         splitter.addWidget(inspector_scroll)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 0)
         splitter.setChildrenCollapsible(False)
-        splitter.setSizes([860, 340])
         self.setCentralWidget(splitter)
 
     def _build_statusbar(self) -> None:

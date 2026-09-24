@@ -12,6 +12,7 @@ from pixelsb.domain.transitions import open_image
 from pixelsb.io.loading import load_image
 from pixelsb.ui import text
 from pixelsb.ui.inspector import Inspector
+from pixelsb.ui.main_window import MainWindow
 
 
 def _inspector(qtbot: QtBot, path: Path) -> Inspector:
@@ -48,6 +49,33 @@ def test_selecting_everything_copies_data_without_offsets(qtbot: QtBot, extract_
     selected = cursor.selectedText()
     assert "00000000" not in selected
     assert "41 42 43" in selected
+
+
+def test_the_extract_note_does_not_repeat_the_section_title() -> None:
+    assert text.SECTION_EXTRACT not in text.EXTRACT_NOTE
+    assert text.EXTRACT_NOTE.startswith("按通道顺序")
+
+
+def test_the_panel_starts_wide_enough_for_a_full_dump_row(qtbot: QtBot, extract_png: Path) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.resize(1200, 800)
+    window.show()
+    window.open_path(extract_png)
+    view = window.inspector._extract_view
+    assert window._splitter.sizes()[1] >= window.inspector.preferred_width()
+    assert view.viewport().geometry().width() >= view.text_width()
+    assert view.horizontalScrollBar().maximum() == 0
+
+
+def test_the_panel_leaves_the_canvas_a_minimum_width(qtbot: QtBot) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.resize(760, 600)
+    window.show()
+    canvas, panel = window._splitter.sizes()
+    assert panel >= window.inspector.minimumWidth()
+    assert canvas >= 240
 
 
 def test_the_header_rules_the_byte_columns(qtbot: QtBot, extract_png: Path) -> None:

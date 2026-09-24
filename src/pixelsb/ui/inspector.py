@@ -46,6 +46,7 @@ from pixelsb.ui.text import readout_text
 
 _GUTTER_PAD = 10
 _HEADER_GAP = 3
+_WIDTH_SLACK = 16  # the panel's own scrollbar can appear once an image is open
 
 
 class Inspector(QWidget):
@@ -199,6 +200,12 @@ class Inspector(QWidget):
     def detail_text(self) -> str:
         return readout_text(self._state)
 
+    def preferred_width(self) -> int:
+        """Panel width that shows a whole dump row without a horizontal scrollbar."""
+        view = self._extract_view
+        missing = view.text_width() - view.viewport().geometry().width()
+        return max(ceil(self.width() + missing) + _WIDTH_SLACK, self.minimumWidth())
+
 
 class ExtractView(QPlainTextEdit):
     """Read-only byte dump whose offsets sit in a painted gutter.
@@ -213,12 +220,15 @@ class ExtractView(QPlainTextEdit):
         self.setReadOnly(True)
         self.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         self._rows: tuple[ExtractRow, ...] = ()
-        self._gutter_width = 0
-        self._header_height = 0
+        self._gutter_width = self._measure_gutter()
+        self._header_height = self._measure_header()
         self._gutter = _OffsetGutter(self)
         self._header = _ColumnHeader(self)
         self._gutter.resize(0, 0)  # nothing to paint until the first rows arrive
         self._header.resize(0, 0)
+        # Reserve the chrome now, so the width the panel needs does not depend on
+        # whether rows have arrived yet.
+        self.setViewportMargins(self._gutter_width, self._header_height, 0, 0)
         self.updateRequest.connect(self._on_update_request)
         for bar in (self.verticalScrollBar(), self.horizontalScrollBar()):
             # A scrollbar that appears shrinks the viewport, so the chrome moves.
@@ -251,6 +261,15 @@ class ExtractView(QPlainTextEdit):
     def gutter_width(self) -> int:
         """Width of the offset column, which the header shares."""
         return self._gutter_width
+
+    def text_width(self) -> float:
+        """Pixels one whole dump row needs: the hex columns and the ASCII column."""
+        columns = HEX_WIDTH + 2 + BYTES_PER_ROW
+        return QFontMetricsF(self.font()).horizontalAdvance("0" * columns)
+
+    def row_width(self) -> float:
+        """Pixels one whole dump row needs, offset gutter included."""
+        return self._measure_gutter() + self.text_width()
 
     def header_origin(self) -> float:
         """Where the header text starts, in header coordinates."""
