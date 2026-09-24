@@ -5,7 +5,7 @@ from math import ceil
 
 import numpy as np
 from numpy.typing import NDArray
-from PySide6.QtCore import QRect, QRectF, Qt, Signal
+from PySide6.QtCore import QRect, QRectF, Qt, Signal, SignalInstance
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -45,6 +45,9 @@ from pixelsb.ui.text import readout_text
 
 _GUTTER_PAD = 10
 _HEADER_GAP = 3
+_STEPPER_WIDTH = 30  # the arrow buttons stay compact around the grid
+_STEPPER_GAP = 6  # the channel column's gap, reused to indent the plane row
+_BITS_MIN_WIDTH = 320  # what the bit grid itself needs, margins included
 _WIDTH_SLACK = 16  # the panel's own scrollbar can appear once an image is open
 
 
@@ -56,6 +59,8 @@ class Inspector(QWidget):
     column_toggle = Signal(int, bool)
     original_requested = Signal()
     lsbs_requested = Signal()
+    plane_step = Signal(int)
+    channel_step = Signal(int)
 
     def __init__(self) -> None:
         super().__init__()
@@ -66,6 +71,18 @@ class Inspector(QWidget):
         self._canvas_matrix.channel_toggle.connect(self.channel_toggle.emit)
         self._canvas_matrix.column_toggle.connect(self.column_toggle.emit)
         self._canvas_card = self._matrix_card(self._canvas_matrix)
+        self._plane_prev = self._stepper_button(
+            text.PLANE_PREV, text.PLANE_PREV_TIP, self.plane_step, -1
+        )
+        self._plane_next = self._stepper_button(
+            text.PLANE_NEXT, text.PLANE_NEXT_TIP, self.plane_step, 1
+        )
+        self._channel_prev = self._stepper_button(
+            text.CHANNEL_PREV, text.CHANNEL_PREV_TIP, self.channel_step, -1
+        )
+        self._channel_next = self._stepper_button(
+            text.CHANNEL_NEXT, text.CHANNEL_NEXT_TIP, self.channel_step, 1
+        )
 
         self._extract_key: tuple[object, ...] | None = None
         self._extract_rows: tuple[ExtractRow, ...] = ()
@@ -88,7 +105,8 @@ class Inspector(QWidget):
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(8)
         layout.addLayout(self._bits_header())
-        layout.addWidget(self._canvas_card)
+        layout.addLayout(self._bits_body())
+        layout.addLayout(self._plane_row())
         layout.addSpacing(14)
         layout.addWidget(_hairline())
         layout.addSpacing(14)
@@ -96,7 +114,8 @@ class Inspector(QWidget):
         layout.addWidget(self._extract_note)
         layout.addWidget(self._extract_search)
         layout.addWidget(self._extract_view, 1)
-        self.setMinimumWidth(320)
+        # Room for the grid plus the arrow column, so it never squashes.
+        self.setMinimumWidth(_BITS_MIN_WIDTH + _STEPPER_WIDTH + _STEPPER_GAP)
 
     def set_state(
         self,
@@ -110,18 +129,14 @@ class Inspector(QWidget):
         self._canvas_matrix.set_layer(planes, canvas_bits)
         self._sync_extract(image, canvas_bits, state.filter_expr, match)
 
-    def _section_header(self, title: str, trailing: QWidget) -> QHBoxLayout:
-        header = QHBoxLayout()
-        header.setContentsMargins(0, 0, 0, 0)
-        header.addWidget(_section_title(title))
-        header.addStretch(1)
-        header.addWidget(trailing)
-        return header
-
     def _bits_header(self) -> QHBoxLayout:
         """Section title with the presets on the right."""
-        trailing = QWidget()
-        row = QHBoxLayout(trailing)
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.addWidget(_section_title(text.SECTION_BITS))
+        header.addStretch(1)
+        presets = QWidget()
+        row = QHBoxLayout(presets)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(10)
         for label, name, signal in (
@@ -132,7 +147,52 @@ class Inspector(QWidget):
             button.setObjectName(name)
             button.clicked.connect(lambda _checked=False, signal=signal: signal.emit())
             row.addWidget(button)
-        return self._section_header(text.SECTION_BITS, trailing)
+        header.addWidget(presets)
+        return header
+
+    def _bits_body(self) -> QHBoxLayout:
+        """The grid with the channel arrows centred on its left edge."""
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(_STEPPER_GAP)
+        body.addWidget(self._channel_stepper(), 0, Qt.AlignmentFlag.AlignVCenter)
+        body.addWidget(self._canvas_card, 1)
+        return body
+
+    def _channel_stepper(self) -> QWidget:
+        """The up/down pair as a column, centred on the grid's height."""
+        stepper = QWidget()
+        column = QVBoxLayout(stepper)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(6)
+        column.addWidget(self._channel_prev)
+        column.addWidget(self._channel_next)
+        return stepper
+
+    def _plane_row(self) -> QHBoxLayout:
+        """The left/right pair, centred under the grid it clears on the left."""
+        row = QHBoxLayout()
+        row.setContentsMargins(_STEPPER_WIDTH + _STEPPER_GAP, 0, 0, 0)
+        row.setSpacing(10)
+        row.addStretch(1)
+        row.addWidget(self._plane_prev)
+        row.addWidget(self._plane_next)
+        row.addStretch(1)
+        return row
+
+    def _stepper_button(
+        self,
+        label: str,
+        tip: str,
+        signal: SignalInstance,
+        delta: int,
+    ) -> QPushButton:
+        button = QPushButton(label)
+        button.setObjectName("stepper")
+        button.setToolTip(tip)
+        button.setFixedSize(_STEPPER_WIDTH, _STEPPER_WIDTH)
+        button.clicked.connect(lambda _checked=False, delta=delta: signal.emit(delta))
+        return button
 
     def _matrix_card(self, matrix: BitMatrix) -> QFrame:
         """A soft gray card around the bit grid, spanning the panel."""

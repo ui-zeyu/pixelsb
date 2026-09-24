@@ -3,8 +3,9 @@
 from dataclasses import replace
 from pathlib import Path
 
+from PySide6.QtCore import QPoint, QRect
 from PySide6.QtGui import QImage, QTextCursor
-from PySide6.QtWidgets import QPushButton
+from PySide6.QtWidgets import QPushButton, QWidget
 from pytestqt.qtbot import QtBot
 
 from pixelsb.domain.extract import ASCII_START, BYTES_PER_ROW
@@ -12,7 +13,7 @@ from pixelsb.domain.models import ViewerState
 from pixelsb.domain.transitions import open_image
 from pixelsb.io.loading import load_image
 from pixelsb.ui import text
-from pixelsb.ui.inspector import Inspector
+from pixelsb.ui.inspector import _STEPPER_GAP, _STEPPER_WIDTH, Inspector
 from pixelsb.ui.main_window import MainWindow
 
 
@@ -114,17 +115,67 @@ def test_the_bit_grids_fill_the_panel_width(qtbot: QtBot, extract_png: Path) -> 
     card = inspector._canvas_card
     matrix = inspector._canvas_matrix
     assert card.objectName() == "card"
-    assert card.x() == 16
-    assert card.width() >= inspector.width() - 40  # the card spans the panel
+    layout = inspector.layout()
+    assert layout is not None
+    margins = layout.contentsMargins()
+    column = _STEPPER_WIDTH + _STEPPER_GAP
+    assert card.x() == margins.left() + column  # the channel column sits to its left
+    inset = margins.left() + margins.right() + column
+    assert card.width() >= inspector.width() - inset - 4  # the card keeps the rest
     assert matrix.width() >= card.width() - 24  # and the grid fills the card
     rightmost = max(box.geometry().right() for box in matrix._boxes.values())
     assert rightmost >= matrix.width() * 0.9  # the bit columns spread to the edges
 
 
-def test_the_presets_share_the_section_header(qtbot: QtBot, extract_png: Path) -> None:
+def _top_left(widget: QWidget, parent: QWidget) -> QPoint:
+    return widget.mapTo(parent, QPoint(0, 0))
+
+
+def test_the_steppers_sit_around_the_grid(qtbot: QtBot, extract_png: Path) -> None:
     inspector = _inspector(qtbot, extract_png)
-    buttons = [button.text() for button in inspector.findChildren(QPushButton)]
-    assert buttons == [text.ORIGINAL, text.ALL_LSB]
+    card = inspector._canvas_card
+    card_rect = QRect(_top_left(card, inspector), card.size())
+    prev_pos = _top_left(inspector._plane_prev, inspector)
+    next_pos = _top_left(inspector._plane_next, inspector)
+    # Left/right: under the grid, centred on it, with a gap in between.
+    assert prev_pos.y() >= card_rect.bottom()
+    assert next_pos.x() >= prev_pos.x() + inspector._plane_prev.width() + 6
+    pair_center = (prev_pos.x() + next_pos.x() + inspector._plane_next.width()) / 2
+    assert abs(pair_center - card_rect.center().x()) <= 3
+    # Up/down: a column left of the grid, centred on its height.
+    up_pos = _top_left(inspector._channel_prev, inspector)
+    down_pos = _top_left(inspector._channel_next, inspector)
+    assert up_pos.x() + inspector._channel_prev.width() <= card_rect.x()
+    assert down_pos.y() >= up_pos.y() + inspector._channel_prev.height()
+    column_center = (up_pos.y() + down_pos.y() + inspector._channel_next.height()) / 2
+    assert abs(column_center - card_rect.center().y()) <= 3
+
+
+def test_the_section_holds_the_steppers_and_the_presets(qtbot: QtBot, extract_png: Path) -> None:
+    inspector = _inspector(qtbot, extract_png)
+    labels = {button.text() for button in inspector.findChildren(QPushButton)}
+    assert labels == {
+        text.PLANE_PREV,
+        text.PLANE_NEXT,
+        text.CHANNEL_PREV,
+        text.CHANNEL_NEXT,
+        text.ORIGINAL,
+        text.ALL_LSB,
+    }
+
+
+def test_the_steppers_emit_their_steps(qtbot: QtBot, extract_png: Path) -> None:
+    inspector = _inspector(qtbot, extract_png)
+    planes: list[int] = []
+    channels: list[int] = []
+    inspector.plane_step.connect(planes.append)
+    inspector.channel_step.connect(channels.append)
+    inspector._plane_next.click()
+    inspector._plane_prev.click()
+    inspector._channel_next.click()
+    inspector._channel_prev.click()
+    assert planes == [1, -1]
+    assert channels == [1, -1]
 
 
 def test_note_rows_have_no_offset(qtbot: QtBot, extract_png: Path) -> None:

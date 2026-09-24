@@ -88,6 +88,15 @@ QPushButton#linkButton:hover {{ background: {HOVER}; }}
 QPushButton#ghost {{ border: none; background: transparent; color: {TEXT}; padding: 2px 8px; }}
 QPushButton#ghost:hover {{ background: {HOVER}; }}
 QPushButton#ghost:pressed {{ background: {PRESSED}; }}
+QPushButton#stepper {{
+    border: none;
+    background: transparent;
+    color: {TEXT};
+    font-size: 16px;
+    padding: 0;
+}}
+QPushButton#stepper:hover {{ background: {HOVER}; color: {ACCENT}; border-radius: 6px; }}
+QPushButton#stepper:pressed {{ background: {PRESSED}; color: {ACCENT}; }}
 
 QComboBox::drop-down {{ border: none; width: 16px; }}
 QComboBox QAbstractItemView {{

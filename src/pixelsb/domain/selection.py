@@ -13,6 +13,19 @@ def lsb_bits(image: LoadedImage) -> frozenset[BitChoice]:
     return frozenset(BitChoice(plane.name, 0) for plane in image.planes if plane.bit_depth > 0)
 
 
+def plane_ladder(image: LoadedImage) -> tuple[BitChoice, ...]:
+    """Every single bit plane in display order: R7 … R0, G7 … G0, B7 … B0.
+
+    Matches how the bit grid reads — high bits on the left, channels top to
+    bottom — so stepping the ladder walks the grid left to right, top to bottom.
+    """
+    return tuple(
+        BitChoice(plane.name, bit)
+        for plane in image.planes
+        for bit in range(plane.bit_depth - 1, -1, -1)
+    )
+
+
 def effective_selection(
     image: LoadedImage,
     selection: frozenset[BitChoice] | None,

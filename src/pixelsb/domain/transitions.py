@@ -16,6 +16,7 @@ from pixelsb.domain.selection import (
     all_bits,
     effective_selection,
     lsb_bits,
+    plane_ladder,
     stored_selection,
 )
 
@@ -80,7 +81,9 @@ def toggle_bit(state: ViewerState, plane: str, bit: int) -> ViewerState:
 
 
 def select_lsbs(state: ViewerState) -> ViewerState:
-    image = _image(state)
+    image = state.image
+    if image is None:
+        return state
     chosen = lsb_bits(image)
     focus = state.focus if state.focus is not None else next(iter(chosen), None)
     return replace(state, selection=stored_selection(image, chosen), focus=focus)
@@ -145,6 +148,57 @@ def step_focus_bit(state: ViewerState, delta: int) -> ViewerState:
     plane = image.plane(focus.plane)
     bit = min(max(focus.bit + delta, 0), plane.bit_depth - 1)
     return select_only(state, plane.name, bit)
+
+
+def step_plane(state: ViewerState, delta: int) -> ViewerState:
+    """Walk single bit planes in display order: R7 … R0, G7 … G0, B7 … B0.
+
+    A step from a wider view enters the ladder at the end the arrow points at,
+    so the first press lands on the first plane; a step from a single plane
+    moves one plane on, wrapping around.
+    """
+    image = state.image
+    if image is None or delta == 0:
+        return state
+    ladder = plane_ladder(image)
+    choice = _single_bit(state)
+    if choice is None:
+        choice = ladder[0] if delta > 0 else ladder[-1]
+    else:
+        choice = ladder[(ladder.index(choice) + delta) % len(ladder)]
+    return select_only(state, choice.plane, choice.bit)
+
+
+def step_channel(state: ViewerState, delta: int) -> ViewerState:
+    """Walk whole channels: every bit of R, then G, then B, wrapping around."""
+    image = state.image
+    if image is None or delta == 0:
+        return state
+    names = [plane.name for plane in image.planes]
+    # A view that is not already one whole channel starts just off the ladder,
+    # so the first step lands on the channel the arrow points at.
+    position = next(
+        (
+            index
+            for index, name in enumerate(names)
+            if state.selection == _channel_members(image, name)
+        ),
+        -1 if delta > 0 else len(names),
+    )
+    name = names[(position + delta) % len(names)]
+    return replace(
+        state,
+        selection=stored_selection(image, _channel_members(image, name)),
+        focus=BitChoice(name, 0),
+    )
+
+
+def _single_bit(state: ViewerState) -> BitChoice | None:
+    """The one plane the view shows, when it shows exactly one."""
+    selection = state.selection
+    if selection is None or len(selection) != 1:
+        return None
+    return next(iter(selection))
 
 
 def select_lsb(state: ViewerState, name: str) -> ViewerState:

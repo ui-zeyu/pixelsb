@@ -216,6 +216,18 @@ def test_pan_mode_drag_does_not_select(qtbot: QtBot) -> None:
     assert canvas._marquee is None
 
 
+def test_switching_images_drops_a_stale_region(qtbot: QtBot) -> None:
+    canvas = _canvas(qtbot)
+    canvas.set_state(set_zoom(_state_for(_image(8, 4)), 4))
+    canvas.set_mode(CanvasMode.SELECT)
+    qtbot.mousePress(canvas, Qt.MouseButton.LeftButton, pos=QPoint(1, 1))
+    qtbot.mouseMove(canvas, QPoint(9, 5))
+    qtbot.mouseRelease(canvas, Qt.MouseButton.LeftButton, pos=QPoint(9, 5))
+    assert canvas._marquee is not None
+    canvas.set_state(_state_for(_image(4, 2, "other.png")))
+    assert canvas._marquee is None
+
+
 def test_space_temporarily_pans_in_select_mode(qtbot: QtBot) -> None:
     canvas = _canvas(qtbot)
     canvas.set_state(set_zoom(_state_for(_image(8, 4)), 4))

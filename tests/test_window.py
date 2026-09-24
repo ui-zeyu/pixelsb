@@ -151,7 +151,7 @@ def test_switching_tools_hands_focus_back_to_the_canvas(qtbot: QtBot, rgb_png: P
     assert window.canvas.cursor().shape() == Qt.CursorShape.CrossCursor
 
 
-def test_select_mode_fills_the_rect_filter_on_enter(qtbot: QtBot, rgb_png: Path) -> None:
+def test_select_mode_previews_then_appends_on_enter(qtbot: QtBot, rgb_png: Path) -> None:
     window = MainWindow()
     qtbot.addWidget(window)
     window.show()
@@ -164,14 +164,79 @@ def test_select_mode_fills_the_rect_filter_on_enter(qtbot: QtBot, rgb_png: Path)
     qtbot.mouseMove(window.canvas, QPoint(zoom + 1, zoom + 1))
     assert "选区" in window._status_view.text()
     qtbot.mouseRelease(window.canvas, Qt.MouseButton.LeftButton, pos=QPoint(zoom + 1, zoom + 1))
-    assert "回车" in window._status_view.text()
+    # Still a preview: nothing is selected until Enter appends the rect.
+    assert "回车追加到过滤器" in window._status_view.text()
+    assert "通过 4/4" in window._status_view.text()
     assert window.store.state.filter_expr == ""
+    assert window._match is None
+    assert window._filter_count.text() == ""
     qtbot.keyClick(window.canvas, Qt.Key.Key_Return)
     assert window._filter_edit.text() == "rect(0, 0, 2, 2)"
     assert window.store.state.filter_expr == "rect(0, 0, 2, 2)"
     assert window._status_view.text().startswith("光标")
     qtbot.keyClick(window.canvas, Qt.Key.Key_Escape)
-    assert window.store.state.filter_expr == "rect(0, 0, 2, 2)"  # Esc only clears a selection
+    assert window.store.state.filter_expr == "rect(0, 0, 2, 2)"  # Esc only clears a preview
+
+
+def test_committing_a_region_appends_to_the_expression(qtbot: QtBot, rgb_png: Path) -> None:
+    from pixelsb.domain.transitions import set_filter_expr
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.open_path(rgb_png)
+    window.apply(lambda state: set_filter_expr(state, "B >= 200"))
+    assert window._match is not None
+    assert int(window._match.sum()) == 1  # only the blue pixel at (0, 1)
+    extract = window.inspector._extract_rows
+    window._on_region_selected(1, 0, 1, 1)  # the right column holds no match
+    assert window.store.state.filter_expr == "B >= 200"  # preview only
+    assert "通过 0/4" in window._status_view.text()
+    window._on_region_committed(1, 0, 1, 1)
+    assert window.store.state.filter_expr == "(B >= 200) and rect(1, 0, 2, 2)"
+    assert window._match is not None
+    assert int(window._match.sum()) == 0
+    assert window.inspector._extract_rows != extract
+
+
+def test_escape_drops_the_preview_without_touching_the_filter(qtbot: QtBot, rgb_png: Path) -> None:
+    from pixelsb.domain.transitions import set_filter_expr
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.open_path(rgb_png)
+    window.apply(lambda state: set_filter_expr(state, "B >= 200"))
+    window._on_region_selected(1, 0, 1, 1)
+    window._on_region_canceled()
+    assert window.store.state.filter_expr == "B >= 200"
+    assert window._match is not None
+    assert int(window._match.sum()) == 1
+    assert window._status_view.text().startswith("光标")
+
+
+def test_the_plane_steppers_walk_the_display_order(qtbot: QtBot, rgb_png: Path) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.open_path(rgb_png)
+    window.inspector._plane_next.click()
+    assert window.store.state.selection == frozenset({BitChoice("R", 7)})  # the ladder head
+    window.inspector._plane_next.click()
+    assert window.store.state.selection == frozenset({BitChoice("R", 6)})
+    window.inspector._plane_prev.click()
+    window.inspector._plane_prev.click()
+    assert window.store.state.selection == frozenset({BitChoice("B", 0)})  # backwards, wrapping
+
+
+def test_the_channel_steppers_walk_whole_channels(qtbot: QtBot, rgb_png: Path) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.open_path(rgb_png)
+    window.inspector._channel_next.click()
+    for name in ("R", "G", "B"):
+        assert window.store.state.selection == frozenset({BitChoice(name, bit) for bit in range(8)})
+        window.inspector._channel_next.click()
+    assert window.store.state.selection == frozenset({BitChoice("R", bit) for bit in range(8)})
 
 
 def test_typing_in_the_filter_box_keeps_its_keys(qtbot: QtBot, rgb_png: Path) -> None:

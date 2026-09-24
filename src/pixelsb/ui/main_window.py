@@ -73,7 +73,9 @@ from pixelsb.domain.transitions import (
     set_format,
     set_only_matched,
     set_zoom,
+    step_channel,
     step_focus_bit,
+    step_plane,
     toggle_bit,
 )
 from pixelsb.io.loading import ImageLoadError, load_image
@@ -343,6 +345,8 @@ class MainWindow(QMainWindow):
         self.inspector.column_toggle.connect(self._on_column_toggle)
         self.inspector.original_requested.connect(lambda: self.apply(select_all_bits))
         self.inspector.lsbs_requested.connect(lambda: self.apply(select_lsbs))
+        self.inspector.plane_step.connect(self._on_plane_step)
+        self.inspector.channel_step.connect(self._on_channel_step)
         inspector_scroll = QScrollArea()
         inspector_scroll.setObjectName("inspectorArea")
         inspector_scroll.setWidgetResizable(True)
@@ -482,13 +486,14 @@ class MainWindow(QMainWindow):
             return self._match, self._match_error
         self._match_key = key
         self._match_error = None
-        match = None
+        match: NDArray[np.bool_] | None = None
         try:
             compiled = compile_filter(state.filter_expr, image.planes)
             match = compiled.evaluate(image, effective_selection(image, state.selection))
-            self._match_passed = int(match.sum())
         except PredicateError as exc:
             self._match_error = str(exc)
+        if match is not None:
+            self._match_passed = int(match.sum())
         self._match = match
         return match, self._match_error
 
@@ -574,6 +579,12 @@ class MainWindow(QMainWindow):
     def _on_column_toggle(self, bit: int, checked: bool) -> None:
         self.apply(lambda state: set_column(state, bit, on=checked))
 
+    def _on_plane_step(self, delta: int) -> None:
+        self.apply(lambda state: step_plane(state, delta))
+
+    def _on_channel_step(self, delta: int) -> None:
+        self.apply(lambda state: step_channel(state, delta))
+
     def _on_format(self, index: int) -> None:
         fmt = _enum_at(self._format_combo, index, DisplayFormat)
         if fmt is None or fmt is self.store.state.value_format:
@@ -587,15 +598,35 @@ class MainWindow(QMainWindow):
         self._status_view.setText(text.selection_status(x0, y0, x1, y1))
 
     def _on_region_selected(self, x0: int, y0: int, x1: int, y1: int) -> None:
-        self._status_view.setText(text.selection_ready(x0, y0, x1, y1))
+        """A settled region is still a preview; Enter appends it to the filter."""
+        image = self.store.state.image
+        passed = self._region_hits(x0, y0, x1, y1)
+        count = (
+            text.filter_count(passed, image.width * image.height)
+            if passed is not None and image is not None
+            else ""
+        )
+        self._status_view.setText(text.selection_ready(x0, y0, x1, y1, count))
 
     def _on_region_canceled(self) -> None:
         self._status_view.setText(status_view(self.store.state))
 
     def _on_region_committed(self, x0: int, y0: int, x1: int, y1: int) -> None:
-        """Fill the filter with the committed region; rect edges are exclusive."""
-        self._filter_edit.setText(f"rect({x0}, {y0}, {x1 + 1}, {y1 + 1})")
+        """Append the previewed region; the parenthesized prefix keeps `or` intact."""
+        rect = f"rect({x0}, {y0}, {x1 + 1}, {y1 + 1})"
+        current = self._filter_edit.text().strip()
+        self._filter_edit.setText(f"({current}) and {rect}" if current else rect)
         self._commit_filter()
+
+    def _region_hits(self, x0: int, y0: int, x1: int, y1: int) -> int | None:
+        """Pixels the appended rect would leave selected, against the applied filter."""
+        image = self.store.state.image
+        if image is None or self._match_error is not None:
+            return None
+        match = self._match
+        if match is None:
+            return (y1 - y0 + 1) * (x1 - x0 + 1)
+        return int(match[y0 : y1 + 1, x0 : x1 + 1].sum())
 
     def _on_mode(self, button: QPushButton) -> None:
         self.canvas.set_mode(CanvasMode.SELECT if button is self._mode_select else CanvasMode.PAN)

@@ -19,7 +19,9 @@ from pixelsb.domain.transitions import (
     set_cursor,
     set_only_matched,
     set_zoom,
+    step_channel,
     step_focus_bit,
+    step_plane,
     step_zoom,
     toggle_bit,
 )
@@ -75,6 +77,43 @@ def test_move_cursor_starts_at_the_origin_and_clamps() -> None:
     assert state.cursor == PixelCoord(1, 1)
     state = move_cursor(state, -5, -5)
     assert state.cursor == PixelCoord(0, 0)
+
+
+def test_stepping_planes_walks_the_display_order() -> None:
+    image = make_image(np.zeros((1, 1, 3), dtype=np.uint16), planes_rgb())
+    state = open_image(ViewerState(), image)
+    # A wide view enters the ladder at the head: the first step lands on R7.
+    first = step_plane(state, 1)
+    assert first.selection == frozenset({BitChoice("R", 7)})
+    assert step_plane(first, 1).selection == frozenset({BitChoice("R", 6)})
+    backwards = step_plane(first, -1)
+    assert backwards.selection == frozenset({BitChoice("B", 0)})  # wrapped past the head
+    assert step_plane(backwards, -1).selection == frozenset({BitChoice("B", 1)})
+    assert step_plane(state, -1).selection == frozenset({BitChoice("B", 0)})
+    # Down the ladder: R0 is followed by G7, and B0 wraps back to R7.
+    r0 = select_only(state, "R", 0)
+    assert step_plane(r0, 1).selection == frozenset({BitChoice("G", 7)})
+    b0 = select_only(state, "B", 0)
+    assert step_plane(b0, 1).selection == frozenset({BitChoice("R", 7)})
+    empty = ViewerState()
+    assert step_plane(empty, 1) is empty  # no image: nothing to step
+
+
+def test_stepping_channels_shows_every_bit_of_one_channel() -> None:
+    image = make_image(np.zeros((1, 1, 3), dtype=np.uint16), planes_rgb())
+    state = open_image(ViewerState(), image)
+    red = step_channel(state, 1)
+    assert red.selection == frozenset({BitChoice("R", bit) for bit in range(8)})
+    assert red.focus == BitChoice("R", 0)
+    green = step_channel(red, 1)
+    assert green.selection == frozenset({BitChoice("G", bit) for bit in range(8)})
+    blue = step_channel(green, 1)
+    assert blue.selection == frozenset({BitChoice("B", bit) for bit in range(8)})
+    assert step_channel(blue, 1).selection == red.selection  # wraps back to R
+    assert step_channel(red, -1).selection == blue.selection
+    assert step_channel(state, -1).selection == blue.selection
+    empty = ViewerState()
+    assert step_channel(empty, 1) is empty
 
 
 def test_missing_plane_shortcut_leaves_the_state_alone() -> None:

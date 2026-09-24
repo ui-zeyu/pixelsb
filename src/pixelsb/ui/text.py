@@ -24,6 +24,14 @@ SECTION_BITS = "位选择"
 SECTION_EXTRACT = "提取"
 CHANNEL_TIP = "勾选整条通道"
 COLUMN_TIP = "勾选整列"
+PLANE_PREV = "◀"
+PLANE_NEXT = "▶"
+PLANE_PREV_TIP = "上一个位平面（按 R7…R0、G7… 的顺序反向切换，到头循环）"
+PLANE_NEXT_TIP = "下一个位平面（按 R7…R0、G7… 的顺序切换，到头循环）"
+CHANNEL_PREV = "▲"
+CHANNEL_NEXT = "▼"
+CHANNEL_PREV_TIP = "上一个通道的整条通道（R → G → B 循环）"
+CHANNEL_NEXT_TIP = "下一个通道的整条通道（R → G → B 循环）"
 EXTRACT_NOTE = "按通道顺序、位从低到高，每 8 位拼 1 字节，高位在前"
 EXTRACT_SEARCH_TIP = "搜索十六进制或 ASCII"
 EXTRACT_OFFSET = "偏移"
@@ -38,8 +46,8 @@ FILTER_TIP = (
     "也可按顺序写 rect(50, 50, 100, 100)，与四个字段的比较完全等价。"
     "grid(x, y, step_x, step_y) 从 (x, y) 开始，横向、纵向各按步长取点："
     "grid(10, 20, 6, 6) 每 6 个像素取 1 个，步长 1 即逐像素，四项均可具名。"
-    "画布切到「选区」工具后拖动框选：拖动时状态栏实时显示范围，"
-    "松开保留选区，回车把 rect 填入过滤器，Esc 取消。"
+    "画布切到「选区」工具后拖动框选：拖动与松开时只是预览（画布保留选区框、状态栏显示范围与命中数），"
+    "回车把 (原表达式) and rect 追加进过滤器，Esc 取消预览。"
     "例：rect(50, 50, 100, 100) and B >= R 或 grid(10, 20, 6, 6) and B >= 8。"
     "⌘F 聚焦，回车应用，Esc 清空并回到画布，留空即不过滤。"
 )
@@ -65,13 +73,14 @@ def filter_count(passed: int, total: int) -> str:
 
 
 def selection_status(x0: int, y0: int, x1: int, y1: int) -> str:
-    """Status-bar line while dragging a region: the rect that would be applied."""
+    """Status-bar line while dragging the region preview."""
     return f"选区 rect({x0}, {y0}, {x1 + 1}, {y1 + 1})  {x1 - x0 + 1}×{y1 - y0 + 1} 像素"
 
 
-def selection_ready(x0: int, y0: int, x1: int, y1: int) -> str:
-    """Status-bar line for a settled selection, waiting for Enter or Esc."""
-    return f"{selection_status(x0, y0, x1, y1)} · 回车填入过滤器，Esc 取消"
+def selection_ready(x0: int, y0: int, x1: int, y1: int, count: str = "") -> str:
+    """Status-bar line for a settled preview; ``count`` is a prebuilt pass label."""
+    hits = f"{count} · " if count else ""
+    return f"{selection_status(x0, y0, x1, y1)} · {hits}回车追加到过滤器，Esc 取消"
 
 
 def zoom_label(zoom: float) -> str:
@@ -98,7 +107,7 @@ SHORTCUT_HELP = """⌘O    打开
 方向键    移动光标 1 像素
 Shift+方向键    移动 8 像素
 左键拖动    平移
-选区工具    拖动框选；回车填入 rect 过滤，Esc 取消；按住空格临时平移
+选区工具    拖动框选（预览）；回车追加 rect 过滤，Esc 取消；按住空格临时平移
 单击位    勾选或取消这一位
 行首 / 列首复选框    选整行或整列
 ⌘/Shift+单击    只看这一位

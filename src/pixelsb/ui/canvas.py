@@ -157,7 +157,11 @@ class ImageCanvas(QWidget):
         rendered = render_rgb_at(image, state.selection, ys, xs)
         return match_view(rendered, match, ys, xs, _CANVAS_RGB)
 
-    def set_state(self, state: ViewerState, match: NDArray[np.bool_] | None = None) -> None:
+    def set_state(
+        self,
+        state: ViewerState,
+        match: NDArray[np.bool_] | None = None,
+    ) -> None:
         previous = self._state
         image = state.image
         rebuilt = False
@@ -173,6 +177,10 @@ class ImageCanvas(QWidget):
             self._cache_key = None
             self._target = QSize(320, 240)
         else:
+            if previous.image is not image:
+                # The region belongs to the image it was dragged on.
+                self._marquee_origin = None
+                self._marquee = None
             # The image object itself is the identity: id() values get recycled
             # after the previous image is freed, which would hit a stale cache.
             key = (image, state.selection, state.filter_expr, state.only_matched)
