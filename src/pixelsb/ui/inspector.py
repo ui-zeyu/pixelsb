@@ -4,6 +4,7 @@ import numpy as np
 from numpy.typing import NDArray
 from PySide6.QtCore import Qt, Signal, SignalInstance
 from PySide6.QtWidgets import (
+    QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -13,11 +14,25 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from pixelsb.domain.extract import ExtractRow, extract_bytes, filter_extract, format_extract
-from pixelsb.domain.models import BitChoice, LoadedImage, ViewerState
+from pixelsb.domain.extract import (
+    ExtractRow,
+    applied_order,
+    extract_bytes,
+    filter_extract,
+    format_extract,
+    order_choices,
+)
+from pixelsb.domain.models import (
+    BitChoice,
+    BitOrder,
+    SamplePlane,
+    ScanOrder,
+    ViewerState,
+)
 from pixelsb.domain.selection import effective_selection
 from pixelsb.ui import text, theme
 from pixelsb.ui.bits import BitMatrix
+from pixelsb.ui.controls import Toggle, TogglePair
 from pixelsb.ui.extract_view import ExtractView
 from pixelsb.ui.text import readout_text
 
@@ -25,6 +40,15 @@ _STEPPER_WIDTH = 30  # the arrow buttons stay compact around the grid
 _STEPPER_GAP = 6  # the channel column's gap, reused to indent the plane row
 _BITS_MIN_WIDTH = 320  # what the bit grid itself needs, margins included
 _WIDTH_SLACK = 16  # the panel's own scrollbar can appear once an image is open
+
+_BIT_ORDER_TOGGLES = (
+    Toggle(BitOrder.MSB, "MSB", text.ORDER_BIT_MSB_TIP),
+    Toggle(BitOrder.LSB, "LSB", text.ORDER_BIT_LSB_TIP),
+)
+_SCAN_TOGGLES = (
+    Toggle(ScanOrder.XY, "XY", text.ORDER_SCAN_XY_TIP),
+    Toggle(ScanOrder.YZ, "YZ", text.ORDER_SCAN_YZ_TIP),
+)
 
 
 class Inspector(QWidget):
@@ -38,6 +62,9 @@ class Inspector(QWidget):
     plane_step = Signal(int)
     channel_step = Signal(int)
     encoding_requested = Signal(str)
+    channel_order_requested = Signal(object)  # a tuple of channel names
+    bit_order_requested = Signal(str)
+    scan_requested = Signal(str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -63,13 +90,23 @@ class Inspector(QWidget):
 
         self._extract_key: tuple[object, ...] | None = None
         self._view_key: tuple[object, ...] | None = None
+        self._order_key: tuple[object, ...] | None = None
         self._extract_rows: tuple[ExtractRow, ...] = ()
+        self._order_items: tuple[tuple[str, ...], ...] = ()
+        # The three orders the extract stream reads: which channel's bits come
+        # first, which end of a byte the first bit lands in, and which pixel
+        # axis runs fastest.
+        self._channel_combo = QComboBox()
+        self._channel_combo.setToolTip(text.ORDER_CHANNEL_TIP)
+        self._channel_combo.setFixedHeight(theme.CONTROL_HEIGHT)
+        self._channel_combo.currentIndexChanged.connect(self._on_channel_order)
+        self._bit_order = TogglePair(self, _BIT_ORDER_TOGGLES, self.bit_order_requested)
+        self._scan = TogglePair(self, _SCAN_TOGGLES, self.scan_requested)
+
         self._extract_search = QLineEdit()
         self._extract_search.setPlaceholderText(text.EXTRACT_SEARCH_TIP)
         self._extract_search.setFixedHeight(theme.CONTROL_HEIGHT)
         self._extract_search.textChanged.connect(lambda _text: self._refresh_extract_view())
-        self._extract_note = _caption(text.EXTRACT_NOTE)
-        self._extract_note.setWordWrap(True)
         self._extract_view = ExtractView()
         self._extract_view.setMinimumHeight(180)
         self._extract_view.encoding_changed.connect(self.encoding_requested.emit)
@@ -84,7 +121,7 @@ class Inspector(QWidget):
         layout.addWidget(_hairline())
         layout.addSpacing(14)
         layout.addWidget(_section_title(text.SECTION_EXTRACT))
-        layout.addWidget(self._extract_note)
+        layout.addWidget(self._order_row())
         layout.addWidget(self._extract_search)
         layout.addWidget(self._extract_view, 1)
         # Room for the grid plus the arrow column, so it never squashes.
@@ -100,7 +137,8 @@ class Inspector(QWidget):
         planes = () if image is None else image.planes
         canvas_bits = None if image is None else effective_selection(image, state.selection)
         self._canvas_matrix.set_layer(planes, canvas_bits)
-        self._sync_extract(image, canvas_bits, state.filter_expr, match)
+        self._sync_order_controls(planes, canvas_bits)
+        self._sync_extract(state, canvas_bits, match)
         self._extract_view.sync_encoding(state.extract_encoding)
 
     def _bits_header(self) -> QHBoxLayout:
@@ -178,18 +216,72 @@ class Inspector(QWidget):
         layout.addWidget(matrix)
         return card
 
+    def _order_row(self) -> QWidget:
+        """The three order controls, held to one band above the dump they describe."""
+        row = QWidget()
+        # The stylesheet's own padding leaves a combo shorter than CONTROL_HEIGHT;
+        # one fixed band keeps the three controls level with the search box below.
+        row.setFixedHeight(theme.CONTROL_HEIGHT)
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        layout.addWidget(self._channel_combo)
+        layout.addWidget(self._bit_order)
+        layout.addWidget(self._scan)
+        layout.addStretch(1)
+        return row
+
+    def _on_channel_order(self, index: int) -> None:
+        """Ask for the arrangement picked in the list; the state answers through sync."""
+        if 0 <= index < len(self._order_items):
+            self.channel_order_requested.emit(self._order_items[index])
+
+    def _sync_order_controls(
+        self,
+        planes: tuple[SamplePlane, ...],
+        chosen: frozenset[BitChoice] | None,
+    ) -> None:
+        """Sync the order controls. This runs on every cursor move, so it caches."""
+        selection = frozenset() if chosen is None else chosen
+        choices = order_choices(planes, selection)
+        applied = applied_order(planes, selection, self._state.extract_order)
+        # A preference kept from an earlier, slimmer channel set can sit outside
+        # the list; the list then leads with it, so the shown order stays true.
+        items = choices if applied in choices else ((applied,) if applied else ()) + choices
+        order = self._state.extract_order
+        key = (items, applied, order.bit_order, order.scan)
+        if key == self._order_key:
+            return
+        self._order_key = key
+        combo = self._channel_combo
+        combo.blockSignals(True)
+        if items != self._order_items:
+            self._order_items = items
+            combo.clear()
+            for names in items:
+                combo.addItem("".join(names), names)
+        combo.setEnabled(len(items) > 1)
+        combo.setCurrentIndex(items.index(applied) if applied in items else 0)
+        combo.blockSignals(False)
+        self._bit_order.set_value(order.bit_order.value)
+        self._scan.set_value(order.scan.value)
+
     def _sync_extract(
         self,
-        image: LoadedImage | None,
+        state: ViewerState,
         chosen: frozenset[BitChoice] | None,
-        expression: str,
         match: NDArray[np.bool_] | None,
     ) -> None:
-        """Re-extract only when the image, the selection, or the filter changed."""
-        key = None if image is None else (image, chosen, expression)
+        """Re-extract only when the image, the bits, the filter, or the order changed."""
+        image = state.image
+        key = None if image is None else (image, chosen, state.filter_expr, state.extract_order)
         if key != self._extract_key:
             self._extract_key = key
-            data = b"" if image is None else extract_bytes(image, chosen, match)
+            data = (
+                b""
+                if image is None
+                else extract_bytes(image, chosen, match, order=state.extract_order)
+            )
             self._extract_rows = tuple(format_extract(data))
         self._refresh_extract_view()
 
@@ -217,12 +309,6 @@ def _section_title(label: str) -> QLabel:
     title = QLabel(label)
     title.setObjectName("sectionTitle")
     return title
-
-
-def _caption(label: str) -> QLabel:
-    caption = QLabel(label)
-    caption.setObjectName("muted")
-    return caption
 
 
 def _hairline() -> QFrame:

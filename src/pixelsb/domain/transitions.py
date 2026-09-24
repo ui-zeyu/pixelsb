@@ -6,10 +6,13 @@ from pixelsb.domain.models import (
     MAX_ZOOM,
     MIN_ZOOM,
     BitChoice,
+    BitOrder,
     DisplayFormat,
     ExtractEncoding,
+    ExtractOrder,
     LoadedImage,
     PixelCoord,
+    ScanOrder,
     ViewerState,
     ensure_inside,
 )
@@ -43,6 +46,7 @@ def open_image(
         filter_expr=state.filter_expr,
         value_format=state.value_format,
         extract_encoding=state.extract_encoding,
+        extract_order=state.extract_order,
         zoom=chosen,
         only_matched=state.only_matched,
     )
@@ -226,6 +230,27 @@ def set_extract_encoding(state: ViewerState, encoding: ExtractEncoding) -> Viewe
     if state.extract_encoding is encoding:
         return state
     return replace(state, extract_encoding=encoding)
+
+
+def set_channel_order(state: ViewerState, names: tuple[str, ...]) -> ViewerState:
+    """Which channel's bits come first in the extracted stream."""
+    return _with_order(state, replace(state.extract_order, planes=names))
+
+
+def set_bit_order(state: ViewerState, bit_order: BitOrder) -> ViewerState:
+    """Which end of each byte the first bit of the stream lands in."""
+    return _with_order(state, replace(state.extract_order, bit_order=bit_order))
+
+
+def set_scan_order(state: ViewerState, scan: ScanOrder) -> ViewerState:
+    """Whether the stream walks rows first (XY) or columns first (YZ)."""
+    return _with_order(state, replace(state.extract_order, scan=scan))
+
+
+def _with_order(state: ViewerState, order: ExtractOrder) -> ViewerState:
+    if order == state.extract_order:
+        return state
+    return replace(state, extract_order=order)
 
 
 def cycle_format(state: ViewerState) -> ViewerState:

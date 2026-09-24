@@ -1,18 +1,35 @@
 import numpy as np
+import pytest
 
 from pixelsb.domain.extract import (
     ExtractRow,
+    applied_order,
     decode_row,
     extract_bytes,
     filter_extract,
     format_extract,
+    order_choices,
+    ordered_planes,
 )
-from pixelsb.domain.models import BitChoice, ExtractEncoding, LoadedImage
+from pixelsb.domain.models import (
+    BitChoice,
+    BitOrder,
+    ExtractEncoding,
+    ExtractOrder,
+    LoadedImage,
+    SampleOrigin,
+    SamplePlane,
+    ScanOrder,
+)
 from tests.support import make_image, planes_rgb
 
 
 def _image(samples: list) -> LoadedImage:
     return make_image(np.array(samples, dtype=np.uint16), planes_rgb())
+
+
+def _rgba_planes() -> tuple[SamplePlane, ...]:
+    return (*planes_rgb(), SamplePlane("A", 3, 8, SampleOrigin.RAW))
 
 
 def test_extract_packs_the_selected_bits_msb_first_in_plane_order() -> None:
@@ -123,3 +140,144 @@ def test_filter_matches_hex_ascii_or_offset() -> None:
     assert filter_extract(rows, "de") == rows
     assert filter_extract(rows, "00000010") == rows[1:]
     assert filter_extract(rows, "zzz") == []
+
+
+def test_channel_order_reads_the_channels_in_the_sequence_it_names() -> None:
+    # One bit per channel, each set to a distinguishable value.
+    image = _image([[[0b0001, 0b0010, 0b0000]]])
+    chosen = frozenset({BitChoice("R", 0), BitChoice("G", 1), BitChoice("B", 0)})
+    assert extract_bytes(image, chosen) == bytes([0b11000000])
+    reversed_order = ExtractOrder(planes=("B", "G", "R"))
+    assert extract_bytes(image, chosen, order=reversed_order) == bytes([0b01100000])
+
+
+def test_scan_order_reads_the_pixels_column_by_column() -> None:
+    image = _image([[[1, 0, 0], [0, 0, 0]], [[1, 0, 0], [0, 0, 0]]])
+    chosen = frozenset({BitChoice("R", 0)})
+    # Row by row the first column's two pixels are split by the second column's;
+    # column by column they come together.
+    assert extract_bytes(image, chosen) == bytes([0b10100000])
+    columns = ExtractOrder(scan=ScanOrder.YZ)
+    assert extract_bytes(image, chosen, order=columns) == bytes([0b11000000])
+
+
+def test_scan_order_matches_extracting_the_transposed_image() -> None:
+    samples = np.array([[[1, 0, 0], [0, 0, 0], [1, 0, 0]]], dtype=np.uint16)
+    image = make_image(samples, planes_rgb())
+    transposed = make_image(samples.transpose(1, 0, 2), planes_rgb())
+    chosen = frozenset({BitChoice("R", 0)})
+    columns = ExtractOrder(scan=ScanOrder.YZ)
+    assert extract_bytes(image, chosen, order=columns) == extract_bytes(transposed, chosen)
+
+
+def test_the_filter_follows_the_scan_order() -> None:
+    image = _image([[[0, 0, 0], [0, 0, 0]], [[1, 0, 0], [0, 0, 0]]])
+    chosen = frozenset({BitChoice("R", 0)})
+    anti_diagonal = np.array([[False, True], [True, False]])
+    assert extract_bytes(image, chosen, anti_diagonal) == bytes([0b01000000])
+    columns = ExtractOrder(scan=ScanOrder.YZ)
+    assert extract_bytes(image, chosen, anti_diagonal, order=columns) == bytes([0b10000000])
+
+
+def test_bit_order_fills_each_byte_from_the_end_it_names() -> None:
+    samples = np.zeros((8, 1, 3), dtype=np.uint16)
+    samples[0, 0, 0] = 1  # only the first pixel's lowest red bit is set
+    image = make_image(samples, planes_rgb())
+    chosen = frozenset({BitChoice("R", 0)})
+    assert extract_bytes(image, chosen) == bytes([0b10000000])
+    low_first = ExtractOrder(bit_order=BitOrder.LSB)
+    assert extract_bytes(image, chosen, order=low_first) == bytes([0b00000001])
+
+
+def test_a_whole_channel_low_first_returns_the_stored_bytes() -> None:
+    image = _image([[[0x01, 0, 0], [0xA5, 0, 0], [0xC3, 0, 0]]])
+    chosen = frozenset(BitChoice("R", bit) for bit in range(8))
+    # High first packs bit 0 into the top of each byte, which reverses it; the
+    # two mirror values here hide that, so the assertions name all three.
+    assert extract_bytes(image, chosen) == bytes([0x80, 0xA5, 0xC3])
+    low_first = ExtractOrder(bit_order=BitOrder.LSB)
+    assert extract_bytes(image, chosen, order=low_first) == bytes([0x01, 0xA5, 0xC3])
+
+
+def test_the_three_orders_compose_into_one_stream() -> None:
+    # A 2x3 image whose pixels carry their own number 0..5 in the low three bits
+    # of R, G, B, so every combination of the three orders reads differently.
+    image = _image(
+        [
+            [[0, 0, 0], [1, 0, 0], [0, 1, 0]],
+            [[1, 1, 0], [0, 0, 1], [1, 0, 1]],
+        ]
+    )
+    chosen = frozenset({BitChoice(name, 0) for name in ("R", "G", "B")})
+    cases = {
+        (("R", "G", "B"), BitOrder.MSB, ScanOrder.XY): bytes([0x11, 0x63, 0x40]),
+        (("R", "G", "B"), BitOrder.LSB, ScanOrder.XY): bytes([0x88, 0xC6, 0x02]),
+        (("R", "G", "B"), BitOrder.MSB, ScanOrder.YZ): bytes([0x1A, 0x15, 0x40]),
+        (("R", "G", "B"), BitOrder.LSB, ScanOrder.YZ): bytes([0x58, 0xA8, 0x02]),
+        (("B", "G", "R"), BitOrder.MSB, ScanOrder.XY): bytes([0x05, 0x39, 0x40]),
+        (("B", "G", "R"), BitOrder.LSB, ScanOrder.XY): bytes([0xA0, 0x9C, 0x02]),
+        (("B", "G", "R"), BitOrder.MSB, ScanOrder.YZ): bytes([0x0C, 0xC5, 0x40]),
+        (("B", "G", "R"), BitOrder.LSB, ScanOrder.YZ): bytes([0x30, 0xA3, 0x02]),
+    }
+    for (planes, bit_order, scan), packed in cases.items():
+        order = ExtractOrder(planes=planes, bit_order=bit_order, scan=scan)
+        assert extract_bytes(image, chosen, order=order) == packed, (planes, bit_order, scan)
+
+
+def test_order_choices_offer_every_arrangement_of_three_channels() -> None:
+    chosen = frozenset({BitChoice("R", 0), BitChoice("G", 0), BitChoice("B", 0)})
+    choices = order_choices(planes_rgb(), chosen)
+    assert choices[0] == ("R", "G", "B")
+    assert set(choices) == {
+        ("R", "G", "B"),
+        ("R", "B", "G"),
+        ("G", "R", "B"),
+        ("G", "B", "R"),
+        ("B", "R", "G"),
+        ("B", "G", "R"),
+    }
+
+
+def test_order_choices_only_use_the_channels_that_carry_bits() -> None:
+    planes = planes_rgb()
+    assert order_choices(planes, frozenset()) == ()
+    assert order_choices(planes, frozenset({BitChoice("B", 0)})) == (("B",),)
+    pair = frozenset({BitChoice("R", 0), BitChoice("B", 0)})
+    assert order_choices(planes, pair) == (("R", "B"), ("B", "R"))
+
+
+def test_order_choices_keep_the_order_and_its_reverse_beyond_three_channels() -> None:
+    chosen = frozenset(BitChoice(name, 0) for name in ("R", "G", "B", "A"))
+    assert order_choices(_rgba_planes(), chosen) == (
+        ("R", "G", "B", "A"),
+        ("A", "B", "G", "R"),
+    )
+
+
+def test_the_channel_preference_keeps_unmentioned_planes_after_the_named_ones() -> None:
+    planes = _rgba_planes()
+    named = ExtractOrder(planes=("B", "G", "R"))
+    assert [plane.name for plane in ordered_planes(planes, named)] == ["B", "G", "R", "A"]
+    assert [plane.name for plane in ordered_planes(planes, ExtractOrder())] == [
+        "R",
+        "G",
+        "B",
+        "A",
+    ]
+
+
+def test_the_channel_preference_ignores_names_the_image_does_not_have() -> None:
+    gray = (SamplePlane("L", 0, 8, SampleOrigin.RAW),)
+    assert ordered_planes(gray, ExtractOrder(planes=("B", "G", "R"))) == gray
+
+
+def test_the_applied_order_lists_the_planes_that_carry_bits() -> None:
+    chosen = frozenset({BitChoice("R", 0), BitChoice("B", 3)})
+    order = ExtractOrder(planes=("B", "R"))
+    assert applied_order(planes_rgb(), chosen, order) == ("B", "R")
+    assert applied_order(planes_rgb(), frozenset(), order) == ()
+
+
+def test_the_order_record_refuses_a_channel_listed_twice() -> None:
+    with pytest.raises(ValueError, match="repeats a plane name"):
+        ExtractOrder(planes=("R", "G", "R"))

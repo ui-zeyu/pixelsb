@@ -6,9 +6,12 @@ import pytest
 from pixelsb.domain.models import (
     MAX_ZOOM,
     BitChoice,
+    BitOrder,
     DisplayFormat,
     ExtractEncoding,
+    ExtractOrder,
     PixelCoord,
+    ScanOrder,
     ViewerState,
 )
 from pixelsb.domain.transitions import (
@@ -17,9 +20,12 @@ from pixelsb.domain.transitions import (
     open_image,
     select_lsb,
     select_only,
+    set_bit_order,
+    set_channel_order,
     set_cursor,
     set_extract_encoding,
     set_only_matched,
+    set_scan_order,
     set_zoom,
     step_channel,
     step_focus_bit,
@@ -178,3 +184,37 @@ def test_zoom_and_format_cycle() -> None:
     assert step_zoom(set_zoom(state, MAX_ZOOM), 1).zoom == MAX_ZOOM
     with pytest.raises(ValueError, match="outside"):
         set_zoom(state, 0)
+
+
+def test_the_extract_order_survives_opening_another_image() -> None:
+    image = make_image(np.zeros((2, 2, 3), dtype=np.uint16), planes_rgb(), path=Path("a.png"))
+    other = make_image(np.zeros((2, 2, 3), dtype=np.uint16), planes_rgb(), path=Path("b.png"))
+    state = set_channel_order(ViewerState(), ("B", "G", "R"))
+    state = set_bit_order(state, BitOrder.LSB)
+    state = set_scan_order(state, ScanOrder.YZ)
+    expected = ExtractOrder(planes=("B", "G", "R"), bit_order=BitOrder.LSB, scan=ScanOrder.YZ)
+    assert open_image(state, image).extract_order == expected
+    assert open_image(state, other).extract_order == expected
+
+
+def test_each_order_leaves_the_other_two_alone() -> None:
+    state = set_channel_order(ViewerState(), ("B", "G", "R"))
+    assert state.extract_order == ExtractOrder(planes=("B", "G", "R"))
+    state = set_scan_order(state, ScanOrder.YZ)
+    assert state.extract_order == ExtractOrder(planes=("B", "G", "R"), scan=ScanOrder.YZ)
+    state = set_bit_order(state, BitOrder.LSB)
+    assert state.extract_order == ExtractOrder(
+        planes=("B", "G", "R"), bit_order=BitOrder.LSB, scan=ScanOrder.YZ
+    )
+
+
+def test_setting_an_order_that_is_already_in_force_changes_nothing() -> None:
+    state = set_scan_order(ViewerState(), ScanOrder.YZ)
+    assert set_scan_order(state, ScanOrder.YZ) is state
+    assert set_bit_order(state, BitOrder.MSB) is state
+    assert set_channel_order(state, ()) is state
+
+
+def test_the_channel_order_refuses_a_repeated_channel() -> None:
+    with pytest.raises(ValueError, match="repeats a plane name"):
+        set_channel_order(ViewerState(), ("R", "R"))

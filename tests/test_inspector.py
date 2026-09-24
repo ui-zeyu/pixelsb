@@ -3,16 +3,22 @@
 from dataclasses import replace
 from pathlib import Path
 
+from PIL import Image
 from PySide6.QtCore import QPoint, QRect
 from PySide6.QtGui import QFontInfo, QFontMetricsF, QImage, QTextCursor
 from PySide6.QtWidgets import QPushButton, QWidget
 from pytestqt.qtbot import QtBot
 
 from pixelsb.domain.extract import ASCII_START, BYTES_PER_ROW, format_extract
-from pixelsb.domain.models import ExtractEncoding, ViewerState
-from pixelsb.domain.transitions import open_image
+from pixelsb.domain.models import BitChoice, BitOrder, ExtractEncoding, ScanOrder, ViewerState
+from pixelsb.domain.transitions import (
+    open_image,
+    set_bit_order,
+    set_channel_order,
+    set_scan_order,
+)
 from pixelsb.io.loading import load_image
-from pixelsb.ui import text
+from pixelsb.ui import text, theme
 from pixelsb.ui.inspector import _STEPPER_GAP, _STEPPER_WIDTH, Inspector
 from pixelsb.ui.main_window import MainWindow
 
@@ -104,9 +110,14 @@ def test_the_panes_scroll_together(qtbot: QtBot, extract_png: Path) -> None:
     assert hex_bar.value() == 3
 
 
-def test_the_extract_note_does_not_repeat_the_section_title() -> None:
-    assert text.SECTION_EXTRACT not in text.EXTRACT_NOTE
-    assert text.EXTRACT_NOTE.startswith("按通道顺序")
+def test_every_order_control_explains_what_it_does(qtbot: QtBot, extract_png: Path) -> None:
+    inspector = _inspector(qtbot, extract_png)
+    assert inspector._channel_combo.toolTip() == text.ORDER_CHANNEL_TIP
+    tips = {button.text(): button.toolTip() for button in inspector.findChildren(QPushButton)}
+    assert tips["MSB"] == text.ORDER_BIT_MSB_TIP
+    assert tips["LSB"] == text.ORDER_BIT_LSB_TIP
+    assert tips["XY"] == text.ORDER_SCAN_XY_TIP
+    assert tips["YZ"] == text.ORDER_SCAN_YZ_TIP
 
 
 def test_the_panel_starts_wide_enough_for_a_full_dump_row(qtbot: QtBot, extract_png: Path) -> None:
@@ -227,7 +238,9 @@ def test_the_steppers_sit_around_the_grid(qtbot: QtBot, extract_png: Path) -> No
     assert abs(column_center - card_rect.center().y()) <= 3
 
 
-def test_the_section_holds_the_steppers_and_the_presets(qtbot: QtBot, extract_png: Path) -> None:
+def test_the_section_holds_the_steppers_the_presets_and_the_orders(
+    qtbot: QtBot, extract_png: Path
+) -> None:
     inspector = _inspector(qtbot, extract_png)
     labels = {button.text() for button in inspector.findChildren(QPushButton)}
     assert labels == {
@@ -237,6 +250,10 @@ def test_the_section_holds_the_steppers_and_the_presets(qtbot: QtBot, extract_pn
         text.CHANNEL_NEXT,
         text.ORIGINAL,
         text.ALL_LSB,
+        "MSB",
+        "LSB",
+        "XY",
+        "YZ",
     }
 
 
@@ -285,3 +302,131 @@ def test_a_panel_without_an_image_paints_no_chrome(qtbot: QtBot) -> None:
     assert view.text_pane.toPlainText() == ""
     assert view.hex_pane._gutter.size().isEmpty()
     assert view.hex_pane._header.size().isEmpty()
+
+
+def _button(pair: QWidget, label: str) -> QPushButton:
+    return next(button for button in pair.findChildren(QPushButton) if button.text() == label)
+
+
+def test_the_channel_list_offers_every_arrangement_of_the_channels_in_use(
+    qtbot: QtBot, extract_png: Path
+) -> None:
+    inspector = _inspector(qtbot, extract_png)
+    combo = inspector._channel_combo
+    assert combo.isEnabled()
+    assert [combo.itemText(index) for index in range(combo.count())] == [
+        "RGB",
+        "RBG",
+        "GRB",
+        "GBR",
+        "BRG",
+        "BGR",
+    ]
+    assert combo.currentText() == "RGB"
+
+
+def test_the_channel_list_holds_only_the_channels_that_carry_bits(
+    qtbot: QtBot, extract_png: Path
+) -> None:
+    inspector = Inspector()
+    qtbot.addWidget(inspector)
+    state = open_image(ViewerState(), load_image(extract_png), zoom=4.0)
+    chosen = frozenset({BitChoice("R", 3), BitChoice("B", 0)})
+    inspector.set_state(replace(state, selection=chosen))
+    combo = inspector._channel_combo
+    assert [combo.itemText(index) for index in range(combo.count())] == ["RB", "BR"]
+    assert combo.currentText() == "RB"
+    inspector.set_state(replace(state, selection=frozenset({BitChoice("G", 0)})))
+    assert [combo.itemText(index) for index in range(combo.count())] == ["G"]
+    assert not combo.isEnabled()
+
+
+def test_the_order_controls_follow_the_state(qtbot: QtBot, extract_png: Path) -> None:
+    inspector = Inspector()
+    qtbot.addWidget(inspector)
+    state = open_image(ViewerState(), load_image(extract_png), zoom=4.0)
+    state = set_channel_order(state, ("B", "G", "R"))
+    state = set_bit_order(state, BitOrder.LSB)
+    state = set_scan_order(state, ScanOrder.YZ)
+    inspector.set_state(state)
+    assert inspector._channel_combo.currentText() == "BGR"
+    assert _button(inspector._bit_order, "LSB").isChecked()
+    assert not _button(inspector._bit_order, "MSB").isChecked()
+    assert _button(inspector._scan, "YZ").isChecked()
+    assert not _button(inspector._scan, "XY").isChecked()
+
+
+def test_picking_an_order_reports_it(qtbot: QtBot, extract_png: Path) -> None:
+    inspector = _inspector(qtbot, extract_png)
+    channels: list[object] = []
+    bit_orders: list[str] = []
+    scans: list[str] = []
+    inspector.channel_order_requested.connect(channels.append)
+    inspector.bit_order_requested.connect(bit_orders.append)
+    inspector.scan_requested.connect(scans.append)
+    inspector._channel_combo.setCurrentIndex(5)
+    _button(inspector._bit_order, "LSB").click()
+    _button(inspector._scan, "YZ").click()
+    assert channels == [("B", "G", "R")]
+    assert bit_orders == [BitOrder.LSB.value]
+    assert scans == [ScanOrder.YZ.value]
+
+
+def test_the_order_row_shares_one_band_across_the_panel(qtbot: QtBot, extract_png: Path) -> None:
+    inspector = _inspector(qtbot, extract_png)
+    controls = (inspector._channel_combo, inspector._bit_order, inspector._scan)
+    assert {widget.height() for widget in controls} == {theme.CONTROL_HEIGHT}
+    assert len({widget.geometry().center().y() for widget in controls}) == 1
+    right = inspector.width() - inspector.contentsMargins().right()
+    assert max(widget.geometry().right() for widget in controls) <= right
+    assert inspector._bit_order.geometry().right() < inspector._scan.geometry().left()
+
+
+def test_the_dump_follows_the_order(qtbot: QtBot, extract_png: Path) -> None:
+    inspector = Inspector()
+    qtbot.addWidget(inspector)
+    state = open_image(ViewerState(), load_image(extract_png), zoom=4.0)
+    inspector.set_state(state)
+    pane = inspector._extract_view.hex_pane
+    assert pane.toPlainText().startswith("41 42 43")
+    inspector.set_state(set_channel_order(state, ("B", "G", "R")))
+    assert pane.toPlainText().startswith("43 42 41")
+    inspector.set_state(set_bit_order(state, BitOrder.LSB))
+    assert pane.toPlainText().startswith("82 42 c2")
+
+
+def test_the_dump_follows_the_scan_order(qtbot: QtBot, tmp_path: Path) -> None:
+    path = tmp_path / "column.png"
+    image = Image.new("RGB", (3, 2))
+    for row in range(2):
+        image.putpixel((0, row), (1, 0, 0))  # the lowest red bit, first column only
+    image.save(path)
+    inspector = Inspector()
+    qtbot.addWidget(inspector)
+    state = open_image(ViewerState(), load_image(path), zoom=4.0)
+    state = replace(state, selection=frozenset({BitChoice("R", 0)}))
+    inspector.set_state(state)
+    pane = inspector._extract_view.hex_pane
+    assert pane.toPlainText().startswith("90")
+    inspector.set_state(set_scan_order(state, ScanOrder.YZ))
+    assert pane.toPlainText().startswith("c0")
+
+
+def test_a_kept_channel_order_the_list_cannot_offer_leads_the_list(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    path = tmp_path / "rgba.png"
+    Image.new("RGBA", (4, 2), (1, 2, 3, 4)).save(path)
+    inspector = Inspector()
+    qtbot.addWidget(inspector)
+    state = open_image(ViewerState(), load_image(path), zoom=4.0)
+    # Four channels carrying bits leave the list offering only the order and its
+    # reverse, so the order kept from a three-channel image shows first of all.
+    inspector.set_state(set_channel_order(state, ("B", "G", "R")))
+    combo = inspector._channel_combo
+    assert [combo.itemText(index) for index in range(combo.count())] == ["BGRA", "RGBA", "ABGR"]
+    assert combo.currentText() == "BGRA"
+    requested: list[object] = []
+    inspector.channel_order_requested.connect(requested.append)
+    combo.setCurrentIndex(1)
+    assert requested == [("R", "G", "B", "A")]

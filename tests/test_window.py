@@ -4,12 +4,19 @@ from pathlib import Path
 import pytest
 from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtGui import QNativeGestureEvent, QPointingDevice
-from PySide6.QtWidgets import QToolButton
+from PySide6.QtWidgets import QPushButton, QToolButton, QWidget
 from pytestqt.qtbot import QtBot
 
 from pixelsb.domain import geometry
 from pixelsb.domain.extract import format_extract
-from pixelsb.domain.models import BitChoice, DisplayFormat, ExtractEncoding, PixelCoord
+from pixelsb.domain.models import (
+    BitChoice,
+    BitOrder,
+    DisplayFormat,
+    ExtractEncoding,
+    PixelCoord,
+    ScanOrder,
+)
 from pixelsb.domain.transitions import select_only, set_cursor, set_format, set_zoom
 from pixelsb.ui import painting, text, theme
 from pixelsb.ui.main_window import MainWindow
@@ -462,3 +469,32 @@ def test_panel_and_status_widgets_track_the_state(qtbot: QtBot, rgb_png: Path) -
     assert window._filter_count.text() == "通过 3/4"
     assert window._status_view.text().startswith("光标")
     window.grab()
+
+
+def test_the_extract_order_controls_drive_the_dump(qtbot: QtBot, extract_png: Path) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.open_path(extract_png)
+    inspector = window.inspector
+    pane = inspector._extract_view.hex_pane
+    assert pane.toPlainText().startswith("41 42 43")
+
+    inspector._channel_combo.setCurrentIndex(inspector._channel_combo.count() - 1)
+    assert window.store.state.extract_order.planes == ("B", "G", "R")
+    assert pane.toPlainText().startswith("43 42 41")
+
+    _order_button(inspector._scan, "YZ").click()
+    assert window.store.state.extract_order.scan is ScanOrder.YZ
+    _order_button(inspector._bit_order, "LSB").click()
+    assert window.store.state.extract_order.bit_order is BitOrder.LSB
+    # Low first hands back each channel's stored byte, in the order just picked.
+    assert pane.toPlainText().startswith("c2 42 82")
+
+    # The three settings survive opening another image.
+    window.open_path(extract_png)
+    assert window.store.state.extract_order.scan is ScanOrder.YZ
+
+
+def _order_button(pair: QWidget, label: str) -> QPushButton:
+    return next(button for button in pair.findChildren(QPushButton) if button.text() == label)

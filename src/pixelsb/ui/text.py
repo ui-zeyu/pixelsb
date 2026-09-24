@@ -32,10 +32,14 @@ CHANNEL_PREV = "▲"
 CHANNEL_NEXT = "▼"
 CHANNEL_PREV_TIP = "上一个通道的整条通道（R → G → B 循环）"
 CHANNEL_NEXT_TIP = "下一个通道的整条通道（R → G → B 循环）"
-EXTRACT_NOTE = "按通道顺序、位从低到高，每 8 位拼 1 字节，高位在前"
 EXTRACT_SEARCH_TIP = "搜索十六进制或 ASCII"
 EXTRACT_OFFSET = "偏移"
 EXTRACT_ENCODING_TIP = "点击切换右侧文本的解读编码：ASCII、UTF-8、UTF-16LE、UTF-16BE"
+ORDER_CHANNEL_TIP = "通道顺序：每个像素里先读哪条通道的位（StegSolve 的 RGB、BGR 等排列）"
+ORDER_BIT_MSB_TIP = "位序：先出现的位放进字节最高位；整条 8 位通道全选时得到按位反转的字节"
+ORDER_BIT_LSB_TIP = "位序：先出现的位放进字节最低位；整条 8 位通道全选时得到的正是原始字节值"
+ORDER_SCAN_XY_TIP = "扫描顺序：先横后纵，一行走完再换下一行"
+ORDER_SCAN_YZ_TIP = "扫描顺序：先纵后横，一列走完再换下一列"
 EXTRACT_ENCODINGS: tuple[tuple[ExtractEncoding, str], ...] = (
     (ExtractEncoding.ASCII, "ASCII"),
     (ExtractEncoding.UTF8, "UTF-8"),

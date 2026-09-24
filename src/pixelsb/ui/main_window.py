@@ -47,9 +47,11 @@ from pixelsb.domain.geometry import SLIDER_STEPS, initial_zoom, slider_position,
 from pixelsb.domain.models import (
     MAX_ZOOM,
     MIN_ZOOM,
+    BitOrder,
     DisplayFormat,
     ExtractEncoding,
     PixelCoord,
+    ScanOrder,
     ViewerState,
 )
 from pixelsb.domain.predicate import PredicateError, compile_filter
@@ -63,13 +65,16 @@ from pixelsb.domain.transitions import (
     select_lsb_at,
     select_lsbs,
     select_only,
+    set_bit_order,
     set_channel,
+    set_channel_order,
     set_column,
     set_cursor,
     set_extract_encoding,
     set_filter_expr,
     set_format,
     set_only_matched,
+    set_scan_order,
     set_zoom,
     step_channel,
     step_focus_bit,
@@ -387,6 +392,9 @@ class MainWindow(QMainWindow):
         self.inspector.plane_step.connect(self._on_plane_step)
         self.inspector.channel_step.connect(self._on_channel_step)
         self.inspector.encoding_requested.connect(self._on_encoding)
+        self.inspector.channel_order_requested.connect(self._on_channel_order)
+        self.inspector.bit_order_requested.connect(self._on_bit_order)
+        self.inspector.scan_requested.connect(self._on_scan_order)
         inspector_scroll = QScrollArea()
         inspector_scroll.setObjectName("inspectorArea")
         inspector_scroll.setWidgetResizable(True)
@@ -604,6 +612,15 @@ class MainWindow(QMainWindow):
         if encoding is self.store.state.extract_encoding:
             return
         self.apply(partial(set_extract_encoding, encoding=encoding))
+
+    def _on_channel_order(self, names: tuple[str, ...]) -> None:
+        self.apply(partial(set_channel_order, names=names))
+
+    def _on_bit_order(self, value: str) -> None:
+        self.apply(partial(set_bit_order, bit_order=BitOrder(value)))
+
+    def _on_scan_order(self, value: str) -> None:
+        self.apply(partial(set_scan_order, scan=ScanOrder(value)))
 
     def _on_hover(self, x: int, y: int) -> None:
         self.apply(partial(set_cursor, coord=PixelCoord(x, y)))

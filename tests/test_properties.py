@@ -8,7 +8,14 @@ from hypothesis import strategies as st
 from pixelsb.domain.extract import extract_bytes
 from pixelsb.domain.geometry import SLIDER_STEPS, slider_position, slider_zoom
 from pixelsb.domain.match_view import match_span, match_view
-from pixelsb.domain.models import MAX_ZOOM, BitChoice, LoadedImage
+from pixelsb.domain.models import (
+    MAX_ZOOM,
+    BitChoice,
+    BitOrder,
+    ExtractOrder,
+    LoadedImage,
+    ScanOrder,
+)
 from pixelsb.domain.predicate import PredicateError, compile_filter
 from pixelsb.domain.samples import render_rgb
 from tests.support import make_image, planes_rgb
@@ -141,3 +148,65 @@ def test_the_slider_round_trips_every_whole_zoom(zoom: int) -> None:
     position = slider_position(zoom)
     assert 0 <= position <= SLIDER_STEPS
     assert slider_zoom(position) == zoom
+
+
+def _chosen(image: LoadedImage, bits: set[int]) -> frozenset[BitChoice]:
+    return frozenset(BitChoice(plane.name, bit) for plane in image.planes for bit in bits)
+
+
+def _transposed(image: LoadedImage) -> LoadedImage:
+    return make_image(image.samples.transpose(1, 0, 2), planes_rgb())
+
+
+@given(width=_SIZES, height=_SIZES, bits=_BITS, seed=st.integers(0, 5))
+def test_the_column_order_is_the_transposed_image_read_by_rows(
+    width: int, height: int, bits: set[int], seed: int
+) -> None:
+    image = _image(width, height, seed=seed)
+    columns = ExtractOrder(scan=ScanOrder.YZ)
+    assert extract_bytes(image, _chosen(image, bits), order=columns) == extract_bytes(
+        _transposed(image), _chosen(image, bits)
+    )
+
+
+@given(pattern=st.integers(min_value=0, max_value=0xFFFF), bits=_BITS)
+def test_the_column_order_carries_the_filter_along(pattern: int, bits: set[int]) -> None:
+    side = 4
+    image = _image(side, side, seed=7)
+    mask = np.array(
+        [
+            [bool(pattern >> (row * side + column) & 1) for column in range(side)]
+            for row in range(side)
+        ]
+    )
+    columns = ExtractOrder(scan=ScanOrder.YZ)
+    assert extract_bytes(image, _chosen(image, bits), mask, order=columns) == extract_bytes(
+        _transposed(image), _chosen(image, bits), mask.T
+    )
+
+
+@given(width=_SIZES, height=_SIZES, seed=st.integers(0, 5))
+def test_low_first_returns_the_stored_bytes_of_a_whole_channel(
+    width: int, height: int, seed: int
+) -> None:
+    image = _image(width, height, seed=seed)
+    chosen = frozenset(BitChoice("R", bit) for bit in range(8))
+    stored = image.samples[:, :, 0].astype(np.uint8).tobytes()
+    low_first = ExtractOrder(bit_order=BitOrder.LSB)
+    assert extract_bytes(image, chosen, order=low_first) == stored
+    # High first packs bit 0 into the top of the byte, which mirrors it.
+    mirrored = bytes(int(f"{byte:08b}"[::-1], 2) for byte in stored)
+    assert extract_bytes(image, chosen) == mirrored
+
+
+@given(width=_SIZES, height=_SIZES, seed=st.integers(0, 5))
+def test_a_channel_order_permutes_the_byte_groups_of_every_pixel(
+    width: int, height: int, seed: int
+) -> None:
+    image = _image(width, height, seed=seed)
+    chosen = frozenset(BitChoice(name, bit) for name in ("R", "G", "B") for bit in range(8))
+    every = extract_bytes(image, chosen)
+    reversed_channels = ExtractOrder(planes=("B", "G", "R"))
+    swapped = extract_bytes(image, chosen, order=reversed_channels)
+    groups = [every[start : start + 3] for start in range(0, len(every), 3)]
+    assert swapped == b"".join(group[::-1] for group in groups)

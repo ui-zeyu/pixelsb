@@ -35,6 +35,20 @@ class ExtractEncoding(StrEnum):
     UTF16_BE = "utf-16-be"
 
 
+class BitOrder(StrEnum):
+    """Which end of a byte the first bit of the stream lands in."""
+
+    MSB = "msb"
+    LSB = "lsb"
+
+
+class ScanOrder(StrEnum):
+    """Which pixel axis the stream runs along fastest."""
+
+    XY = "xy"  # row by row, then the next row
+    YZ = "yz"  # column by column, then the next column
+
+
 @dataclass(frozen=True, slots=True)
 class BitChoice:
     plane: str
@@ -119,6 +133,24 @@ def ensure_inside(image: LoadedImage, coord: PixelCoord) -> None:
         raise ValueError(f"pixel ({coord.x}, {coord.y}) is outside {image.width}x{image.height}")
 
 
+@dataclass(frozen=True, slots=True)
+class ExtractOrder:
+    """How the selected bits are laid into the extracted byte stream.
+
+    ``planes`` is a preference over plane names rather than a permutation of one
+    image's planes: the planes carrying bits are ranked by their position in it,
+    and names it does not mention keep the image's own order, after those.
+    """
+
+    planes: tuple[str, ...] = ()
+    bit_order: BitOrder = BitOrder.MSB
+    scan: ScanOrder = ScanOrder.XY
+
+    def __post_init__(self) -> None:
+        if len(set(self.planes)) != len(self.planes):
+            raise ValueError("channel order repeats a plane name")
+
+
 @dataclass(frozen=True, slots=True, eq=False)
 class ViewerState:
     """``selection is None`` means every bit of every plane (the original image)."""
@@ -130,6 +162,7 @@ class ViewerState:
     filter_expr: str = ""
     value_format: DisplayFormat = DisplayFormat.HEX
     extract_encoding: ExtractEncoding = ExtractEncoding.ASCII
+    extract_order: ExtractOrder = ExtractOrder()
     zoom: float = 1.0
     only_matched: bool = False
 

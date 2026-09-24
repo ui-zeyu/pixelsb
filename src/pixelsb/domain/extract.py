@@ -1,18 +1,38 @@
 """StegSolve-style bit extraction: selected bits packed into bytes."""
 
 from dataclasses import dataclass
-from itertools import batched
+from itertools import batched, permutations
+from typing import Literal
 
 import numpy as np
 from numpy.typing import NDArray
 
-from pixelsb.domain.models import BitChoice, ExtractEncoding, LoadedImage
-from pixelsb.domain.selection import effective_selection
+from pixelsb.domain.models import (
+    BitChoice,
+    BitOrder,
+    ExtractEncoding,
+    ExtractOrder,
+    LoadedImage,
+    SampleArray,
+    SamplePlane,
+    ScanOrder,
+)
+from pixelsb.domain.selection import bits_for, effective_selection
 
 DISPLAY_LINES = 4096
 BYTES_PER_ROW = 16
 HEX_WIDTH = BYTES_PER_ROW * 3 - 1
 ASCII_START = HEX_WIDTH + 2
+
+# The order every caller gets unless it asks for another one. Shared rather than
+# built per default: it is frozen, so one instance serves every call.
+DEFAULT_ORDER = ExtractOrder()
+
+_PACKBIT_ORDER: dict[BitOrder, Literal["big", "little"]] = {
+    BitOrder.MSB: "big",
+    BitOrder.LSB: "little",
+}
+_MAX_ORDER_PLANES = 3  # StegSolve's set: every arrangement of three channels
 
 # Byte value -> itself when printable, a dot otherwise, for the ASCII column.
 _DOT_TABLE = bytes(byte if 32 <= byte <= 126 else ord(".") for byte in range(256))
@@ -44,9 +64,14 @@ def extract_bytes(
     image: LoadedImage,
     chosen: frozenset[BitChoice] | None,
     match: NDArray[np.bool_] | None = None,
+    *,
+    order: ExtractOrder = DEFAULT_ORDER,
 ) -> bytes:
-    """Pack the selected bits into bytes, raster order, first bit into the MSB.
+    """Pack the selected bits into bytes, in the requested order.
 
+    The stream walks the pixels in ``order.scan``, each pixel's channels in
+    ``order.planes``, and each channel's selected bits from low to high; every
+    eight bits become a byte, the first of them the high or low end of it.
     ``match`` (HxW bool) limits the stream to the pixels that pass the display
     filter; surviving pixels keep their bit order and are re-packed densely.
     """
@@ -55,16 +80,84 @@ def extract_bytes(
         return b""
     # Select the surviving pixels first: expanding every bit plane of a large
     # image just to discard most of it is slow and allocation heavy.
-    samples = image.samples
-    rows = samples[match] if match is not None else samples.reshape(-1, samples.shape[2])
+    rows = _pixel_rows(image.samples, match, order.scan)
     columns = [
-        ((rows[:, plane.index] >> np.uint16(bit)) & np.uint16(1)).astype(np.uint8)
-        for plane in image.planes
-        for bit in range(plane.bit_depth)
-        if BitChoice(plane.name, bit) in selection
+        _bit_column(rows, plane.index, bit)
+        for plane in ordered_planes(image.planes, order)
+        for bit in bits_for(selection, plane.name)
     ]
+    if not columns:
+        return b""
     stream = np.stack(columns, axis=-1)
-    return np.packbits(stream.reshape(-1)).tobytes()
+    return np.packbits(stream.reshape(-1), bitorder=_PACKBIT_ORDER[order.bit_order]).tobytes()
+
+
+def ordered_planes(
+    planes: tuple[SamplePlane, ...],
+    order: ExtractOrder,
+) -> tuple[SamplePlane, ...]:
+    """The planes in the order the stream reads them: the ranked names first.
+
+    Names the order does not mention sort into the image's own order after every
+    ranked one, which keeps a preference like ``("B", "G", "R")`` meaningful for
+    images that hold other planes as well.
+    """
+    if not order.planes:
+        return planes
+    rank = {name: position for position, name in enumerate(order.planes)}
+    return tuple(sorted(planes, key=lambda plane: rank.get(plane.name, len(rank) + plane.index)))
+
+
+def applied_order(
+    planes: tuple[SamplePlane, ...],
+    chosen: frozenset[BitChoice],
+    order: ExtractOrder,
+) -> tuple[str, ...]:
+    """The channel order in effect: the planes carrying bits, as the stream reads them."""
+    return tuple(
+        plane.name for plane in ordered_planes(planes, order) if bits_for(chosen, plane.name)
+    )
+
+
+def order_choices(
+    planes: tuple[SamplePlane, ...],
+    chosen: frozenset[BitChoice],
+) -> tuple[tuple[str, ...], ...]:
+    """The channel orders worth offering: the arrangements of the planes in use.
+
+    Three channels or fewer come in every arrangement, which is StegSolve's set;
+    beyond that the order itself and its reverse keep the list readable.
+    """
+    used = tuple(plane.name for plane in planes if bits_for(chosen, plane.name))
+    if not used:
+        return ()
+    if len(used) > _MAX_ORDER_PLANES:
+        return used, tuple(reversed(used))
+    return tuple(permutations(used))
+
+
+def _pixel_rows(
+    samples: SampleArray,
+    match: NDArray[np.bool_] | None,
+    scan: ScanOrder,
+) -> SampleArray:
+    """The pixels to read, in scan order: rows first (XY) or columns first (YZ).
+
+    A transposed view reads the same samples with the axes swapped, and the
+    filter travels with it, so the surviving pixels keep column order. The
+    reshape of that view is the one copy this order costs.
+    """
+    if scan is ScanOrder.YZ:
+        samples = samples.transpose(1, 0, 2)
+        match = None if match is None else match.T
+    if match is None:
+        return samples.reshape(-1, samples.shape[2])
+    return samples[match]
+
+
+def _bit_column(rows: SampleArray, index: int, bit: int) -> NDArray[np.uint8]:
+    """One bit plane of one channel, as a stream of 0 and 1 bytes."""
+    return ((rows[:, index] >> np.uint16(bit)) & np.uint16(1)).astype(np.uint8)
 
 
 def format_extract(data: bytes, limit: int = DISPLAY_LINES) -> list[ExtractRow]:
