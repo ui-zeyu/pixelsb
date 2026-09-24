@@ -27,6 +27,15 @@ class DisplayFormat(StrEnum):
     BINARY = "binary"
 
 
+class ExtractEncoding(StrEnum):
+    """How the extract panel reads the byte stream as text."""
+
+    ASCII = "ascii"
+    UTF8 = "utf-8"
+    UTF16_LE = "utf-16-le"
+    UTF16_BE = "utf-16-be"
+
+
 @dataclass(frozen=True, slots=True)
 class BitChoice:
     plane: str
@@ -129,6 +138,7 @@ class ViewerState:
     focus: BitChoice | None = None
     filter_expr: str = ""
     value_format: DisplayFormat = DisplayFormat.HEX
+    extract_encoding: ExtractEncoding = ExtractEncoding.ASCII
     zoom: float = 1.0
     only_matched: bool = False
 

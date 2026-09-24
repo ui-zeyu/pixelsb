@@ -7,7 +7,8 @@ from PySide6.QtGui import QNativeGestureEvent, QPointingDevice
 from PySide6.QtWidgets import QToolButton
 from pytestqt.qtbot import QtBot
 
-from pixelsb.domain.models import BitChoice, DisplayFormat, PixelCoord
+from pixelsb.domain.extract import format_extract
+from pixelsb.domain.models import BitChoice, DisplayFormat, ExtractEncoding, PixelCoord
 from pixelsb.domain.transitions import select_only, set_cursor, set_format, set_zoom
 from pixelsb.ui import main_window, text, theme
 from pixelsb.ui.main_window import MainWindow
@@ -213,6 +214,27 @@ def test_escape_drops_the_preview_without_touching_the_filter(qtbot: QtBot, rgb_
     assert window._match is not None
     assert int(window._match.sum()) == 1
     assert window._status_view.text().startswith("光标")
+
+
+def test_the_extract_tabs_and_the_state_agree(qtbot: QtBot, extract_png: Path) -> None:
+    from pixelsb.domain.transitions import set_extract_encoding
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.open_path(extract_png)
+    view = window.inspector._extract_view
+    rows = format_extract("中".encode("utf-16-le"))
+    view.set_rows(rows, ExtractEncoding.UTF16_LE)
+    assert view.text_pane.toPlainText() == "中"
+    view.set_rows(rows, ExtractEncoding.ASCII)
+    assert view.text_pane.toPlainText() == "-N"  # the same bytes, read as ASCII
+    assert view.text_pane._header.label() == "ASCII"
+    # The header asks for an encoding; the state answers and the header follows.
+    view.choose_encoding(ExtractEncoding.UTF16_BE)
+    assert window.store.state.extract_encoding is ExtractEncoding.UTF16_BE
+    window.apply(lambda state: set_extract_encoding(state, ExtractEncoding.UTF8))
+    assert view.text_pane._header.label() == "UTF-8"
 
 
 def test_the_plane_steppers_walk_the_display_order(qtbot: QtBot, rgb_png: Path) -> None:

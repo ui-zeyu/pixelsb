@@ -1,7 +1,13 @@
 import numpy as np
 
-from pixelsb.domain.extract import extract_bytes, filter_extract, format_extract
-from pixelsb.domain.models import BitChoice
+from pixelsb.domain.extract import (
+    ExtractRow,
+    decode_row,
+    extract_bytes,
+    filter_extract,
+    format_extract,
+)
+from pixelsb.domain.models import BitChoice, ExtractEncoding
 from tests.support import make_image, planes_rgb
 
 
@@ -60,6 +66,41 @@ def test_format_pads_the_last_row_and_handles_empty() -> None:
     assert [row.text for row in empty] == ["（无数据）"]
     assert empty[0].offset is None
     assert empty[0].offset_text == ""
+
+
+def test_rows_keep_their_bytes_so_they_can_be_re_read() -> None:
+    rows = format_extract(b"MZ\x00" + bytes(range(3, 20)))
+    assert rows[0].data == b"MZ\x00" + bytes(range(3, 16))
+    assert rows[1].data == bytes(range(16, 20))
+    assert format_extract(b"")[0].data == b""  # a note row carries no bytes
+
+
+def test_decoding_ascii_dots_everything_unprintable() -> None:
+    row = format_extract(b"A\x00\n\xffZ")[0]
+    assert decode_row(row, ExtractEncoding.ASCII) == "A...Z"
+
+
+def test_decoding_utf8_reads_whole_sequences() -> None:
+    row = format_extract("héllo".encode())[0]
+    assert decode_row(row, ExtractEncoding.UTF8) == "héllo"
+    broken = format_extract(b"\xff\xfeA")[0]
+    assert decode_row(broken, ExtractEncoding.UTF8) == "\ufffd\ufffdA"
+
+
+def test_decoding_utf16_takes_two_bytes_per_character() -> None:
+    row = format_extract("中A".encode("utf-16-le"))[0]
+    assert decode_row(row, ExtractEncoding.UTF16_LE) == "中A"
+    assert decode_row(row, ExtractEncoding.UTF16_BE) == "ⵎ䄀"
+    odd = format_extract(b"A\x00Z")[0]
+    assert decode_row(odd, ExtractEncoding.UTF16_LE) == "A\ufffd"
+
+
+def test_decoding_marks_a_character_split_by_the_row_boundary() -> None:
+    data = b"A" * 15 + "中".encode() + b"B"
+    rows = format_extract(data)
+    assert decode_row(rows[0], ExtractEncoding.UTF8) == "A" * 15 + "\ufffd"
+    assert decode_row(rows[1], ExtractEncoding.UTF8) == "\ufffd\ufffdB"  # its two tail bytes
+    assert decode_row(ExtractRow(None, "（无数据）"), ExtractEncoding.UTF8) == ""
 
 
 def test_format_truncates_with_a_note() -> None:

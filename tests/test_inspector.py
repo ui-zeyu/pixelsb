@@ -4,17 +4,19 @@ from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import QPoint, QRect
-from PySide6.QtGui import QImage, QTextCursor
+from PySide6.QtGui import QFontInfo, QFontMetricsF, QImage, QTextCursor
 from PySide6.QtWidgets import QPushButton, QWidget
 from pytestqt.qtbot import QtBot
 
-from pixelsb.domain.extract import ASCII_START, BYTES_PER_ROW
-from pixelsb.domain.models import ViewerState
+from pixelsb.domain.extract import ASCII_START, BYTES_PER_ROW, format_extract
+from pixelsb.domain.models import ExtractEncoding, ViewerState
 from pixelsb.domain.transitions import open_image
 from pixelsb.io.loading import load_image
 from pixelsb.ui import text
 from pixelsb.ui.inspector import _STEPPER_GAP, _STEPPER_WIDTH, Inspector
 from pixelsb.ui.main_window import MainWindow
+
+_MARGIN = 4  # the document margin Qt puts around the text inside a pane
 
 
 def _inspector(qtbot: QtBot, path: Path) -> Inspector:
@@ -35,23 +37,71 @@ def _dark_columns(image: QImage, x0: int, x1: int, y0: int, y1: int) -> list[int
 
 
 def test_offsets_stay_out_of_the_extract_text(qtbot: QtBot, extract_png: Path) -> None:
-    view = _inspector(qtbot, extract_png)._extract_view
-    document = view.document()
+    pane = _inspector(qtbot, extract_png)._extract_view.hex_pane
+    document = pane.document()
     assert document.blockCount() == 6
-    assert view.toPlainText().startswith("41 42 43")
-    assert "00000000" not in view.toPlainText()
-    assert view.offset_text(0) == "00000000"
-    assert view.offset_text(1) == "00000010"
-    assert view.offset_text(document.blockCount()) == ""
+    assert pane.toPlainText().startswith("41 42 43")
+    assert "00000000" not in pane.toPlainText()
+    assert pane.offset_text(0) == "00000000"
+    assert pane.offset_text(1) == "00000010"
+    assert pane.offset_text(document.blockCount()) == ""
 
 
-def test_selecting_everything_copies_data_without_offsets(qtbot: QtBot, extract_png: Path) -> None:
+def test_the_panes_hold_one_column_each(qtbot: QtBot, extract_png: Path) -> None:
     view = _inspector(qtbot, extract_png)._extract_view
-    cursor = view.textCursor()
-    cursor.select(QTextCursor.SelectionType.Document)
-    selected = cursor.selectedText()
-    assert "00000000" not in selected
-    assert "41 42 43" in selected
+    assert view.hex_pane.toPlainText().startswith("41 42 43")
+    assert view.text_pane.toPlainText().startswith("ABC")
+    assert view.text_pane.document().blockCount() == view.hex_pane.document().blockCount()
+    assert "ABC" not in view.hex_pane.toPlainText()
+    assert "41" not in view.text_pane.toPlainText()
+
+
+def test_a_selection_carries_only_its_own_column(qtbot: QtBot, extract_png: Path) -> None:
+    view = _inspector(qtbot, extract_png)._extract_view
+    text_cursor = view.text_pane.textCursor()
+    text_cursor.select(QTextCursor.SelectionType.Document)
+    selected = text_cursor.selectedText().replace("\u2029", "\n")  # block separator
+    assert selected == view.text_pane.toPlainText()
+    assert "41 42 43" not in selected
+    hex_cursor = view.hex_pane.textCursor()
+    hex_cursor.select(QTextCursor.SelectionType.Document)
+    assert "41 42 43" in hex_cursor.selectedText()
+    assert "00000000" not in hex_cursor.selectedText()
+    assert "ABC" not in hex_cursor.selectedText()
+
+
+def test_the_dump_is_monospaced_and_snug(qtbot: QtBot, extract_png: Path) -> None:
+    view = _inspector(qtbot, extract_png)._extract_view
+    for pane in (view.hex_pane, view.text_pane):
+        assert QFontInfo(pane.font()).fixedPitch()
+        metrics = QFontMetricsF(pane.font())
+        # One advance per glyph, or the columns cannot line up.
+        assert metrics.horizontalAdvance("W") == metrics.horizontalAdvance("0")
+    # Each pane hugs its columns: wide enough for them, no wider than the
+    # document margins plus the scrollbar room each pane reserves.
+    slack = 2 * _MARGIN + 16
+    hex_pane = view.hex_pane
+    assert hex_pane.viewport().width() >= hex_pane.text_width()
+    assert hex_pane.viewport().width() <= hex_pane.text_width() + slack
+    assert hex_pane.horizontalScrollBar().maximum() == 0
+    text_pane = view.text_pane
+    assert text_pane.viewport().width() >= text_pane.column_width()
+    assert text_pane.viewport().width() <= text_pane.column_width() + slack
+
+
+def test_the_panes_scroll_together(qtbot: QtBot, extract_png: Path) -> None:
+    view = _inspector(qtbot, extract_png)._extract_view
+    rows = format_extract(bytes(range(256)) * 2)  # long enough to scroll
+    view.set_rows(rows, ExtractEncoding.ASCII)
+    hex_bar = view.hex_pane.verticalScrollBar()
+    text_bar = view.text_pane.verticalScrollBar()
+    # Equal viewports are what keeps the rows of the two panes level.
+    assert view.hex_pane.viewport().height() == view.text_pane.viewport().height()
+    assert hex_bar.maximum() > 0
+    hex_bar.setValue(hex_bar.maximum() // 2)
+    assert text_bar.value() == hex_bar.value()
+    text_bar.setValue(3)
+    assert hex_bar.value() == 3
 
 
 def test_the_extract_note_does_not_repeat_the_section_title() -> None:
@@ -65,10 +115,12 @@ def test_the_panel_starts_wide_enough_for_a_full_dump_row(qtbot: QtBot, extract_
     window.resize(1200, 800)
     window.show()
     window.open_path(extract_png)
-    view = window.inspector._extract_view
+    pane = window.inspector._extract_view.hex_pane
     assert window._splitter.sizes()[1] >= window.inspector.preferred_width()
-    assert view.viewport().geometry().width() >= view.text_width()
-    assert view.horizontalScrollBar().maximum() == 0
+    assert pane.viewport().geometry().width() >= pane.text_width()
+    assert pane.horizontalScrollBar().maximum() == 0
+    text_pane = window.inspector._extract_view.text_pane
+    assert text_pane.viewport().geometry().width() >= text_pane.column_width()
 
 
 def test_the_panel_leaves_the_canvas_a_minimum_width(qtbot: QtBot) -> None:
@@ -81,18 +133,42 @@ def test_the_panel_leaves_the_canvas_a_minimum_width(qtbot: QtBot) -> None:
     assert canvas >= 240
 
 
-def test_the_header_rules_the_byte_columns(qtbot: QtBot, extract_png: Path) -> None:
+def test_the_headers_rule_their_own_columns(qtbot: QtBot, extract_png: Path) -> None:
     view = _inspector(qtbot, extract_png)._extract_view
     ruler = " ".join(f"{index:02x}" for index in range(BYTES_PER_ROW))
-    assert view.header_text() == f"{ruler}  {text.EXTRACT_ASCII}"
+    assert view.hex_pane.header_text() == ruler
     assert len(ruler) == ASCII_START - 2
+    # The two headers are one height, so the rows of both panes start level.
+    assert view.text_pane._header.height() == view.hex_pane._header.height()
+    hex_top = view.hex_pane.mapTo(view, view.hex_pane.viewport().geometry().topLeft()).y()
+    text_top = view.text_pane.mapTo(view, view.text_pane.viewport().geometry().topLeft()).y()
+    assert hex_top == text_top
+
+
+def test_the_header_offers_the_encodings(qtbot: QtBot, extract_png: Path) -> None:
+    inspector = _inspector(qtbot, extract_png)
+    view = inspector._extract_view
+    header = view.text_pane._header
+    assert header.label() == "ASCII"  # ASCII by default
+    actions = view._encoding_menu().actions()
+    assert [action.text() for action in actions] == [
+        label for _encoding, label in text.EXTRACT_ENCODINGS
+    ]
+    assert [action.isChecked() for action in actions] == [True, False, False, False]
+    requested: list[str] = []
+    inspector.encoding_requested.connect(requested.append)
+    actions[2].trigger()  # UTF-16LE
+    assert requested == [ExtractEncoding.UTF16_LE.value]
+    view.set_rows([], ExtractEncoding.UTF16_LE)
+    assert header.label() == "UTF-16LE"
+    assert view._encoding_menu().actions()[2].isChecked()
 
 
 def test_the_header_lines_up_with_the_hex_digits(qtbot: QtBot, extract_png: Path) -> None:
-    view = _inspector(qtbot, extract_png)._extract_view
-    image = view.grab().toImage()
-    viewport = view.viewport().geometry()
-    header_start = view._header.x() + view.gutter_width + 1
+    pane = _inspector(qtbot, extract_png)._extract_view.hex_pane
+    image = pane.grab().toImage()
+    viewport = pane.viewport().geometry()
+    header_start = pane._header.x() + pane.gutter_width + 1
     header = _dark_columns(image, header_start, image.width(), 0, viewport.top())
     data = _dark_columns(image, viewport.left(), image.width(), viewport.top(), image.height())
     assert header
@@ -101,13 +177,13 @@ def test_the_header_lines_up_with_the_hex_digits(qtbot: QtBot, extract_png: Path
 
 
 def test_the_gutter_paints_the_offsets(qtbot: QtBot, extract_png: Path) -> None:
-    view = _inspector(qtbot, extract_png)._extract_view
-    image = view.grab().toImage()
-    viewport = view.viewport().geometry()
+    pane = _inspector(qtbot, extract_png)._extract_view.hex_pane
+    image = pane.grab().toImage()
+    viewport = pane.viewport().geometry()
     gutter = _dark_columns(image, 0, viewport.left(), viewport.top(), image.height())
     assert gutter
     assert max(gutter) < viewport.left()
-    assert view._gutter.geometry().top() == viewport.top()
+    assert pane._gutter.geometry().top() == viewport.top()
 
 
 def test_the_bit_grids_fill_the_panel_width(qtbot: QtBot, extract_png: Path) -> None:
@@ -182,8 +258,9 @@ def test_note_rows_have_no_offset(qtbot: QtBot, extract_png: Path) -> None:
     inspector = _inspector(qtbot, extract_png)
     inspector._extract_search.setText("zzz")  # matches nothing, so only a note is left
     view = inspector._extract_view
-    assert view.document().blockCount() == 1
-    assert view.offset_text(0) == ""
+    assert view.hex_pane.document().blockCount() == 1
+    assert view.hex_pane.offset_text(0) == ""
+    assert view.text_pane.toPlainText() == ""
 
 
 def test_an_empty_stream_shows_a_note_without_an_offset(qtbot: QtBot, extract_png: Path) -> None:
@@ -194,8 +271,9 @@ def test_an_empty_stream_shows_a_note_without_an_offset(qtbot: QtBot, extract_pn
     qtbot.addWidget(inspector)
     inspector.set_state(state)
     view = inspector._extract_view
-    assert view.toPlainText() == "（无数据）"
-    assert view.offset_text(0) == ""
+    assert view.hex_pane.toPlainText() == "（无数据）"
+    assert view.text_pane.toPlainText() == ""
+    assert view.hex_pane.offset_text(0) == ""
 
 
 def test_a_panel_without_an_image_paints_no_chrome(qtbot: QtBot) -> None:
@@ -203,6 +281,7 @@ def test_a_panel_without_an_image_paints_no_chrome(qtbot: QtBot) -> None:
     qtbot.addWidget(inspector)
     inspector.set_state(ViewerState())
     view = inspector._extract_view
-    assert view.toPlainText() == ""
-    assert view._gutter.size().isEmpty()
-    assert view._header.size().isEmpty()
+    assert view.hex_pane.toPlainText() == ""
+    assert view.text_pane.toPlainText() == ""
+    assert view.hex_pane._gutter.size().isEmpty()
+    assert view.hex_pane._header.size().isEmpty()

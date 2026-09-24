@@ -2,7 +2,7 @@
 
 from decimal import ROUND_HALF_UP, Decimal
 
-from pixelsb.domain.models import SampleOrigin, ViewerState
+from pixelsb.domain.models import ExtractEncoding, SampleOrigin, ViewerState
 from pixelsb.domain.readout import build_readout, label_zoom
 
 _TWO_PLACES = Decimal("0.01")
@@ -35,7 +35,14 @@ CHANNEL_NEXT_TIP = "下一个通道的整条通道（R → G → B 循环）"
 EXTRACT_NOTE = "按通道顺序、位从低到高，每 8 位拼 1 字节，高位在前"
 EXTRACT_SEARCH_TIP = "搜索十六进制或 ASCII"
 EXTRACT_OFFSET = "偏移"
-EXTRACT_ASCII = "ASCII"
+EXTRACT_ENCODING_TIP = "点击切换右侧文本的解读编码：ASCII、UTF-8、UTF-16LE、UTF-16BE"
+EXTRACT_ENCODINGS: tuple[tuple[ExtractEncoding, str], ...] = (
+    (ExtractEncoding.ASCII, "ASCII"),
+    (ExtractEncoding.UTF8, "UTF-8"),
+    (ExtractEncoding.UTF16_LE, "UTF-16LE"),
+    (ExtractEncoding.UTF16_BE, "UTF-16BE"),
+)
+EXTRACT_ENCODING_LABELS: dict[ExtractEncoding, str] = dict(EXTRACT_ENCODINGS)
 FILTER_PLACEHOLDER = "显示过滤器：rect(50, 50, 100, 100) and B.raw >= R.raw"
 FILTER_ERROR = "过滤错误："
 FILTER_TIP = (

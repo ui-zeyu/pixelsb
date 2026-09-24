@@ -132,6 +132,7 @@ QPlainTextEdit {{
     selection-background-color: {ACCENT};
     selection-color: {SURFACE};
 }}
+QPlainTextEdit#textPane {{ color: {TEXT_MUTED}; }}
 
 QCheckBox {{ spacing: 6px; background: transparent; color: {TEXT}; }}
 QCheckBox#headerBox {{ color: {TEXT_MUTED}; font-size: 12px; spacing: 4px; }}

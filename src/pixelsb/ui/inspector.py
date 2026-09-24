@@ -1,27 +1,28 @@
 """Bit selection for both layers, the layer switch, and the extract panel."""
 
-import re
 from math import ceil
 
 import numpy as np
 from numpy.typing import NDArray
-from PySide6.QtCore import QRect, QRectF, Qt, Signal, SignalInstance
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, Qt, Signal, SignalInstance
 from PySide6.QtGui import (
     QColor,
     QFont,
+    QFontDatabase,
+    QFontInfo,
     QFontMetricsF,
+    QMouseEvent,
     QPainter,
     QPaintEvent,
+    QPolygonF,
     QResizeEvent,
-    QSyntaxHighlighter,
-    QTextCharFormat,
-    QTextDocument,
 )
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QPlainTextEdit,
     QPushButton,
     QVBoxLayout,
@@ -29,15 +30,15 @@ from PySide6.QtWidgets import (
 )
 
 from pixelsb.domain.extract import (
-    ASCII_START,
     BYTES_PER_ROW,
     HEX_WIDTH,
     ExtractRow,
+    decode_row,
     extract_bytes,
     filter_extract,
     format_extract,
 )
-from pixelsb.domain.models import BitChoice, LoadedImage, ViewerState
+from pixelsb.domain.models import BitChoice, ExtractEncoding, LoadedImage, ViewerState
 from pixelsb.domain.selection import effective_selection
 from pixelsb.ui import text, theme
 from pixelsb.ui.bits import BitMatrix
@@ -45,6 +46,9 @@ from pixelsb.ui.text import readout_text
 
 _GUTTER_PAD = 10
 _HEADER_GAP = 3
+_PANE_GAP = 10  # between the hex pane and the ASCII pane
+_PANE_SLACK = 2  # keeps the fixed ASCII column from clipping its last character
+_DUMP_FONT_SIZE = 11
 _STEPPER_WIDTH = 30  # the arrow buttons stay compact around the grid
 _STEPPER_GAP = 6  # the channel column's gap, reused to indent the plane row
 _BITS_MIN_WIDTH = 320  # what the bit grid itself needs, margins included
@@ -61,6 +65,7 @@ class Inspector(QWidget):
     lsbs_requested = Signal()
     plane_step = Signal(int)
     channel_step = Signal(int)
+    encoding_requested = Signal(str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -85,6 +90,7 @@ class Inspector(QWidget):
         )
 
         self._extract_key: tuple[object, ...] | None = None
+        self._view_key: tuple[object, ...] | None = None
         self._extract_rows: tuple[ExtractRow, ...] = ()
         self._extract_search = QLineEdit()
         self._extract_search.setPlaceholderText(text.EXTRACT_SEARCH_TIP)
@@ -94,12 +100,7 @@ class Inspector(QWidget):
         self._extract_note.setWordWrap(True)
         self._extract_view = ExtractView()
         self._extract_view.setMinimumHeight(180)
-        extract_font = QFont()
-        extract_font.setStyleHint(QFont.StyleHint.Monospace)
-        extract_font.setFamilies(["Menlo", "Consolas"])
-        extract_font.setPixelSize(11)
-        self._extract_view.setFont(extract_font)
-        self._highlighter = ExtractHighlighter(self._extract_view.document())
+        self._extract_view.encoding_changed.connect(self.encoding_requested.emit)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 14, 16, 14)
@@ -128,6 +129,7 @@ class Inspector(QWidget):
         canvas_bits = None if image is None else effective_selection(image, state.selection)
         self._canvas_matrix.set_layer(planes, canvas_bits)
         self._sync_extract(image, canvas_bits, state.filter_expr, match)
+        self._extract_view.sync_encoding(state.extract_encoding)
 
     def _bits_header(self) -> QHBoxLayout:
         """Section title with the presets on the right."""
@@ -213,39 +215,111 @@ class Inspector(QWidget):
     ) -> None:
         """Re-extract only when the image, the selection, or the filter changed."""
         key = None if image is None else (image, chosen, expression)
-        if key == self._extract_key:
-            return
-        self._extract_key = key
-        data = b"" if image is None else extract_bytes(image, chosen, match)
-        self._extract_rows = tuple(format_extract(data))
+        if key != self._extract_key:
+            self._extract_key = key
+            data = b"" if image is None else extract_bytes(image, chosen, match)
+            self._extract_rows = tuple(format_extract(data))
         self._refresh_extract_view()
 
     def _refresh_extract_view(self) -> None:
-        rows = filter_extract(list(self._extract_rows), self._extract_search.text())
-        self._extract_view.set_rows(rows)
+        """Re-render the panes when the rows, the search, or the encoding changed."""
+        query = self._extract_search.text()
+        encoding = self._state.extract_encoding
+        key = (self._extract_key, query, encoding)
+        if key == self._view_key:
+            return
+        self._view_key = key
+        rows = filter_extract(list(self._extract_rows), query)
+        self._extract_view.set_rows(rows, encoding)
 
     def detail_text(self) -> str:
         return readout_text(self._state)
 
     def preferred_width(self) -> int:
-        """Panel width that shows a whole dump row without a horizontal scrollbar."""
-        view = self._extract_view
-        missing = view.text_width() - view.viewport().geometry().width()
-        return max(ceil(self.width() + missing) + _WIDTH_SLACK, self.minimumWidth())
+        """Panel width that holds both dump panes with a little room to spare."""
+        hint = self.minimumSizeHint().width()
+        return max(hint + _WIDTH_SLACK, self.minimumWidth())
 
 
-class ExtractView(QPlainTextEdit):
-    """Read-only byte dump whose offsets sit in a painted gutter.
+class ExtractView(QWidget):
+    """Read-only byte dump: hex on the left, one decoded text column on the right.
 
-    The document holds the hex and ASCII columns only, so selecting and copying
-    never picks up an offset; the gutter and the column header are chrome the
-    mouse cannot reach.
+    Each pane holds its own text, so a selection copies only that column. The text
+    pane's header names the encoding and switches it, and selecting or copying
+    never picks up an offset: the gutter and the ruler are chrome.
     """
+
+    encoding_changed = Signal(str)
 
     def __init__(self) -> None:
         super().__init__()
-        self.setReadOnly(True)
-        self.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self._encoding = ExtractEncoding.ASCII
+        self.hex_pane = _HexPane(self)
+        self.text_pane = _TextPane(self)
+        for pane in (self.hex_pane, self.text_pane):
+            # Set per pane: a font on the container does not survive the
+            # stylesheet polish, and a proportional font breaks the columns.
+            pane.setFont(dump_font())
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(_PANE_GAP)
+        # Every column holds its own width; panel width beyond them stays empty.
+        layout.addWidget(self.hex_pane, 0)
+        layout.addWidget(self.text_pane, 0)
+        layout.addStretch(1)
+        self.text_pane.header_clicked.connect(self.show_encodings)
+        # One document in two views: either scrollbar drags the other, and the
+        # text pane takes the hex range so a hidden bar cannot skew them.
+        hex_bar = self.hex_pane.verticalScrollBar()
+        text_bar = self.text_pane.verticalScrollBar()
+        hex_bar.rangeChanged.connect(lambda _low, high: text_bar.setMaximum(high))
+        hex_bar.valueChanged.connect(text_bar.setValue)
+        text_bar.valueChanged.connect(hex_bar.setValue)
+        # Equal viewport heights are what keeps the rows aligned, so whatever the
+        # hex pane's horizontal bar takes, the text pane reserves in its place.
+        self.hex_pane.horizontalScrollBar().rangeChanged.connect(
+            lambda _low, high: self.text_pane.set_bottom_inset(
+                _bar_extent(self.text_pane) if high > 0 else 0
+            )
+        )
+
+    def set_rows(self, rows: list[ExtractRow], encoding: ExtractEncoding) -> None:
+        self.hex_pane.set_rows(rows)
+        self.text_pane.set_rows(rows, encoding)
+        self.sync_encoding(encoding)
+
+    def sync_encoding(self, encoding: ExtractEncoding) -> None:
+        """Follow the state's encoding without asking for it back."""
+        self._encoding = encoding
+        self.text_pane.set_encoding_label(encoding)
+
+    def choose_encoding(self, encoding: ExtractEncoding) -> None:
+        """Ask for an encoding; the state decides and answers through set_rows."""
+        self.encoding_changed.emit(encoding.value)
+
+    def show_encodings(self) -> None:
+        """Drop the encoding list from the text pane's header."""
+        self._encoding_menu().exec(self.text_pane.header_position())
+
+    def _encoding_menu(self) -> QMenu:
+        """The encoding list, with the state's entry ticked."""
+        menu = QMenu(self)
+        for encoding, label in text.EXTRACT_ENCODINGS:
+            action = menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(encoding is self._encoding)
+            action.triggered.connect(
+                lambda _checked=False, encoding=encoding: self.choose_encoding(encoding)
+            )
+        return menu
+
+
+class _HexPane(QPlainTextEdit):
+    """The hex columns, with the offset gutter and the byte ruler as chrome."""
+
+    def __init__(self, panel: ExtractView) -> None:
+        super().__init__(panel)
+        _configure_pane(self)
         self._rows: tuple[ExtractRow, ...] = ()
         self._gutter_width = self._measure_gutter()
         self._header_height = self._measure_header()
@@ -254,8 +328,9 @@ class ExtractView(QPlainTextEdit):
         self._gutter.resize(0, 0)  # nothing to paint until the first rows arrive
         self._header.resize(0, 0)
         # Reserve the chrome now, so the width the panel needs does not depend on
-        # whether rows have arrived yet.
-        self.setViewportMargins(self._gutter_width, self._header_height, 0, 0)
+        # whether rows have arrived yet. The bottom strip keeps this viewport the
+        # same height as the ASCII pane's, so the two scroll in lockstep.
+        self._set_insets()
         self.updateRequest.connect(self._on_update_request)
         for bar in (self.verticalScrollBar(), self.horizontalScrollBar()):
             # A scrollbar that appears shrinks the viewport, so the chrome moves.
@@ -265,13 +340,13 @@ class ExtractView(QPlainTextEdit):
 
     def set_rows(self, rows: list[ExtractRow]) -> None:
         self._rows = tuple(rows)
-        self.setPlainText("\n".join(row.text for row in self._rows))
-        self._gutter_width = self._measure_gutter()
-        self._header_height = self._measure_header()
-        self.setViewportMargins(self._gutter_width, self._header_height, 0, 0)
-        self._place_chrome()
-        self._gutter.update()
-        self._header.update()
+        self.setPlainText("\n".join(row.hex_text for row in self._rows))
+        self._sync_chrome()
+
+    def changeEvent(self, event: QEvent) -> None:
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.FontChange:
+            self._sync_chrome()
 
     def offset_text(self, block_number: int) -> str:
         """The gutter label for a document block; empty for note rows."""
@@ -281,18 +356,21 @@ class ExtractView(QPlainTextEdit):
 
     def header_text(self) -> str:
         """The column ruler, aligned with the hex columns by construction."""
-        ruler = " ".join(f"{index:02x}" for index in range(BYTES_PER_ROW))
-        return f"{ruler}  {text.EXTRACT_ASCII}"
+        return " ".join(f"{index:02x}" for index in range(BYTES_PER_ROW))
 
     @property
     def gutter_width(self) -> int:
         """Width of the offset column, which the header shares."""
         return self._gutter_width
 
+    @property
+    def header_height(self) -> int:
+        """Height of the top margin, which the tab strip beside it must match."""
+        return self._header_height
+
     def text_width(self) -> float:
-        """Pixels one whole dump row needs: the hex columns and the ASCII column."""
-        columns = HEX_WIDTH + 2 + BYTES_PER_ROW
-        return QFontMetricsF(self.font()).horizontalAdvance("0" * columns)
+        """Pixels the hex columns need."""
+        return QFontMetricsF(self.font()).horizontalAdvance("0" * HEX_WIDTH)
 
     def row_width(self) -> float:
         """Pixels one whole dump row needs, offset gutter included."""
@@ -307,6 +385,40 @@ class ExtractView(QPlainTextEdit):
         super().resizeEvent(event)
         self._place_chrome()
 
+    def _sync_chrome(self) -> None:
+        """Re-measure the chrome and hold the pane at the width its data needs."""
+        for widget in (self._gutter, self._header):
+            # The chrome does not inherit the pane's font, and a wider font here
+            # would clip the offsets and walk the ruler off the hex columns.
+            widget.setFont(self.font())
+        self._gutter_width = self._measure_gutter()
+        self._header_height = self._measure_header()
+        self._set_insets()
+        self._place_chrome()
+        self._gutter.update()
+        self._header.update()
+        self._fit_columns()
+
+    def _fit_columns(self) -> None:
+        """Hold the pane at the width its columns need, so it never stretches."""
+        wanted = ceil(self._columns_width()) + self._chrome_width() + _PANE_SLACK
+        if wanted != self.width():
+            self.setFixedWidth(wanted)
+
+    def _chrome_width(self) -> int:
+        """Pixels the pane spends beside its viewport: gutter, frame and scrollbar."""
+        margins = self.contentsMargins()
+        return (
+            self._gutter_width
+            + margins.left()
+            + margins.right()
+            + self.verticalScrollBar().sizeHint().width()
+        )
+
+    def _columns_width(self) -> float:
+        """Pixels the viewport must supply: the hex columns plus their margins."""
+        return self.text_width() + 2 * self.document().documentMargin()
+
     def _measure_gutter(self) -> int:
         digits = max(
             (len(row.offset_text) for row in self._rows if row.offset is not None),
@@ -318,7 +430,14 @@ class ExtractView(QPlainTextEdit):
     def _measure_header(self) -> int:
         return ceil(QFontMetricsF(self.font()).height()) + _HEADER_GAP
 
+    def _set_insets(self) -> None:
+        self.setViewportMargins(self._gutter_width, self._header_height, 0, 0)
+
     def _place_chrome(self) -> None:
+        if not self._rows:  # nothing to label, so no chrome until rows arrive
+            self._gutter.resize(0, 0)
+            self._header.resize(0, 0)
+            return
         viewport = self.viewport().geometry()
         self._gutter.setGeometry(
             viewport.left() - self._gutter_width,
@@ -340,10 +459,190 @@ class ExtractView(QPlainTextEdit):
             self._gutter.update(0, rect.y(), self._gutter.width(), rect.height())
 
 
+class _TextPane(QPlainTextEdit):
+    """The decoded text column, in its own text so a selection copies only it."""
+
+    header_clicked = Signal()
+
+    def __init__(self, panel: ExtractView) -> None:
+        super().__init__(panel)
+        _configure_pane(self)
+        self.setObjectName("textPane")
+        # The hex pane carries the scrollbars; this one follows it.
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._header_height = self._measure_header()
+        self._header = _PaneHeader(self)
+        self._header.resize(0, 0)
+        self._header.clicked.connect(self.header_clicked.emit)
+        self._bottom_inset = 0
+        self._set_insets()
+
+    def set_bottom_inset(self, inset: int) -> None:
+        """Match the hex pane's horizontal scrollbar, so both viewports stay level."""
+        if inset != self._bottom_inset:
+            self._bottom_inset = inset
+            self._set_insets()
+
+    def set_rows(self, rows: list[ExtractRow], encoding: ExtractEncoding) -> None:
+        self.setPlainText("\n".join(decode_row(row, encoding) for row in rows))
+        self.set_encoding_label(encoding)
+        self._sync_chrome()
+
+    def set_encoding_label(self, encoding: ExtractEncoding) -> None:
+        self._header.set_label(text.EXTRACT_ENCODING_LABELS[encoding])
+
+    def header_position(self) -> QPoint:
+        """Where the encoding list should drop from."""
+        return self._header.mapToGlobal(QPoint(0, self._header.height()))
+
+    def changeEvent(self, event: QEvent) -> None:
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.FontChange:
+            self._sync_chrome()
+
+    def column_width(self) -> float:
+        """Pixels the text column needs: its widest glyph times the column width.
+
+        Exact for a monospace font, and a stable reserve for any fallback: it
+        depends on the font alone, so the pane never jitters as data changes.
+        """
+        metrics = QFontMetricsF(self.font())
+        widest = max(
+            (metrics.horizontalAdvance(chr(code)) for code in range(32, 127)),
+            default=0.0,
+        )
+        return widest * BYTES_PER_ROW
+
+    def _columns_width(self) -> float:
+        """Pixels the viewport must supply: the text column plus its margins."""
+        return self.column_width() + 2 * self.document().documentMargin()
+
+    def _measure_header(self) -> int:
+        return ceil(QFontMetricsF(self.font()).height()) + _HEADER_GAP
+
+    def _set_insets(self) -> None:
+        self.setViewportMargins(0, self._header_height, 0, self._bottom_inset)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self._place_header()
+
+    def _place_header(self) -> None:
+        viewport = self.viewport().geometry()
+        self._header.setGeometry(
+            viewport.left(),
+            viewport.top() - self._header_height,
+            viewport.width(),
+            self._header_height,
+        )
+
+    def _sync_chrome(self) -> None:
+        """Re-measure the header and hold the pane at the width its column needs."""
+        self._header.setFont(self.font())
+        self._header_height = self._measure_header()
+        self._set_insets()
+        self._place_header()
+        self._header.update()
+        overhead = self.contentsMargins()
+        wanted = ceil(self._columns_width()) + overhead.left() + overhead.right() + _PANE_SLACK
+        if wanted != self.width():
+            self.setFixedWidth(wanted)
+
+
+def dump_font() -> QFont:
+    """A fixed-pitch font for the dump, whatever the platform calls it."""
+    font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+    if not QFontInfo(font).fixedPitch():
+        fallback = QFont()
+        fallback.setStyleHint(QFont.StyleHint.Monospace)
+        fallback.setFamilies(["Menlo", "Consolas", "DejaVu Sans Mono", "Courier New"])
+        font = fallback
+    font.setPixelSize(_DUMP_FONT_SIZE)
+    return font
+
+
+def _configure_pane(pane: QPlainTextEdit) -> None:
+    pane.setReadOnly(True)
+    pane.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+
+
+def _bar_extent(pane: QPlainTextEdit) -> int:
+    """The height a scrollbar takes, reserved so both panes keep one viewport height."""
+    return pane.horizontalScrollBar().sizeHint().height()
+
+
+class _PaneHeader(QWidget):
+    """Top margin of the text pane: the encoding name, and the switch for it.
+
+    Painting the name here keeps the header one height with the hex pane's, and
+    the whole band is the control: a caret marks it, a click opens the list.
+    """
+
+    clicked = Signal()
+
+    def __init__(self, editor: QPlainTextEdit) -> None:
+        super().__init__(editor)
+        self._label = ""
+        self._hovered = False
+        self.setToolTip(text.EXTRACT_ENCODING_TIP)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def set_label(self, label: str) -> None:
+        self._label = label
+        self.update()
+
+    def label(self) -> str:
+        return self._label
+
+    def enterEvent(self, event: QEvent) -> None:
+        self._hovered = True
+        self.update()
+
+    def leaveEvent(self, event: QEvent) -> None:
+        self._hovered = False
+        self.update()
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        painter = QPainter(self)
+        painter.fillRect(event.rect(), QColor(theme.HOVER if self._hovered else theme.FIELD))
+        painter.setPen(QColor(theme.HAIRLINE))
+        painter.drawLine(0, self.height() - 1, self.width(), self.height() - 1)
+        color = QColor(theme.ACCENT if self._hovered else theme.TEXT_MUTED)
+        painter.setPen(color)
+        painter.drawText(
+            QRectF(0, 0, self.width(), self.height()),
+            int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
+            self._label,
+        )
+        caret = 4.0
+        left = QFontMetricsF(self.font()).horizontalAdvance(self._label) + 5
+        top = (self.height() - caret) / 2
+        if left + caret < self.width():
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(color)
+            painter.drawPolygon(
+                QPolygonF(
+                    [
+                        QPointF(left, top),
+                        QPointF(left + caret, top),
+                        QPointF(left + caret / 2, top + caret),
+                    ]
+                )
+            )
+
+
 class _OffsetGutter(QWidget):
     """Left margin of the dump: the byte offset of every visible row."""
 
-    def __init__(self, editor: ExtractView) -> None:
+    def __init__(self, editor: _HexPane) -> None:
         super().__init__(editor)
         self._editor = editor
 
@@ -373,9 +672,9 @@ class _OffsetGutter(QWidget):
 
 
 class _ColumnHeader(QWidget):
-    """Top margin of the dump: byte column numbers and the ASCII label."""
+    """Top margin of the hex pane: the byte column numbers."""
 
-    def __init__(self, editor: ExtractView) -> None:
+    def __init__(self, editor: _HexPane) -> None:
         super().__init__(editor)
         self._editor = editor
 
@@ -397,30 +696,6 @@ class _ColumnHeader(QWidget):
             int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
             self._editor.header_text(),
         )
-
-
-class ExtractHighlighter(QSyntaxHighlighter):
-    """Colors the hex and ASCII columns of the extract view."""
-
-    _HEX_BYTE = re.compile(r"[0-9a-f]{2}")
-
-    def __init__(self, document: QTextDocument) -> None:
-        super().__init__(document)
-        self._hex = _char_format(theme.TEXT)
-        self._ascii = _char_format(theme.TEXT_MUTED)
-
-    def highlightBlock(self, line: str) -> None:
-        if not self._HEX_BYTE.match(line):
-            return
-        self.setFormat(0, HEX_WIDTH, self._hex)
-        if len(line) > ASCII_START:
-            self.setFormat(ASCII_START, len(line) - ASCII_START, self._ascii)
-
-
-def _char_format(color: str) -> QTextCharFormat:
-    text_format = QTextCharFormat()
-    text_format.setForeground(QColor(color))
-    return text_format
 
 
 def _section_title(label: str) -> QLabel:

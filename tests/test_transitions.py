@@ -7,6 +7,7 @@ from pixelsb.domain.models import (
     MAX_ZOOM,
     BitChoice,
     DisplayFormat,
+    ExtractEncoding,
     PixelCoord,
     ViewerState,
 )
@@ -17,6 +18,7 @@ from pixelsb.domain.transitions import (
     select_lsb,
     select_only,
     set_cursor,
+    set_extract_encoding,
     set_only_matched,
     set_zoom,
     step_channel,
@@ -77,6 +79,16 @@ def test_move_cursor_starts_at_the_origin_and_clamps() -> None:
     assert state.cursor == PixelCoord(1, 1)
     state = move_cursor(state, -5, -5)
     assert state.cursor == PixelCoord(0, 0)
+
+
+def test_extract_encoding_switches_and_survives_an_image_switch() -> None:
+    image = make_image(np.zeros((1, 1, 3), dtype=np.uint16), planes_rgb())
+    state = open_image(ViewerState(), image)
+    assert state.extract_encoding is ExtractEncoding.ASCII
+    utf8 = set_extract_encoding(state, ExtractEncoding.UTF8)
+    assert utf8.extract_encoding is ExtractEncoding.UTF8
+    assert set_extract_encoding(utf8, ExtractEncoding.UTF8) is utf8
+    assert open_image(utf8, image).extract_encoding is ExtractEncoding.UTF8
 
 
 def test_stepping_planes_walks_the_display_order() -> None:

@@ -7,6 +7,7 @@ from pixelsb.domain.models import (
     MIN_ZOOM,
     BitChoice,
     DisplayFormat,
+    ExtractEncoding,
     LoadedImage,
     PixelCoord,
     ViewerState,
@@ -41,6 +42,7 @@ def open_image(
         focus=BitChoice(image.planes[0].name, 0),
         filter_expr=state.filter_expr,
         value_format=state.value_format,
+        extract_encoding=state.extract_encoding,
         zoom=chosen,
         only_matched=state.only_matched,
     )
@@ -217,6 +219,13 @@ def select_lsb_at(state: ViewerState, index: int) -> ViewerState:
 
 def set_format(state: ViewerState, fmt: DisplayFormat) -> ViewerState:
     return replace(state, value_format=fmt)
+
+
+def set_extract_encoding(state: ViewerState, encoding: ExtractEncoding) -> ViewerState:
+    """Switch how the extract panel reads the byte stream as text."""
+    if state.extract_encoding is encoding:
+        return state
+    return replace(state, extract_encoding=encoding)
 
 
 def cycle_format(state: ViewerState) -> ViewerState:

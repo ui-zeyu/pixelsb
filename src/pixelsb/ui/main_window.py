@@ -52,6 +52,7 @@ from pixelsb.domain.models import (
     MAX_ZOOM,
     MIN_ZOOM,
     DisplayFormat,
+    ExtractEncoding,
     PixelCoord,
     ViewerState,
 )
@@ -69,6 +70,7 @@ from pixelsb.domain.transitions import (
     set_channel,
     set_column,
     set_cursor,
+    set_extract_encoding,
     set_filter_expr,
     set_format,
     set_only_matched,
@@ -347,6 +349,7 @@ class MainWindow(QMainWindow):
         self.inspector.lsbs_requested.connect(lambda: self.apply(select_lsbs))
         self.inspector.plane_step.connect(self._on_plane_step)
         self.inspector.channel_step.connect(self._on_channel_step)
+        self.inspector.encoding_requested.connect(self._on_encoding)
         inspector_scroll = QScrollArea()
         inspector_scroll.setObjectName("inspectorArea")
         inspector_scroll.setWidgetResizable(True)
@@ -590,6 +593,12 @@ class MainWindow(QMainWindow):
         if fmt is None or fmt is self.store.state.value_format:
             return
         self.apply(lambda state: set_format(state, fmt))
+
+    def _on_encoding(self, value: str) -> None:
+        encoding = ExtractEncoding(value)
+        if encoding is self.store.state.extract_encoding:
+            return
+        self.apply(lambda state: set_extract_encoding(state, encoding))
 
     def _on_hover(self, x: int, y: int) -> None:
         self.apply(lambda state: set_cursor(state, PixelCoord(x, y)))
