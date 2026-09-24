@@ -3,37 +3,29 @@
 import math
 from dataclasses import dataclass, replace
 from enum import StrEnum
-from functools import lru_cache
 from typing import override
 
 import numpy as np
 from numpy.typing import NDArray
-from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import (
     QColor,
     QCursor,
     QDragEnterEvent,
     QDragMoveEvent,
     QDropEvent,
-    QFont,
-    QFontMetrics,
     QImage,
     QKeyEvent,
     QMouseEvent,
     QNativeGestureEvent,
     QPainter,
     QPaintEvent,
-    QPen,
     QWheelEvent,
 )
 from PySide6.QtWidgets import QGestureEvent, QPinchGesture, QScrollArea, QWidget
 
 from pixelsb.domain.geometry import GRID_ZOOM, pixel_at
 from pixelsb.domain.labels import (
-    LABEL_PAD,
-    MIN_FONT,
-    font_pixel_size,
-    label_fits,
     region_texts,
     region_texts_at,
     widest_text,
@@ -42,8 +34,20 @@ from pixelsb.domain.match_view import MatchView, match_span, match_view
 from pixelsb.domain.models import LoadedImage, PixelCoord, RgbArray, ViewerState
 from pixelsb.domain.samples import render_rgb, render_rgb_at
 from pixelsb.ui import text
-from pixelsb.ui.painting import qimage_from_rgb
-from pixelsb.ui.theme import CANVAS, TEXT, TEXT_MUTED
+from pixelsb.ui.painting import (
+    bright_map,
+    cell_of,
+    draw_empty_state,
+    draw_grid,
+    draw_marker,
+    draw_marquee,
+    fade_out,
+    label_color,
+    label_font,
+    qimage_from_rgb,
+    visible_rects,
+)
+from pixelsb.ui.theme import CANVAS
 
 _BACKGROUND = QColor(CANVAS)
 _CANVAS_RGB: tuple[int, int, int] = (
@@ -51,15 +55,7 @@ _CANVAS_RGB: tuple[int, int, int] = (
     QColor(CANVAS).green(),
     QColor(CANVAS).blue(),
 )
-_CURSOR = QColor("#f59f00")
-_CURSOR_HALO = QColor(255, 255, 255, 200)
-_GRID = QColor(17, 20, 24, 26)
 _DRAG_THRESHOLD = 4
-_DIM_KEEP = 8
-_DARK_TEXT = QColor("#111111")
-_LIGHT_TEXT = QColor("#f5f5f5")
-_LUMA_WEIGHTS = np.array([2126, 7152, 722], dtype=np.uint32)
-_LUMA_THRESHOLD = 1_500_000
 _EMPTY_TARGET = QSize(320, 240)
 
 
@@ -270,7 +266,7 @@ class ImageCanvas(QWidget):
         # pixels it does not describe.
         rgb = render_rgb(image, state.selection)
         if match is not None and match.shape == rgb.shape[:2]:
-            _fade_out(rgb, match)
+            fade_out(rgb, match)
         return _Frame(
             qimage=qimage_from_rgb(rgb),
             rgb=rgb,
@@ -333,19 +329,19 @@ class ImageCanvas(QWidget):
         image = self._state.image
         if qimage is None or image is None:
             if frame.no_match:
-                _draw_empty_state(painter, self.rect(), hint=text.FILTER_NO_MATCH, shortcut="")
+                draw_empty_state(painter, self.rect(), hint=text.FILTER_NO_MATCH, shortcut="")
             else:
-                _draw_empty_state(painter, self.rect())
+                draw_empty_state(painter, self.rect())
             return
         zoom = self._state.zoom
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
-        source, dest = _visible_rects(QRectF(event.rect()), zoom, qimage.width(), qimage.height())
+        source, dest = visible_rects(QRectF(event.rect()), zoom, qimage.width(), qimage.height())
         if not dest.isEmpty():
             painter.drawImage(dest, qimage, source)
         if zoom >= GRID_ZOOM:
-            _draw_grid(painter, source, zoom)
-        _draw_marker(painter, frame.view, self._state.cursor, zoom)
-        _draw_marquee(painter, self._marquee, zoom)
+            draw_grid(painter, source, zoom)
+        draw_marker(painter, frame.view, self._state.cursor, zoom)
+        draw_marquee(painter, self._marquee, zoom)
         self._draw_labels(painter, self._state, source, zoom)
 
     def _draw_labels(
@@ -358,7 +354,7 @@ class ImageCanvas(QWidget):
         frame = self._frame
         rgb = frame.rgb
         image = state.image
-        font = _label_font(widest_text(state), zoom)
+        font = label_font(widest_text(state), zoom)
         if font is None or rgb is None or image is None:
             return
         height, width = rgb.shape[:2]
@@ -384,7 +380,7 @@ class ImageCanvas(QWidget):
         if not any(texts):
             return
         if self._bright is None:
-            self._bright = _bright_map(rgb)
+            self._bright = bright_map(rgb)
         bright = self._bright[y0:y1, x0:x1]
         painter.setFont(font)
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
@@ -406,7 +402,7 @@ class ImageCanvas(QWidget):
                     zoom,
                     zoom,
                 )
-                main = _DARK_TEXT if bright[row, column] else _LIGHT_TEXT
+                main = label_color(bright[row, column])
                 if main is not pen:
                     painter.setPen(main)
                     pen = main
@@ -702,150 +698,6 @@ class ImageCanvas(QWidget):
         self._marquee = None
         self.update()
         self.region_canceled.emit()
-
-
-@lru_cache(maxsize=64)
-def _label_font(template: str, zoom: float) -> QFont | None:
-    if not label_fits(zoom, template):
-        return None
-    lines = template.split("\n")
-    longest = max(lines, key=len)
-    font = QFont()
-    font.setStyleHint(QFont.StyleHint.Monospace)
-    font.setFamilies(["Menlo", "Consolas"])
-    size = font_pixel_size(zoom, template)
-    while size >= 1:
-        font.setPixelSize(size)
-        metrics = QFontMetrics(font)
-        if (
-            metrics.horizontalAdvance(longest) <= zoom - LABEL_PAD
-            and metrics.lineSpacing() * len(lines) <= zoom - LABEL_PAD
-        ):
-            return font if size >= MIN_FONT else None
-        size -= 1
-    return None
-
-
-def cell_of(index: int, columns: int) -> tuple[int, int]:
-    """Row-major ``(row, column)`` of the index-th label in a ``columns``-wide block."""
-    return divmod(index, columns)
-
-
-def _visible_rects(
-    widget_rect: QRectF,
-    zoom: float,
-    width: int,
-    height: int,
-) -> tuple[QRectF, QRectF]:
-    first_x = max(math.floor(widget_rect.left() / zoom), 0)
-    first_y = max(math.floor(widget_rect.top() / zoom), 0)
-    last_x = min(math.floor(widget_rect.right() / zoom), width - 1)
-    last_y = min(math.floor(widget_rect.bottom() / zoom), height - 1)
-    if last_x < first_x or last_y < first_y:
-        return QRectF(), QRectF()
-    source = QRectF(first_x, first_y, last_x - first_x + 1, last_y - first_y + 1)
-    dest = QRectF(first_x * zoom, first_y * zoom, source.width() * zoom, source.height() * zoom)
-    return source, dest
-
-
-def _draw_grid(painter: QPainter, source: QRectF, zoom: float) -> None:
-    pen = QPen(_GRID)
-    pen.setCosmetic(True)
-    painter.setPen(pen)
-    left = source.left()
-    top = source.top()
-    right = source.right() + zoom
-    bottom = source.bottom() + zoom
-    for column in range(int(source.left()), int(source.right()) + 2):
-        x = column * zoom
-        painter.drawLine(QPointF(x, top), QPointF(x, bottom))
-    for row in range(int(source.top()), int(source.bottom()) + 2):
-        y = row * zoom
-        painter.drawLine(QPointF(left, y), QPointF(right, y))
-
-
-def _bright_map(rgb: RgbArray) -> NDArray[np.bool_]:
-    """Per-pixel "light enough for dark text", computed once per rendered image."""
-    weighted = rgb.astype(np.uint32) * _LUMA_WEIGHTS
-    return weighted.sum(axis=-1) > _LUMA_THRESHOLD
-
-
-def _fade_out(rgb: RgbArray, match: NDArray[np.bool_]) -> None:
-    """Push the pixels that fail the filter toward the canvas color, in place."""
-    rgb[~match] = 255 - (255 - rgb[~match]) // _DIM_KEEP
-
-
-def _draw_empty_state(
-    painter: QPainter,
-    rect: QRect,
-    hint: str = text.CANVAS_HINT,
-    shortcut: str = text.CANVAS_SHORTCUT,
-) -> None:
-    """Centered lines: what to do, and the shortcut that does it."""
-    font = QFont(painter.font())
-    font.setPixelSize(15)
-    painter.setFont(font)
-    painter.setPen(QColor(TEXT))
-    painter.drawText(_shifted(rect, -18), Qt.AlignmentFlag.AlignCenter, hint)
-    if not shortcut:
-        return
-    font.setPixelSize(12)
-    painter.setFont(font)
-    painter.setPen(QColor(TEXT_MUTED))
-    painter.drawText(_shifted(rect, 18), Qt.AlignmentFlag.AlignCenter, shortcut)
-
-
-def _shifted(rect: QRect, offset: int) -> QRect:
-    return QRect(rect.x(), rect.y() + offset, rect.width(), rect.height())
-
-
-def _draw_marker(
-    painter: QPainter,
-    view: MatchView | None,
-    coord: PixelCoord | None,
-    zoom: float,
-) -> None:
-    if coord is None:
-        return
-    dx, dy = coord.x, coord.y
-    if view is not None:
-        cell = view.display_of(coord)
-        if cell is None:
-            return
-        dx, dy = cell
-    rect = QRectF(dx * zoom, dy * zoom, zoom, zoom)
-    painter.setBrush(Qt.BrushStyle.NoBrush)
-    halo = QPen(_CURSOR_HALO)
-    halo.setCosmetic(True)
-    halo.setWidth(3)
-    painter.setPen(halo)
-    painter.drawRect(rect.adjusted(-1, -1, 0, 0))
-    pen = QPen(_CURSOR)
-    pen.setCosmetic(True)
-    pen.setWidth(2)
-    painter.setPen(pen)
-    painter.drawRect(rect.adjusted(0, 0, -1, -1))
-
-
-def _draw_marquee(
-    painter: QPainter,
-    rect: tuple[int, int, int, int] | None,
-    zoom: float,
-) -> None:
-    """The region being dragged: translucent amber fill with a dashed outline."""
-    if rect is None:
-        return
-    x0, y0, x1, y1 = rect
-    area = QRectF(x0 * zoom, y0 * zoom, (x1 - x0 + 1) * zoom, (y1 - y0 + 1) * zoom)
-    fill = QColor(_CURSOR)
-    fill.setAlpha(28)
-    painter.fillRect(area, fill)
-    pen = QPen(_CURSOR)
-    pen.setCosmetic(True)
-    pen.setStyle(Qt.PenStyle.DashLine)
-    painter.setPen(pen)
-    painter.setBrush(Qt.BrushStyle.NoBrush)
-    painter.drawRect(area)
 
 
 def _pan_delta(event: QWheelEvent) -> tuple[int, int]:

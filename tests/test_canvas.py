@@ -18,7 +18,8 @@ from pixelsb.domain.transitions import (
     set_only_matched,
     set_zoom,
 )
-from pixelsb.ui.canvas import CanvasMode, ImageCanvas, cell_of
+from pixelsb.ui.canvas import CanvasMode, ImageCanvas
+from pixelsb.ui.painting import cell_of
 from tests.support import make_image, planes_rgb
 
 
