@@ -4,10 +4,18 @@ import math
 from functools import cache
 
 import numpy as np
+from numpy.typing import NDArray
 
 from pixelsb.domain.formatting import format_sample
-from pixelsb.domain.models import MIN_ZOOM, DisplayFormat, PixelCoord, ViewerState
-from pixelsb.domain.selection import bits_for, effective_selection, mask_of, number_bits
+from pixelsb.domain.models import (
+    MIN_ZOOM,
+    DisplayFormat,
+    LoadedImage,
+    PixelCoord,
+    SampleArray,
+    ViewerState,
+)
+from pixelsb.domain.selection import bits_for, effective_selection, mask_of
 
 LABEL_PAD = 2
 FONT_FILL = 0.72
@@ -58,14 +66,24 @@ def region_texts(state: ViewerState, x0: int, y0: int, x1: int, y1: int) -> list
     y0 = max(y0, 0)
     x1 = min(x1, image.width)
     y1 = min(y1, image.height)
-    width = x1 - x0
-    height = y1 - y0
-    if width <= 0 or height <= 0:
+    if x1 - x0 <= 0 or y1 - y0 <= 0:
         return []
-    chosen = effective_selection(image, number_bits(state))
+    return _texts(state, image, image.samples[y0:y1, x0:x1])
+
+
+def region_texts_at(state: ViewerState, xs: NDArray[np.intp], ys: NDArray[np.intp]) -> list[str]:
+    """Labels for the pixels at the given source coordinates, row-major."""
+    image = state.image
+    if image is None or xs.size == 0 or ys.size == 0:
+        return []
+    return _texts(state, image, image.samples[ys][:, xs])
+
+
+def _texts(state: ViewerState, image: LoadedImage, region: SampleArray) -> list[str]:
+    """Rendered labels for one gathered block of pixels, row-major."""
+    chosen = effective_selection(image, state.selection)
     if not chosen:
-        return [""] * (width * height)
-    region = image.samples[y0:y1, x0:x1]
+        return [""] * (region.shape[0] * region.shape[1])
     active = [plane for plane in image.planes if bits_for(chosen, plane.name)]
     joined: list[str] | None = None
     for plane in active:
@@ -98,11 +116,11 @@ def _format_table(depth: int, fmt: DisplayFormat) -> tuple[str, ...]:
 
 
 def widest_text(state: ViewerState) -> str:
-    """The longest label the number layer can produce, used to fit the font."""
+    """The longest label the selection can produce, used to fit the font."""
     image = state.image
     if image is None:
         return ""
-    chosen = effective_selection(image, number_bits(state))
+    chosen = effective_selection(image, state.selection)
     if not chosen:
         return ""
     active = [plane for plane in image.planes if bits_for(chosen, plane.name)]

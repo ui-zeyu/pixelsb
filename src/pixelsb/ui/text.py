@@ -20,12 +20,8 @@ ZOOM_IN = "+"
 ZOOM_OUT = "−"
 ZOOM_FIT = "适配"
 ZOOM_RESET = "1:1"
-DETACH = "分离"
-CANVAS_LAYER = "画面"
-NUMBER_LAYER = "数字"
 SECTION_BITS = "位选择"
 SECTION_EXTRACT = "提取"
-READOUT_RESET = "原始值"
 CHANNEL_TIP = "勾选整条通道"
 COLUMN_TIP = "勾选整列"
 EXTRACT_NOTE = "按通道顺序、位从低到高，每 8 位拼 1 字节，高位在前"
@@ -40,13 +36,24 @@ FILTER_TIP = (
     "通道名默认是勾选位算出的值，加 .raw 取原始通道值、加 .bits 显式表示勾选位的值。"
     "rect 选中矩形，四条边可具名：rect(left=50, top=50, right=100, bottom=100)，"
     "也可按顺序写 rect(50, 50, 100, 100)，与四个字段的比较完全等价。"
-    "例：rect(50, 50, 100, 100) and B >= R 或 B.raw >= 200。"
+    "grid(x, y, step_x, step_y) 从 (x, y) 开始，横向、纵向各按步长取点："
+    "grid(10, 20, 6, 6) 每 6 个像素取 1 个，步长 1 即逐像素，四项均可具名。"
+    "画布切到「选区」工具后拖动框选：拖动时状态栏实时显示范围，"
+    "松开保留选区，回车把 rect 填入过滤器，Esc 取消。"
+    "例：rect(50, 50, 100, 100) and B >= R 或 grid(10, 20, 6, 6) and B >= 8。"
     "⌘F 聚焦，回车应用，Esc 清空并回到画布，留空即不过滤。"
 )
 DECIMAL = "十进制"
 HEX = "十六进制"
 BINARY = "二进制"
 OPEN_FAILED = "无法打开图像"
+ONLY_MATCHED = "仅提取像素"
+ONLY_MATCHED_TIP = "勾选后画布收缩为过滤器命中的像素，未命中的行列被移除；取消勾选恢复淡化显示"
+FILTER_NO_MATCH = "过滤器未命中任何像素"
+MODE_MOVE = "移动"
+MODE_SELECT = "选区"
+MODE_MOVE_TIP = "拖动画布平移视图"
+MODE_SELECT_TIP = "拖动框选区域；回车把选区填入过滤器，Esc 取消"
 
 
 def open_failed(detail: str) -> str:
@@ -55,6 +62,16 @@ def open_failed(detail: str) -> str:
 
 def filter_count(passed: int, total: int) -> str:
     return f"通过 {passed}/{total}"
+
+
+def selection_status(x0: int, y0: int, x1: int, y1: int) -> str:
+    """Status-bar line while dragging a region: the rect that would be applied."""
+    return f"选区 rect({x0}, {y0}, {x1 + 1}, {y1 + 1})  {x1 - x0 + 1}×{y1 - y0 + 1} 像素"
+
+
+def selection_ready(x0: int, y0: int, x1: int, y1: int) -> str:
+    """Status-bar line for a settled selection, waiting for Enter or Esc."""
+    return f"{selection_status(x0, y0, x1, y1)} · 回车填入过滤器，Esc 取消"
 
 
 def zoom_label(zoom: float) -> str:
@@ -73,22 +90,18 @@ IMAGE_FILTER = (
 )
 ZOOM_TIP = "拖动缩放。⌘滚轮、触控板捏合和 +、- 也可以"
 ZOOM_RESET_TIP = "按原始像素大小显示（1 倍）"
-DETACH_TIP = "勾选后画面与数字各自勾选；默认同步"
-READOUT_RESET_TIP = "数字层回到原始通道值"
 FORMAT_TIP = "F 在十进制、十六进制、二进制之间切换"
 MATRIX_TIP = (
-    "勾选位来组合画面和数字。勾选「分离」后，画面格与数字格各自控制，"
-    "数字默认显示原始通道值。行首、列首的复选框选整行或整列。"
-    "⌘、Ctrl 或 Shift 加单击＝只看这一位。"
+    "勾选位来组合画面和数字。行首、列首的复选框选整行或整列。⌘、Ctrl 或 Shift 加单击＝只看这一位。"
 )
 SHORTCUT_HELP = """⌘O    打开
 方向键    移动光标 1 像素
 Shift+方向键    移动 8 像素
 左键拖动    平移
+选区工具    拖动框选；回车填入 rect 过滤，Esc 取消；按住空格临时平移
 单击位    勾选或取消这一位
 行首 / 列首复选框    选整行或整列
 ⌘/Shift+单击    只看这一位
-分离    画面与数字各自勾选
 空格拖拽、中键拖拽    平移
 ⌘滚轮 / ⌘+双指滑动 / 双指捏合    缩放
 0    适配窗口

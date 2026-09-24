@@ -12,6 +12,8 @@ from pixelsb.domain.models import (
 )
 from pixelsb.domain.selection import bits_for, effective_selection, mask_of
 
+type IndexArray = NDArray[np.intp]
+
 _CHECKER_DARK = 232
 _CHECKER_LIGHT = 255
 
@@ -31,14 +33,25 @@ def bit_plane(
     return selected * np.uint8(255)
 
 
-def composite_on_checkerboard(rgba: NDArray[np.uint8], cell: int = 8) -> RgbArray:
-    """Composite straight RGBA over a light checkerboard. Returns HxWx3 uint8."""
+def composite_on_checkerboard(
+    rgba: NDArray[np.uint8],
+    cell: int = 8,
+    rows: IndexArray | None = None,
+    columns: IndexArray | None = None,
+) -> RgbArray:
+    """Composite straight RGBA over a light checkerboard. Returns HxWx3 uint8.
+
+    ``rows``/``columns`` are the source indices of the block's rows and columns;
+    the pattern keeps its original phase when rendering a gathered sub-block.
+    """
     if rgba.ndim != 3 or rgba.shape[2] != 4:
         raise ValueError("expected an HxWx4 array")
     if cell < 1:
         raise ValueError("cell size must be positive")
     height, width = rgba.shape[:2]
-    light = ((np.arange(height)[:, None] // cell + np.arange(width)[None, :] // cell) & 1) == 1
+    row_index = np.arange(height) if rows is None else rows
+    column_index = np.arange(width) if columns is None else columns
+    light = ((row_index[:, None] // cell + column_index[None, :] // cell) & 1) == 1
     background = np.where(light, np.uint8(_CHECKER_LIGHT), np.uint8(_CHECKER_DARK)).astype(
         np.uint16
     )
@@ -55,31 +68,81 @@ def render_rgb(
     selection: frozenset[BitChoice] | None,
 ) -> RgbArray:
     """Selected bits keep their original channel and weight. One bit renders as a bitmap."""
-    chosen = effective_selection(image, selection)
+    return _render_rgb(
+        image.samples,
+        image.planes,
+        effective_selection(image, selection),
+        image.height,
+        image.width,
+    )
+
+
+def render_rgb_at(
+    image: LoadedImage,
+    selection: frozenset[BitChoice] | None,
+    ys: IndexArray,
+    xs: IndexArray,
+) -> RgbArray:
+    """Render only the pixels at the given row/column indices.
+
+    Compacted views need a fraction of the pixels — gathering the samples first
+    keeps the bit-plane work proportional to the view, not the image.
+    """
+    return _render_rgb(
+        image.samples[np.ix_(ys, xs)],
+        image.planes,
+        effective_selection(image, selection),
+        ys.size,
+        xs.size,
+        rows=ys,
+        columns=xs,
+    )
+
+
+def _render_rgb(
+    samples: SampleArray,
+    planes: tuple[SamplePlane, ...],
+    chosen: frozenset[BitChoice],
+    height: int,
+    width: int,
+    rows: IndexArray | None = None,
+    columns: IndexArray | None = None,
+) -> RgbArray:
     if not chosen:
-        return np.zeros((image.height, image.width, 3), dtype=np.uint8)
+        return np.zeros((height, width, 3), dtype=np.uint8)
     if len(chosen) == 1:
         choice = next(iter(chosen))
-        plane = image.plane(choice.plane)
-        gray = bit_plane(image.samples, plane, choice.bit)
+        gray = bit_plane(samples, _plane(planes, choice.plane), choice.bit)
         return np.stack([gray, gray, gray], axis=-1)
-    return _mask_rgb(image, chosen)
+    return _mask_rgb(samples, planes, chosen, height, width, rows=rows, columns=columns)
 
 
-def _mask_rgb(image: LoadedImage, chosen: frozenset[BitChoice]) -> RgbArray:
-    color = np.zeros((image.height, image.width, 3), dtype=np.uint8)
-    alpha = np.full((image.height, image.width), 255, dtype=np.uint8)
+def _plane(planes: tuple[SamplePlane, ...], name: str) -> SamplePlane:
+    for plane in planes:
+        if plane.name == name:
+            return plane
+    raise KeyError(name)
+
+
+def _mask_rgb(
+    samples: SampleArray,
+    planes: tuple[SamplePlane, ...],
+    chosen: frozenset[BitChoice],
+    height: int,
+    width: int,
+    rows: IndexArray | None = None,
+    columns: IndexArray | None = None,
+) -> RgbArray:
+    color = np.zeros((height, width, 3), dtype=np.uint8)
+    alpha = np.full((height, width), 255, dtype=np.uint8)
     wrote_color = False
     luma: NDArray[np.uint8] | None = None
     wrote_alpha = False
-    for plane in image.planes:
+    for plane in planes:
         bits = bits_for(chosen, plane.name)
         if not bits:
             continue
-        scaled = _scale_to_byte(
-            _masked_channel(image.samples[:, :, plane.index], bits),
-            mask_of(bits),
-        )
+        scaled = _scale_to_byte(_masked_channel(samples[:, :, plane.index], bits), mask_of(bits))
         if plane.name == "R":
             color[:, :, 0] = scaled
             wrote_color = True
@@ -100,7 +163,7 @@ def _mask_rgb(image: LoadedImage, chosen: frozenset[BitChoice]) -> RgbArray:
         color = np.stack([alpha, alpha, alpha], axis=-1)
     if wrote_alpha and (wrote_color or luma is not None):
         rgba = np.dstack([color, alpha])
-        return composite_on_checkerboard(rgba)
+        return composite_on_checkerboard(rgba, rows=rows, columns=columns)
     return color
 
 

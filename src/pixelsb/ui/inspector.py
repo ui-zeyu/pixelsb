@@ -18,7 +18,6 @@ from PySide6.QtGui import (
     QTextDocument,
 )
 from PySide6.QtWidgets import (
-    QCheckBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -39,7 +38,7 @@ from pixelsb.domain.extract import (
     format_extract,
 )
 from pixelsb.domain.models import BitChoice, LoadedImage, ViewerState
-from pixelsb.domain.selection import all_bits, effective_selection
+from pixelsb.domain.selection import effective_selection
 from pixelsb.ui import text, theme
 from pixelsb.ui.bits import BitMatrix
 from pixelsb.ui.text import readout_text
@@ -50,18 +49,13 @@ _WIDTH_SLACK = 16  # the panel's own scrollbar can appear once an image is open
 
 
 class Inspector(QWidget):
-    """Panel on the right: which bits drive what, and the extracted bytes."""
+    """Panel on the right: which bits drive the view, and the extracted bytes."""
 
     bit_clicked = Signal(str, int, bool)
-    readout_bit_clicked = Signal(str, int, bool)
     channel_toggle = Signal(str, bool)
-    readout_channel_toggle = Signal(str, bool)
     column_toggle = Signal(int, bool)
-    readout_column_toggle = Signal(int, bool)
     original_requested = Signal()
     lsbs_requested = Signal()
-    reset_readout_requested = Signal()
-    detached_toggled = Signal(bool)
 
     def __init__(self) -> None:
         super().__init__()
@@ -71,20 +65,7 @@ class Inspector(QWidget):
         self._canvas_matrix.bit_clicked.connect(self.bit_clicked.emit)
         self._canvas_matrix.channel_toggle.connect(self.channel_toggle.emit)
         self._canvas_matrix.column_toggle.connect(self.column_toggle.emit)
-        self._number_matrix = BitMatrix()
-        self._number_matrix.bit_clicked.connect(self.readout_bit_clicked.emit)
-        self._number_matrix.channel_toggle.connect(self.readout_channel_toggle.emit)
-        self._number_matrix.column_toggle.connect(self.readout_column_toggle.emit)
-        self._canvas_caption = _caption(text.CANVAS_LAYER)
-        self._number_caption = _caption(text.NUMBER_LAYER)
-        self._number_reset = self._reset_button()
-        self._canvas_card = self._matrix_card(self._canvas_caption, None, self._canvas_matrix)
-        self._number_card = self._matrix_card(
-            self._number_caption, self._number_reset, self._number_matrix
-        )
-        self._detach = QCheckBox(text.DETACH)
-        self._detach.setToolTip(text.DETACH_TIP)
-        self._detach.toggled.connect(self.detached_toggled.emit)
+        self._canvas_card = self._matrix_card(self._canvas_matrix)
 
         self._extract_key: tuple[object, ...] | None = None
         self._extract_rows: tuple[ExtractRow, ...] = ()
@@ -108,7 +89,6 @@ class Inspector(QWidget):
         layout.setSpacing(8)
         layout.addLayout(self._bits_header())
         layout.addWidget(self._canvas_card)
-        layout.addWidget(self._number_card)
         layout.addSpacing(14)
         layout.addWidget(_hairline())
         layout.addSpacing(14)
@@ -128,17 +108,6 @@ class Inspector(QWidget):
         planes = () if image is None else image.planes
         canvas_bits = None if image is None else effective_selection(image, state.selection)
         self._canvas_matrix.set_layer(planes, canvas_bits)
-        detached = state.detached
-        if detached:
-            number_bits = None
-            if image is not None:
-                number_bits = all_bits(image) if state.readout is None else state.readout
-            self._number_matrix.set_layer(planes, number_bits)
-        self._canvas_caption.setVisible(detached)
-        self._number_card.setVisible(detached)
-        self._detach.blockSignals(True)
-        self._detach.setChecked(detached)
-        self._detach.blockSignals(False)
         self._sync_extract(image, canvas_bits, state.filter_expr, match)
 
     def _section_header(self, title: str, trailing: QWidget) -> QHBoxLayout:
@@ -150,7 +119,7 @@ class Inspector(QWidget):
         return header
 
     def _bits_header(self) -> QHBoxLayout:
-        """Section title, the presets, and the detach switch, all in one row."""
+        """Section title with the presets on the right."""
         trailing = QWidget()
         row = QHBoxLayout(trailing)
         row.setContentsMargins(0, 0, 0, 0)
@@ -163,32 +132,17 @@ class Inspector(QWidget):
             button.setObjectName(name)
             button.clicked.connect(lambda _checked=False, signal=signal: signal.emit())
             row.addWidget(button)
-        row.addWidget(self._detach)
         return self._section_header(text.SECTION_BITS, trailing)
 
-    def _matrix_card(self, caption: QWidget, trailing: QWidget | None, matrix: BitMatrix) -> QFrame:
-        """A soft gray card around one bit grid, caption row on top."""
+    def _matrix_card(self, matrix: BitMatrix) -> QFrame:
+        """A soft gray card around the bit grid, spanning the panel."""
         card = QFrame()
         card.setObjectName("card")
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(10, 8, 10, 10)
-        layout.setSpacing(6)
-        row = QHBoxLayout()
-        row.setContentsMargins(0, 0, 0, 0)
-        row.addWidget(caption)
-        row.addStretch(1)
-        if trailing is not None:
-            row.addWidget(trailing)
-        layout.addLayout(row)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(0)
         layout.addWidget(matrix)
         return card
-
-    def _reset_button(self) -> QPushButton:
-        reset = QPushButton(text.READOUT_RESET)
-        reset.setObjectName("linkButton")
-        reset.setToolTip(text.READOUT_RESET_TIP)
-        reset.clicked.connect(lambda _checked=False: self.reset_readout_requested.emit())
-        return reset
 
     def _sync_extract(
         self,

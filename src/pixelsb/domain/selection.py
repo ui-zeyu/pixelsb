@@ -1,6 +1,6 @@
 """Which channel bits are visible."""
 
-from pixelsb.domain.models import BitChoice, LoadedImage, ViewerState
+from pixelsb.domain.models import BitChoice, LoadedImage
 
 
 def all_bits(image: LoadedImage) -> frozenset[BitChoice]:
@@ -20,13 +20,6 @@ def effective_selection(
     if selection is None:
         return all_bits(image)
     return selection
-
-
-def number_bits(state: ViewerState) -> frozenset[BitChoice] | None:
-    """Bits driving the pixel numbers. While attached they mirror the canvas layer."""
-    if not state.detached:
-        return state.selection
-    return state.readout
 
 
 def bits_for(selection: frozenset[BitChoice], plane: str) -> tuple[int, ...]:

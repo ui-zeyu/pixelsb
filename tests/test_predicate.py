@@ -133,7 +133,7 @@ def test_edge_fields_match_the_rect_form() -> None:
 
 
 def test_rect_errors_are_clear() -> None:
-    with pytest.raises(PredicateError, match="4 个坐标"):
+    with pytest.raises(PredicateError, match="4 个参数"):
         compile_filter("rect(0, 0, 1)", planes_rgb())
     with pytest.raises(PredicateError, match="不支持的函数"):
         compile_filter("circle(0, 0, 1, 1)", planes_rgb())
@@ -145,6 +145,55 @@ def test_rect_errors_are_clear() -> None:
         compile_filter("rect(left=0, top=0, right=1, width=1)", planes_rgb())
     with pytest.raises(PredicateError, match="缺少参数"):
         compile_filter("rect(left=0, top=0, right=1)", planes_rgb())
+
+
+def test_grid_steps_from_the_anchor() -> None:
+    assert _match("grid(0, 0, 1, 1)").all()
+    assert _match("grid(0, 0, 2, 2)").tolist() == [[True, False], [False, False]]
+    assert _match("grid(0, 0, 1, 2)").tolist() == [[True, True], [False, False]]
+    assert _match("grid(0, 0, 2, 1)").tolist() == [[True, False], [True, False]]
+    assert _match("grid(1, 0, 1, 2)").tolist() == [[False, True], [False, False]]
+    assert _match("grid(0, 1, 2, 1)").tolist() == [[False, False], [True, False]]
+
+
+def test_grid_anchor_excludes_earlier_pixels() -> None:
+    assert _match("grid(1, 1, 1, 1)").tolist() == [[False, False], [False, True]]
+    assert not _match("grid(2, 2, 1, 1)").any()
+    assert _match("grid(0, 0, 100, 100)").tolist() == [[True, False], [False, False]]
+
+
+def test_grid_combines_with_other_conditions() -> None:
+    match = _match("grid(0, 0, 1, 2) and B >= R and B >= G")
+    assert match.tolist() == [[False, True], [False, False]]
+    assert _match("rect(0, 0, 2, 2) and grid(1, 0, 1, 1)").tolist() == [
+        [False, True],
+        [False, True],
+    ]
+
+
+def test_grid_args_can_be_named_or_expressions() -> None:
+    positional = _match("grid(1, 0, 1, 2)")
+    assert _match("grid(x=1, y=0, step_x=1, step_y=2)").tolist() == positional.tolist()
+    assert _match("grid(2 - 1, 0, 1, 4 / 2)").tolist() == positional.tolist()
+
+
+def test_grid_errors_are_clear() -> None:
+    # Argument count/name errors surface at compile time; step and anchor
+    # errors surface at evaluation, like rect's scalar check.
+    with pytest.raises(PredicateError, match="4 个参数"):
+        compile_filter("grid(0, 0, 1)", planes_rgb())
+    with pytest.raises(PredicateError, match="参数名只能是"):
+        compile_filter("grid(x=0, y=0, step_x=1, stride=1)", planes_rgb())
+    with pytest.raises(PredicateError, match="缺少参数"):
+        compile_filter("grid(x=0, y=0, step_x=1)", planes_rgb())
+    with pytest.raises(PredicateError, match="步长"):
+        _match("grid(0, 0, 0, 1)")
+    with pytest.raises(PredicateError, match="步长"):
+        _match("grid(0, 0, -1, 1)")
+    with pytest.raises(PredicateError, match="起点"):
+        _match("grid(-1, 0, 1, 1)")
+    with pytest.raises(PredicateError, match="标量"):
+        _match("grid(left, 0, 1, 1)")
 
 
 def test_errors_name_the_problem() -> None:

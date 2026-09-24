@@ -38,11 +38,10 @@ def open_image(
         cursor=None,
         selection=None,
         focus=BitChoice(image.planes[0].name, 0),
-        readout=None,
-        detached=state.detached,
         filter_expr=state.filter_expr,
         value_format=state.value_format,
         zoom=chosen,
+        only_matched=state.only_matched,
     )
 
 
@@ -93,45 +92,6 @@ def select_all_bits(state: ViewerState) -> ViewerState:
     return replace(state, selection=None)
 
 
-def effective_readout(state: ViewerState) -> frozenset[BitChoice]:
-    """The number layer. ``None`` means the original channel values."""
-    image = _image(state)
-    return state.readout if state.readout is not None else all_bits(image)
-
-
-def toggle_readout_bit(state: ViewerState, plane: str, bit: int) -> ViewerState:
-    """Toggle one bit of the number layer."""
-    image = _image(state)
-    choice = _choice(image, plane, bit)
-    updated = effective_readout(state) ^ {choice}
-    return replace(state, readout=_stored_readout(image, updated))
-
-
-def set_readout_channel(state: ViewerState, name: str, *, on: bool) -> ViewerState:
-    """Switch every bit of one channel in the number layer on or off."""
-    image = _image(state)
-    updated = _set_members(effective_readout(state), _channel_members(image, name), on=on)
-    return replace(state, readout=_stored_readout(image, updated))
-
-
-def select_only_readout(state: ViewerState, plane: str, bit: int) -> ViewerState:
-    image = _image(state)
-    choice = _choice(image, plane, bit)
-    return replace(state, readout=_stored_readout(image, frozenset({choice})))
-
-
-def reset_readout(state: ViewerState) -> ViewerState:
-    return replace(state, readout=None)
-
-
-def _stored_readout(
-    image: LoadedImage, chosen: frozenset[BitChoice]
-) -> frozenset[BitChoice] | None:
-    if not chosen or chosen == all_bits(image):
-        return None
-    return chosen
-
-
 def set_channel(state: ViewerState, name: str, *, on: bool) -> ViewerState:
     """Switch every bit of one channel in the canvas layer on or off."""
     image = _image(state)
@@ -148,19 +108,15 @@ def set_column(state: ViewerState, bit: int, *, on: bool) -> ViewerState:
     return replace(state, selection=stored_selection(image, updated))
 
 
-def set_readout_column(state: ViewerState, bit: int, *, on: bool) -> ViewerState:
-    """Switch one bit column across every plane in the number layer on or off."""
-    image = _image(state)
-    updated = _set_members(effective_readout(state), _column(image, bit), on=on)
-    return replace(state, readout=_stored_readout(image, updated))
-
-
-def set_detached(state: ViewerState, detached: bool) -> ViewerState:
-    return replace(state, detached=detached)
-
-
 def set_filter_expr(state: ViewerState, expression: str) -> ViewerState:
     return replace(state, filter_expr=expression)
+
+
+def set_only_matched(state: ViewerState, on: bool) -> ViewerState:
+    """Show only the pixels that pass the filter; the canvas compacts to them."""
+    if state.only_matched is on:
+        return state
+    return replace(state, only_matched=on)
 
 
 def _set_members(

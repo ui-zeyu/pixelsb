@@ -79,6 +79,10 @@ QPushButton#segmentRight {{
     border-bottom-left-radius: 0;
     margin-left: -1px;
 }}
+QPushButton#segmentLeft:checked, QPushButton#segmentRight:checked {{
+    background: {HOVER};
+    color: {ACCENT};
+}}
 QPushButton#linkButton {{ border: none; background: transparent; color: {ACCENT}; padding: 0 4px; }}
 QPushButton#linkButton:hover {{ background: {HOVER}; }}
 QPushButton#ghost {{ border: none; background: transparent; color: {TEXT}; padding: 2px 8px; }}

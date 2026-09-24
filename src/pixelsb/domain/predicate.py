@@ -29,6 +29,9 @@ type CompareOp = Callable[[Value, Value], Value]
 
 _RECT = "rect"
 _RECT_EDGES = ("left", "top", "right", "bottom")
+_GRID = "grid"
+_GRID_PARAMS = ("x", "y", "step_x", "step_y")
+_FUNCTIONS = (_RECT, _GRID)
 _BITS = "bits"
 _RAW = "raw"
 # Attributes a channel name accepts: the selection value, and the stored value.
@@ -139,11 +142,18 @@ def _compile_node(node: ast.expr, names: dict[str, str]) -> Evaluator:
             operands.extend(_compile_node(item, names) for item in comparators)
             return _compile_compare(ops, operands)
         case ast.Call(func=ast.Name(id=name), args=call_args, keywords=call_keywords):
-            if name.lower() != _RECT:
-                raise PredicateError(f"不支持的函数：{name}（可用：{_RECT}）")
-            return _compile_rect(_rect_bounds(call_args, call_keywords, names))
+            lowered = name.lower()
+            if lowered == _RECT:
+                return _compile_rect(
+                    _function_args(_RECT, _RECT_EDGES, call_args, call_keywords, names)
+                )
+            if lowered == _GRID:
+                return _compile_grid(
+                    _function_args(_GRID, _GRID_PARAMS, call_args, call_keywords, names)
+                )
+            raise PredicateError(f"不支持的函数：{name}（可用：{'、'.join(_FUNCTIONS)}）")
         case ast.Call():
-            raise PredicateError(f"不支持的函数调用（可用：{_RECT}(x0, y0, x1, y1)）")
+            raise PredicateError(f"不支持的函数调用（可用：{_FUNCTIONS[0]}(x0, y0, x1, y1) 等）")
         case _:
             raise PredicateError(f"不支持的表达式元素：{type(node).__name__}")
 
@@ -170,32 +180,36 @@ def _compile_attribute(field: str, attribute: str, names: dict[str, str]) -> Eva
     return lambda env: env[key]
 
 
-def _rect_bounds(
+def _function_args(
+    name: str,
+    params: tuple[str, ...],
     args: list[ast.expr],
     keywords: list[ast.keyword],
     names: dict[str, str],
 ) -> list[Evaluator]:
-    """Four rectangle edges, given either positionally or by name."""
+    """One compiled evaluator per parameter, given positionally or by name."""
     if keywords:
         if args:
-            raise PredicateError(f"{_RECT} 不能混用位置参数和命名参数")
+            raise PredicateError(f"{name} 不能混用位置参数和命名参数")
         provided: dict[str, ast.expr] = {}
         for keyword in keywords:
-            if keyword.arg is None or keyword.arg not in _RECT_EDGES:
+            if keyword.arg is None or keyword.arg not in params:
                 received = keyword.arg or "**"
                 raise PredicateError(
-                    f"{_RECT} 的参数名只能是 {'、'.join(_RECT_EDGES)}（收到：{received}）"
+                    f"{name} 的参数名只能是 {'、'.join(params)}（收到：{received}）"
                 )
             provided[keyword.arg] = keyword.value
-        missing = [edge for edge in _RECT_EDGES if edge not in provided]
+        missing = [param for param in params if param not in provided]
         if missing:
-            raise PredicateError(f"{_RECT} 缺少参数：{'、'.join(missing)}")
-        ordered = [provided[edge] for edge in _RECT_EDGES]
+            raise PredicateError(f"{name} 缺少参数：{'、'.join(missing)}")
+        ordered = [provided[param] for param in params]
     else:
-        if len(args) != 4:
+        if len(args) != len(params):
+            usage = f"{name}({', '.join(params)})"
             raise PredicateError(
-                f"{_RECT} 需要 4 个坐标：{_RECT}(x0, y0, x1, y1) "
-                f"或 {_RECT}(left=, top=, right=, bottom=)"
+                f"{name} 需要 {len(params)} 个参数：{usage} 或 {name}("
+                + ", ".join(f"{param}=" for param in params)
+                + ")"
             )
         ordered = list(args)
     return [_compile_node(item, names) for item in ordered]
@@ -220,8 +234,29 @@ def _compile_rect(bounds: list[Evaluator]) -> Evaluator:
 def _scalar(value: Value) -> int:
     array = np.asarray(value)
     if array.size != 1:
-        raise PredicateError(f"{_RECT} 的边界必须是标量表达式")
+        raise PredicateError("参数必须是标量表达式")
     return int(array.item())
+
+
+def _compile_grid(bounds: list[Evaluator]) -> Evaluator:
+    """The lattice anchored at (x, y), taking one pixel every step_x / step_y."""
+
+    def evaluate(env: FieldEnv) -> Value:
+        x, y, step_x, step_y = (_scalar(bound(env)) for bound in bounds)
+        if x < 0 or y < 0:
+            raise PredicateError(f"{_GRID} 的起点坐标不能为负")
+        if step_x < 1 or step_y < 1:
+            raise PredicateError(f"{_GRID} 的步长必须至少为 1")
+        # left/top are unsigned, so the subtraction wraps left of the anchor;
+        # the >= guards pin those cells to False before the modulo can matter.
+        return (
+            (env["left"] >= x)
+            & ((env["left"] - x) % step_x == 0)
+            & (env["top"] >= y)
+            & ((env["top"] - y) % step_y == 0)
+        )
+
+    return evaluate
 
 
 def _compile_bool_op(op: ast.boolop, operands: list[Evaluator]) -> Evaluator:

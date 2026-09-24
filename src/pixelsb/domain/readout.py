@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pixelsb.domain.formatting import format_sample
 from pixelsb.domain.labels import pixel_text, widest_text, zoom_required
 from pixelsb.domain.models import BitChoice, LoadedImage, PixelCoord, SampleOrigin, ViewerState
-from pixelsb.domain.selection import bits_for, effective_selection, number_bits, shown_channel_value
+from pixelsb.domain.selection import bits_for, effective_selection, shown_channel_value
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,13 +23,11 @@ class Readout:
 
 
 def layer_summary(state: ViewerState) -> str:
-    """One line saying which bits drive the canvas and which drive the numbers."""
+    """One line saying which bits drive the canvas and its numbers."""
     image = state.image
     if image is None:
         return ""
-    canvas = _layer_text(image, state.selection, original="原图")
-    numbers = _layer_text(image, state.readout, original="原始值")
-    return f"画面 {canvas} · 数字 {numbers}"
+    return f"画面 {_layer_text(image, state.selection, original='原图')}"
 
 
 def _layer_text(
@@ -77,7 +75,7 @@ def _channels(state: ViewerState) -> tuple[ChannelReadout, ...]:
     cursor = state.cursor
     if image is None or cursor is None:
         return ()
-    chosen = effective_selection(image, number_bits(state))
+    chosen = effective_selection(image, state.selection)
     if not chosen:
         return ()
     cursor_row = tuple(image.samples[cursor.y, cursor.x].tolist())

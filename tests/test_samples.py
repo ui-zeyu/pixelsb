@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from pixelsb.domain.models import BitChoice, SampleOrigin, SamplePlane
-from pixelsb.domain.samples import bit_plane, composite_on_checkerboard, render_rgb
+from pixelsb.domain.samples import bit_plane, composite_on_checkerboard, render_rgb, render_rgb_at
 from tests.support import make_image
 
 
@@ -64,3 +64,34 @@ def _rgb() -> tuple[SamplePlane, SamplePlane, SamplePlane]:
         SamplePlane("G", 1, 8, SampleOrigin.RAW),
         SamplePlane("B", 2, 8, SampleOrigin.RAW),
     )
+
+
+def test_render_rgb_at_matches_the_gathered_full_render() -> None:
+    samples = np.arange(2 * 4 * 3, dtype=np.uint16).reshape(2, 4, 3) * 8
+    image = make_image(samples, _rgb())
+    ys = np.array([1, 0, 1])
+    xs = np.array([3, 0, 2])
+    selection = frozenset({BitChoice("R", bit) for bit in range(8)})
+    at = render_rgb_at(image, selection, ys, xs)
+    assert np.array_equal(at, render_rgb(image, selection)[np.ix_(ys, xs)])
+    assert np.array_equal(
+        render_rgb_at(image, None, ys, xs), render_rgb(image, None)[np.ix_(ys, xs)]
+    )
+
+
+def test_render_rgb_at_keeps_the_checkerboard_phase() -> None:
+    planes = (
+        SamplePlane("R", 0, 8, SampleOrigin.RAW),
+        SamplePlane("G", 1, 8, SampleOrigin.RAW),
+        SamplePlane("B", 2, 8, SampleOrigin.RAW),
+        SamplePlane("A", 3, 8, SampleOrigin.RAW),
+    )
+    samples = np.zeros((4, 5, 4), dtype=np.uint16)
+    samples[..., :3] = 200
+    samples[..., 3] = 128
+    image = make_image(samples, planes)
+    alpha = frozenset({BitChoice("A", bit) for bit in range(8)})
+    ys = np.array([1, 3])
+    xs = np.array([0, 2, 3])
+    at = render_rgb_at(image, alpha, ys, xs)
+    assert np.array_equal(at, render_rgb(image, alpha)[np.ix_(ys, xs)])

@@ -127,29 +127,20 @@ class ViewerState:
     cursor: PixelCoord | None = None
     selection: frozenset[BitChoice] | None = None
     focus: BitChoice | None = None
-    readout: frozenset[BitChoice] | None = None
-    detached: bool = False
     filter_expr: str = ""
     value_format: DisplayFormat = DisplayFormat.HEX
     zoom: float = 1.0
+    only_matched: bool = False
 
     def __post_init__(self) -> None:
         if not MIN_ZOOM <= self.zoom <= MAX_ZOOM:
             raise ValueError(f"zoom {self.zoom} is outside {MIN_ZOOM}..{MAX_ZOOM}")
         if self.image is None:
-            if (
-                self.cursor is not None
-                or self.focus is not None
-                or self.selection is not None
-                or self.readout is not None
-            ):
-                raise ValueError("cursor, focus, selection, and readout require an image")
+            if self.cursor is not None or self.focus is not None or self.selection is not None:
+                raise ValueError("cursor, focus, and selection require an image")
             return
         if self.selection is not None:
             for choice in self.selection:
-                _require_choice(self.image, choice)
-        if self.readout is not None:
-            for choice in self.readout:
                 _require_choice(self.image, choice)
         if self.focus is not None:
             _require_choice(self.image, self.focus)

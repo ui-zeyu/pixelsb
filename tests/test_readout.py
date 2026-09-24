@@ -2,7 +2,7 @@ from pathlib import Path
 
 import numpy as np
 
-from pixelsb.domain.labels import label_fits, widest_text, zoom_required
+from pixelsb.domain.labels import widest_text
 from pixelsb.domain.models import (
     DisplayFormat,
     PixelCoord,
@@ -35,7 +35,7 @@ def _state() -> ViewerState:
 
 def test_readout_text_lists_the_channels_of_the_cursor_pixel() -> None:
     state = set_cursor(_state(), PixelCoord(1, 0))
-    assert readout_text(state) == ("光标 (1, 0)\nR  00\nG  FF\nB  01\n画面 原图 · 数字 原始值")
+    assert readout_text(state) == ("光标 (1, 0)\nR  00\nG  FF\nB  01\n画面 原图")
 
 
 def test_empty_states_have_hints() -> None:
@@ -43,28 +43,12 @@ def test_empty_states_have_hints() -> None:
     assert readout_text(_state()) == "移动鼠标或方向键查看像素"
 
 
-def test_plane_selection_keeps_original_numbers_until_the_readout_changes() -> None:
-    from pixelsb.domain.transitions import select_only_readout, set_detached, toggle_readout_bit
-
+def test_numbers_follow_the_canvas_selection() -> None:
     state = set_format(set_cursor(_state(), PixelCoord(0, 0)), DisplayFormat.BINARY)
     state = select_only(state, "R", 0)
     assert cursor_label(state) == "1"
-    state = set_detached(state, True)
-    assert cursor_label(state) == "R:11111111\nG:00000000\nB:00000000"
-    assert readout_text(state).endswith("画面 R0 · 数字 原始值")
-    template = widest_text(state)
-    assert template == "R:11111111\nG:11111111\nB:11111111"
-    assert zoom_required(template) == 36
-    assert not label_fits(35, template)
-    assert label_fits(36, template)
-    numbers = select_only_readout(state, "R", 0)
-    assert cursor_label(numbers) == "1"
-    assert readout_text(numbers).endswith("画面 R0 · 数字 R0")
-    excluded = toggle_readout_bit(state, "R", 0)
-    assert cursor_label(excluded) == "R:11111110\nG:00000000\nB:00000000"
-    summary = readout_text(excluded)
-    assert "画面 R0 · 数字 R1 R2 R3 R4 R5 R6 R7" in summary
-    assert summary.endswith("G6 G7 B0 B1 B2 B3 B4 B5 B6 B7")
+    assert readout_text(state).endswith("画面 R0")
+    assert widest_text(state) == "1"
 
 
 def test_zoom_label_keeps_two_decimals_at_most() -> None:

@@ -108,6 +108,72 @@ def test_filter_box_typing_and_focus_flow(qtbot: QtBot, rgb_png: Path) -> None:
     assert window.focusWidget() is window.canvas
 
 
+def test_only_matched_toggle_needs_a_filter_and_drives_the_canvas(
+    qtbot: QtBot,
+    rgb_png: Path,
+) -> None:
+    from pixelsb.domain.transitions import set_filter_expr, set_only_matched
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.open_path(rgb_png)
+    checkbox = window._only_matched
+    assert not checkbox.isEnabled()
+    window.apply(lambda state: set_filter_expr(state, "grid(0, 0, 2, 2)"))
+    assert checkbox.isEnabled()
+    checkbox.setChecked(True)
+    assert window.store.state.only_matched
+    assert window.canvas.displayed_size() == (1, 1)
+    edit = window._filter_edit
+    edit.clear()
+    window._apply_filter_text()
+    assert not window.store.state.only_matched
+    assert not checkbox.isChecked()
+    assert not checkbox.isEnabled()
+    # The display toggle never touches the extracted byte stream.
+    window.apply(lambda state: set_filter_expr(state, "grid(0, 0, 2, 2)"))
+    before = window.inspector._extract_rows
+    window.apply(lambda state: set_only_matched(state, True))
+    assert window.inspector._extract_rows == before
+
+
+def test_switching_tools_hands_focus_back_to_the_canvas(qtbot: QtBot, rgb_png: Path) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.open_path(rgb_png)
+    window._mode_select.click()
+    assert window.focusWidget() is window.canvas  # space must reach the canvas, not the button
+    qtbot.keyPress(window.canvas, Qt.Key.Key_Space)
+    assert window._mode_select.isChecked()  # space pans, it does not toggle the tool
+    assert window.canvas.cursor().shape() == Qt.CursorShape.OpenHandCursor
+    qtbot.keyRelease(window.canvas, Qt.Key.Key_Space)
+    assert window.canvas.cursor().shape() == Qt.CursorShape.CrossCursor
+
+
+def test_select_mode_fills_the_rect_filter_on_enter(qtbot: QtBot, rgb_png: Path) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.open_path(rgb_png)
+    zoom = int(window.store.state.zoom)
+    assert window._mode_move.isChecked() and not window._mode_select.isChecked()
+    window._mode_select.click()
+    assert window._mode_select.isChecked() and not window._mode_move.isChecked()
+    qtbot.mousePress(window.canvas, Qt.MouseButton.LeftButton, pos=QPoint(1, 1))
+    qtbot.mouseMove(window.canvas, QPoint(zoom + 1, zoom + 1))
+    assert "选区" in window._status_view.text()
+    qtbot.mouseRelease(window.canvas, Qt.MouseButton.LeftButton, pos=QPoint(zoom + 1, zoom + 1))
+    assert "回车" in window._status_view.text()
+    assert window.store.state.filter_expr == ""
+    qtbot.keyClick(window.canvas, Qt.Key.Key_Return)
+    assert window._filter_edit.text() == "rect(0, 0, 2, 2)"
+    assert window.store.state.filter_expr == "rect(0, 0, 2, 2)"
+    assert window._status_view.text().startswith("光标")
+    qtbot.keyClick(window.canvas, Qt.Key.Key_Escape)
+    assert window.store.state.filter_expr == "rect(0, 0, 2, 2)"  # Esc only clears a selection
+
+
 def test_typing_in_the_filter_box_keeps_its_keys(qtbot: QtBot, rgb_png: Path) -> None:
     from pixelsb.domain.transitions import set_zoom
 
@@ -296,13 +362,6 @@ def test_panel_and_status_widgets_track_the_state(qtbot: QtBot, rgb_png: Path) -
     assert window._zoom_label.text() == text.zoom_label(window.store.state.zoom)
     assert "rgb.png" in window._status_info.text()
     assert window._status_view.text().startswith("光标")
-
-    assert window.inspector._number_matrix.isVisible() is False
-    window.inspector._detach.setChecked(True)
-    assert window.store.state.detached is True
-    assert window.inspector._number_matrix.isVisible() is True
-    window.inspector._detach.setChecked(False)
-    assert window.store.state.detached is False
 
     window._format_combo.setCurrentIndex(window._format_combo.findData(DisplayFormat.BINARY.value))
     assert window.store.state.value_format is DisplayFormat.BINARY

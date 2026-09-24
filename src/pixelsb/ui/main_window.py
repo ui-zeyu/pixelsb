@@ -25,6 +25,8 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QApplication,
+    QButtonGroup,
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QFrame,
@@ -50,7 +52,6 @@ from pixelsb.domain.models import (
     MAX_ZOOM,
     MIN_ZOOM,
     DisplayFormat,
-    LoadedImage,
     PixelCoord,
     ViewerState,
 )
@@ -60,29 +61,24 @@ from pixelsb.domain.transitions import (
     cycle_format,
     move_cursor,
     open_image,
-    reset_readout,
     select_all_bits,
     select_lsb,
     select_lsb_at,
     select_lsbs,
     select_only,
-    select_only_readout,
     set_channel,
     set_column,
     set_cursor,
-    set_detached,
     set_filter_expr,
     set_format,
-    set_readout_channel,
-    set_readout_column,
+    set_only_matched,
     set_zoom,
     step_focus_bit,
     toggle_bit,
-    toggle_readout_bit,
 )
 from pixelsb.io.loading import ImageLoadError, load_image
 from pixelsb.ui import text, theme
-from pixelsb.ui.canvas import ImageCanvas
+from pixelsb.ui.canvas import CanvasMode, ImageCanvas
 from pixelsb.ui.inspector import Inspector
 from pixelsb.ui.store import Store, Transition
 from pixelsb.ui.text import readout_text, status_info, status_view
@@ -136,7 +132,7 @@ class MainWindow(QMainWindow):
         except ImageLoadError as exc:
             self._reporter(text.open_failed(str(exc)))
             return
-        zoom = self._fit_zoom(image)
+        zoom = self._fit_zoom((image.width, image.height))
         self.apply(lambda state: open_image(state, image, zoom=zoom))
         self._scroll.horizontalScrollBar().setValue(0)
         self._scroll.verticalScrollBar().setValue(0)
@@ -246,6 +242,27 @@ class MainWindow(QMainWindow):
         find_shortcut.activated.connect(self._focus_filter)
         self._filter_count = _muted_label()
 
+        self._only_matched = QCheckBox(text.ONLY_MATCHED)
+        self._only_matched.setToolTip(text.ONLY_MATCHED_TIP)
+        self._only_matched.toggled.connect(self._on_only_matched)
+
+        self._mode_move = QPushButton(text.MODE_MOVE)
+        self._mode_select = QPushButton(text.MODE_SELECT)
+        for button, tip in (
+            (self._mode_move, text.MODE_MOVE_TIP),
+            (self._mode_select, text.MODE_SELECT_TIP),
+        ):
+            button.setCheckable(True)
+            button.setToolTip(tip)
+        self._mode_move.setObjectName("segmentLeft")
+        self._mode_select.setObjectName("segmentRight")
+        self._mode_move.setChecked(True)
+        self._mode_group = QButtonGroup(self)
+        self._mode_group.addButton(self._mode_move)
+        self._mode_group.addButton(self._mode_select)
+        self._mode_group.setExclusive(True)
+        self._mode_group.buttonClicked.connect(self._on_mode)
+
         self._zoom_in = self._ghost_button(text.ZOOM_IN, 28, lambda: self._zoom_by(1))
         self._zoom_out = self._ghost_button(text.ZOOM_OUT, 28, lambda: self._zoom_by(-1))
         self._zoom_fit = self._ghost_button(text.ZOOM_FIT, 0, self._fit)
@@ -275,6 +292,11 @@ class MainWindow(QMainWindow):
         layout.setSpacing(8)
         layout.addWidget(self._filter_edit, 1)
         layout.addWidget(self._filter_count)
+        self._only_matched.setFixedHeight(theme.CONTROL_HEIGHT)
+        layout.addWidget(self._only_matched)
+        for button in (self._mode_move, self._mode_select):
+            button.setFixedHeight(theme.CONTROL_HEIGHT)
+            layout.addWidget(button)
         for widget in (
             self._zoom_out,
             self._zoom_slider,
@@ -310,18 +332,17 @@ class MainWindow(QMainWindow):
         self.canvas.zoom_requested.connect(self._zoom_by)
         self.canvas.zoom_scale_requested.connect(self._zoom_scale)
         self.canvas.file_dropped.connect(lambda path: self.open_path(Path(path)))
+        self.canvas.region_selecting.connect(self._on_region_selecting)
+        self.canvas.region_selected.connect(self._on_region_selected)
+        self.canvas.region_committed.connect(self._on_region_committed)
+        self.canvas.region_canceled.connect(self._on_region_canceled)
 
         self.inspector = Inspector()
         self.inspector.bit_clicked.connect(self._on_bit)
-        self.inspector.readout_bit_clicked.connect(self._on_readout_bit)
         self.inspector.channel_toggle.connect(self._on_channel_toggle)
-        self.inspector.readout_channel_toggle.connect(self._on_readout_channel)
         self.inspector.column_toggle.connect(self._on_column_toggle)
-        self.inspector.readout_column_toggle.connect(self._on_readout_column_toggle)
         self.inspector.original_requested.connect(lambda: self.apply(select_all_bits))
         self.inspector.lsbs_requested.connect(lambda: self.apply(select_lsbs))
-        self.inspector.reset_readout_requested.connect(lambda: self.apply(reset_readout))
-        self.inspector.detached_toggled.connect(self._on_detached)
         inspector_scroll = QScrollArea()
         inspector_scroll.setObjectName("inspectorArea")
         inspector_scroll.setWidgetResizable(True)
@@ -485,9 +506,21 @@ class MainWindow(QMainWindow):
 
     def _apply_filter_text(self) -> None:
         expression = self._filter_edit.text()
-        if expression == self.store.state.filter_expr:
+        state = self.store.state
+        empty = not expression.strip()
+        if expression == state.filter_expr and (not empty or not state.only_matched):
             return
-        self.apply(lambda state: set_filter_expr(state, expression))
+
+        def update(current: ViewerState) -> ViewerState:
+            updated = set_filter_expr(current, expression)
+            # A cleared filter has nothing to show exclusively, so uncheck.
+            return set_only_matched(updated, False) if empty else updated
+
+        self.apply(update)
+
+    def _on_only_matched(self, checked: bool) -> None:
+        self.apply(lambda state: set_only_matched(state, checked))
+        self._fit()
 
     def _focus_filter(self) -> None:
         self._filter_edit.setFocus(Qt.FocusReason.ShortcutFocusReason)
@@ -510,6 +543,8 @@ class MainWindow(QMainWindow):
         enabled = image is not None
         for widget in (
             self._filter_edit,
+            self._mode_move,
+            self._mode_select,
             self._zoom_in,
             self._zoom_out,
             self._zoom_fit,
@@ -520,6 +555,12 @@ class MainWindow(QMainWindow):
         self._zoom_slider.blockSignals(True)
         self._zoom_slider.setValue(_slider_position(state.zoom))
         self._zoom_slider.blockSignals(False)
+        only = self._only_matched
+        only.setEnabled(enabled and bool(state.filter_expr.strip()) and self._match_error is None)
+        only.blockSignals(True)
+        if only.isChecked() != state.only_matched:
+            only.setChecked(state.only_matched)
+        only.blockSignals(False)
 
     def _on_bit(self, plane: str, bit: int, exclusive: bool) -> None:
         if exclusive:
@@ -527,28 +568,11 @@ class MainWindow(QMainWindow):
         else:
             self.apply(lambda state: toggle_bit(state, plane, bit))
 
-    def _on_readout_bit(self, plane: str, bit: int, exclusive: bool) -> None:
-        if exclusive:
-            self.apply(lambda state: select_only_readout(state, plane, bit))
-        else:
-            self.apply(lambda state: toggle_readout_bit(state, plane, bit))
-
-    def _on_readout_channel(self, name: str, checked: bool) -> None:
-        self.apply(lambda state: set_readout_channel(state, name, on=checked))
-
     def _on_channel_toggle(self, name: str, checked: bool) -> None:
         self.apply(lambda state: set_channel(state, name, on=checked))
 
     def _on_column_toggle(self, bit: int, checked: bool) -> None:
         self.apply(lambda state: set_column(state, bit, on=checked))
-
-    def _on_readout_column_toggle(self, bit: int, checked: bool) -> None:
-        self.apply(lambda state: set_readout_column(state, bit, on=checked))
-
-    def _on_detached(self, checked: bool) -> None:
-        if checked is self.store.state.detached:
-            return
-        self.apply(lambda state: set_detached(state, checked))
 
     def _on_format(self, index: int) -> None:
         fmt = _enum_at(self._format_combo, index, DisplayFormat)
@@ -558,6 +582,25 @@ class MainWindow(QMainWindow):
 
     def _on_hover(self, x: int, y: int) -> None:
         self.apply(lambda state: set_cursor(state, PixelCoord(x, y)))
+
+    def _on_region_selecting(self, x0: int, y0: int, x1: int, y1: int) -> None:
+        self._status_view.setText(text.selection_status(x0, y0, x1, y1))
+
+    def _on_region_selected(self, x0: int, y0: int, x1: int, y1: int) -> None:
+        self._status_view.setText(text.selection_ready(x0, y0, x1, y1))
+
+    def _on_region_canceled(self) -> None:
+        self._status_view.setText(status_view(self.store.state))
+
+    def _on_region_committed(self, x0: int, y0: int, x1: int, y1: int) -> None:
+        """Fill the filter with the committed region; rect edges are exclusive."""
+        self._filter_edit.setText(f"rect({x0}, {y0}, {x1 + 1}, {y1 + 1})")
+        self._commit_filter()
+
+    def _on_mode(self, button: QPushButton) -> None:
+        self.canvas.set_mode(CanvasMode.SELECT if button is self._mode_select else CanvasMode.PAN)
+        # The click left focus on the button; space must reach the canvas to pan.
+        self.canvas.setFocus(Qt.FocusReason.OtherFocusReason)
 
     def _nudge(self, dx: int, dy: int) -> None:
         self.apply(lambda state: move_cursor(state, dx, dy))
@@ -624,18 +667,18 @@ class MainWindow(QMainWindow):
         self._zoom_around(new_zoom, None, None)
 
     def _fit(self) -> None:
-        image = self.store.state.image
-        if image is None:
+        size = self.canvas.displayed_size()
+        if size is None:
             return
-        zoom = self._fit_zoom(image)
+        zoom = self._fit_zoom(size)
         self.apply(lambda state: set_zoom(state, zoom))
         self._scroll.horizontalScrollBar().setValue(0)
         self._scroll.verticalScrollBar().setValue(0)
 
-    def _fit_zoom(self, image: LoadedImage) -> float:
+    def _fit_zoom(self, size: tuple[int, int]) -> float:
         viewport = self._scroll.viewport().size()
         return initial_zoom(
-            (image.width, image.height),
+            size,
             (max(viewport.width() - 2, 1), max(viewport.height() - 2, 1)),
             cap=MAX_ZOOM,
         )
@@ -645,9 +688,13 @@ class MainWindow(QMainWindow):
         zoom = self.store.state.zoom
         if cursor is None:
             return
+        cell = self.canvas.displayed_at(cursor)
+        if cell is None:
+            return
+        dx, dy = cell
         self._scroll.ensureVisible(
-            round(cursor.x * zoom + zoom / 2),
-            round(cursor.y * zoom + zoom / 2),
+            round(dx * zoom + zoom / 2),
+            round(dy * zoom + zoom / 2),
             round(zoom),
             round(zoom),
         )

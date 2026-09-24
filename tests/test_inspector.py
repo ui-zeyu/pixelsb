@@ -121,11 +121,9 @@ def test_the_bit_grids_fill_the_panel_width(qtbot: QtBot, extract_png: Path) -> 
     assert rightmost >= matrix.width() * 0.9  # the bit columns spread to the edges
 
 
-def test_the_presets_and_detach_share_the_section_header(qtbot: QtBot, extract_png: Path) -> None:
+def test_the_presets_share_the_section_header(qtbot: QtBot, extract_png: Path) -> None:
     inspector = _inspector(qtbot, extract_png)
-    trailing = inspector._detach.parentWidget()
-    assert trailing is not None
-    buttons = [button.text() for button in trailing.findChildren(QPushButton)]
+    buttons = [button.text() for button in inspector.findChildren(QPushButton)]
     assert buttons == [text.ORIGINAL, text.ALL_LSB]
 
 

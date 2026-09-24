@@ -6,10 +6,10 @@ from pixelsb.domain.labels import (
     label_fits,
     pixel_text,
     region_texts,
-    widest_text,
+    region_texts_at,
     zoom_required,
 )
-from pixelsb.domain.models import BitChoice, DisplayFormat, PixelCoord, ViewerState
+from pixelsb.domain.models import BitChoice, PixelCoord, ViewerState
 from pixelsb.domain.samples import render_rgb
 from pixelsb.domain.transitions import (
     open_image,
@@ -17,7 +17,6 @@ from pixelsb.domain.transitions import (
     select_lsbs,
     select_only,
     set_cursor,
-    set_format,
     toggle_bit,
 )
 from tests.support import make_image, planes_rgb
@@ -79,30 +78,6 @@ def test_unchecking_a_bit_from_the_original_materializes_the_selection() -> None
     assert restored.selection is None
 
 
-def test_numbers_follow_the_readout_layer() -> None:
-    from pixelsb.domain.transitions import (
-        select_only_readout,
-        set_cursor,
-        set_detached,
-        toggle_readout_bit,
-    )
-
-    state = set_detached(set_cursor(select_only(_rgb_state(), "B", 0), PixelCoord(0, 0)), True)
-    assert pixel_text(state, PixelCoord(0, 0)) == "R:09\nG:01\nB:00"
-    assert widest_text(state) == "R:FF\nG:FF\nB:FF"
-    numbers = toggle_readout_bit(state, "R", 0)
-    assert pixel_text(numbers, PixelCoord(0, 0)) == "R:08\nG:01\nB:00"
-    assert widest_text(numbers) == "R:FE\nG:FF\nB:FF"
-    both = toggle_readout_bit(numbers, "R", 3)
-    assert pixel_text(both, PixelCoord(0, 0)) == "R:00\nG:01\nB:00"
-    binary = set_format(both, DisplayFormat.BINARY)
-    assert pixel_text(binary, PixelCoord(0, 0)) == "R:00000000\nG:00000001\nB:00000000"
-    single = select_only_readout(both, "B", 0)
-    assert pixel_text(single, PixelCoord(0, 0)) == "0"
-    attached = set_detached(single, False)
-    assert pixel_text(attached, PixelCoord(0, 0)) == "0"
-
-
 def test_labels_use_the_cell_bigness_instead_of_tiny_fonts() -> None:
     assert font_pixel_size(20, "FF") == 13
     assert font_pixel_size(128, "1") == 92
@@ -134,3 +109,12 @@ def test_region_texts_matches_pixel_text_and_is_clipped() -> None:
         pixel_text(state, PixelCoord(x, y)) for y in range(image.height) for x in range(image.width)
     ]
     assert region_texts(state, 5, 5, 9, 9) == []
+
+
+def test_region_texts_at_walks_the_given_coordinates() -> None:
+    samples = np.arange(12, dtype=np.uint16).reshape(2, 2, 3) * 8
+    state = open_image(ViewerState(), make_image(samples, planes_rgb()))
+    grid = region_texts(state, 0, 0, 2, 2)
+    at = region_texts_at(state, np.array([1, 0]), np.array([1, 0, 1]))
+    assert at == [grid[dy * 2 + dx] for dy in (1, 0, 1) for dx in (1, 0)]
+    assert region_texts_at(state, np.array([], dtype=np.intp), np.array([0])) == []
