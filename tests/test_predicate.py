@@ -1,8 +1,9 @@
 import numpy as np
 import pytest
+from numpy.typing import NDArray
 
 from pixelsb.domain import predicate
-from pixelsb.domain.models import BitChoice
+from pixelsb.domain.models import BitChoice, LoadedImage, SampleArray, SamplePlane
 from pixelsb.domain.predicate import PredicateError, compile_filter, field_names
 from tests.support import make_image, planes_rgb
 
@@ -15,11 +16,11 @@ _SAMPLES = np.array(
 )
 
 
-def _image():
+def _image() -> LoadedImage:
     return make_image(_SAMPLES, planes_rgb())
 
 
-def _match(expression: str, chosen: frozenset[BitChoice] | None = None):
+def _match(expression: str, chosen: frozenset[BitChoice] | None = None) -> NDArray[np.bool_]:
     return compile_filter(expression, planes_rgb()).evaluate(_image(), chosen)
 
 
@@ -148,7 +149,7 @@ def test_a_coordinate_filter_never_builds_a_channel(monkeypatch: pytest.MonkeyPa
     seen: list[str] = []
     read = predicate._raw_values
 
-    def spy(samples: np.ndarray, plane) -> np.ndarray:
+    def spy(samples: SampleArray, plane: SamplePlane) -> NDArray[np.uint32]:
         seen.append(plane.name)
         return read(samples, plane)
 
@@ -162,7 +163,7 @@ def test_each_channel_is_built_once_per_evaluation(monkeypatch: pytest.MonkeyPat
     seen: list[str] = []
     read = predicate._raw_values
 
-    def spy(samples: np.ndarray, plane) -> np.ndarray:
+    def spy(samples: SampleArray, plane: SamplePlane) -> NDArray[np.uint32]:
         seen.append(plane.name)
         return read(samples, plane)
 

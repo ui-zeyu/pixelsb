@@ -62,7 +62,7 @@ def test_presets_cover_every_lsb_and_the_original() -> None:
 
 
 def test_select_only_rejects_a_bit_past_the_plane() -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=r"outside 0\.\.7"):
         select_only(_rgb_state(), "R", 8)
 
 

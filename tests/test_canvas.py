@@ -7,7 +7,7 @@ from PySide6.QtCore import QPoint, Qt
 from PySide6.QtWidgets import QScrollArea
 from pytestqt.qtbot import QtBot
 
-from pixelsb.domain.models import DisplayFormat, PixelCoord, ViewerState
+from pixelsb.domain.models import DisplayFormat, LoadedImage, PixelCoord, ViewerState
 from pixelsb.domain.predicate import compile_filter
 from pixelsb.domain.samples import render_rgb
 from pixelsb.domain.transitions import (
@@ -32,13 +32,13 @@ def _canvas(qtbot: QtBot) -> ImageCanvas:
     return canvas
 
 
-def _image(width: int, height: int, name: str = "a.png"):
+def _image(width: int, height: int, name: str = "a.png") -> LoadedImage:
     samples = np.zeros((height, width, 3), dtype=np.uint16)
     samples[..., 0] = np.arange(width, dtype=np.uint16)[None, :] * 8
     return make_image(samples, planes_rgb(), path=Path(name))
 
 
-def _labelled_state(image, zoom: int = 12) -> ViewerState:
+def _labelled_state(image: LoadedImage, zoom: int = 12) -> ViewerState:
     state = select_only(open_image(ViewerState(), image), "R", 0)
     return set_zoom(state, zoom)
 
@@ -72,7 +72,7 @@ def test_moving_the_cursor_repaints_only_the_two_cells(
     canvas.set_state(state)
     painted: list[PixelCoord | None] = []
 
-    def record(coord: PixelCoord | None, zoom: float) -> None:
+    def record(coord: PixelCoord | None, _zoom: float) -> None:
         painted.append(coord)
 
     monkeypatch.setattr(canvas, "_repaint_pixel", record)
@@ -290,5 +290,5 @@ def test_space_temporarily_pans_in_select_mode(qtbot: QtBot) -> None:
     assert canvas.cursor().shape() == Qt.CursorShape.CrossCursor
 
 
-def _state_for(image) -> ViewerState:
+def _state_for(image: LoadedImage) -> ViewerState:
     return open_image(ViewerState(), image)

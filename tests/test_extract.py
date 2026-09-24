@@ -7,11 +7,11 @@ from pixelsb.domain.extract import (
     filter_extract,
     format_extract,
 )
-from pixelsb.domain.models import BitChoice, ExtractEncoding
+from pixelsb.domain.models import BitChoice, ExtractEncoding, LoadedImage
 from tests.support import make_image, planes_rgb
 
 
-def _image(samples):
+def _image(samples: list) -> LoadedImage:
     return make_image(np.array(samples, dtype=np.uint16), planes_rgb())
 
 

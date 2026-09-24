@@ -27,7 +27,7 @@ def test_bit_plane_treats_bit_zero_as_the_lsb() -> None:
 
 def test_bit_plane_rejects_a_bit_outside_the_plane() -> None:
     samples = np.zeros((1, 1, 1), dtype=np.uint16)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=r"outside 0\.\.7"):
         bit_plane(samples, _plane(), 8)
 
 

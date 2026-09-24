@@ -28,7 +28,8 @@ def test_tokens_are_light_with_a_blue_accent() -> None:
         assert _relative_luminance(QColor(token)) > 0.85, token
     assert _relative_luminance(QColor(theme.TEXT)) < 0.2
     accent = QColor(theme.ACCENT)
-    assert accent.blue() > accent.red() and accent.blue() > accent.green()
+    assert accent.blue() > accent.red()
+    assert accent.blue() > accent.green()
 
 
 def test_apply_theme_sets_a_light_palette(qapp: QApplication) -> None:

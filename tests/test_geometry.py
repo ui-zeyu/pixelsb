@@ -21,4 +21,5 @@ def test_initial_zoom_fits_and_stays_in_range() -> None:
 def test_initial_zoom_fills_one_axis_with_fractional_zoom() -> None:
     fit = initial_zoom((360, 240), (1055, 851))
     assert fit == 1055 / 360
-    assert fit > 2 and fit < 3
+    assert fit > 2
+    assert fit < 3

@@ -40,6 +40,8 @@ _BITS = "bits"
 _RAW = "raw"
 # Attributes a channel name accepts: the selection value, and the stored value.
 _CHANNEL_ATTRIBUTES = (_BITS, _RAW)
+# A literal outside this range cannot mean anything a field could hold.
+_INT_MIN, _INT_MAX = -(2**63), 2**63 - 1
 
 
 class PredicateError(Exception):
@@ -106,11 +108,16 @@ class Filter:
     ) -> NDArray[np.bool_]:
         """Return an HxW boolean mask; expressions over coordinates alone broadcast."""
         values = _field_values(image, chosen, self.fields)
-        with np.errstate(all="ignore"):
-            result = self.evaluator(values)
-        if result.dtype != np.bool_:
-            result = result != 0
-        return np.broadcast_to(result, (image.height, image.width))
+        try:
+            with np.errstate(all="ignore"):
+                result = self.evaluator(values)
+            if result.dtype != np.bool_:
+                result = result != 0
+            return np.broadcast_to(result, (image.height, image.width))
+        except (OverflowError, ValueError) as exc:
+            # A number too wide for the field it meets, or operands that will not
+            # broadcast: the expression is at fault, so it is reported as such.
+            raise PredicateError(str(exc)) from exc
 
 
 def compile_filter(expression: str, planes: tuple[SamplePlane, ...]) -> Filter:
@@ -130,6 +137,8 @@ def compile_filter(expression: str, planes: tuple[SamplePlane, ...]) -> Filter:
 def _compile_node(node: ast.expr, names: dict[str, str]) -> Evaluator:
     match node:
         case ast.Constant(value=int() | float() as value):
+            if isinstance(value, int) and not _INT_MIN <= value <= _INT_MAX:
+                raise PredicateError(f"整数超出范围：{value}")
             constant = np.asarray(value)
             return lambda _env: constant
         case ast.Name():

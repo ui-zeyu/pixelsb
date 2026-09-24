@@ -176,5 +176,5 @@ def test_zoom_and_format_cycle() -> None:
     added = toggle_bit(select_only(state, "R", 0), "G", 0)
     assert added.selection == frozenset({BitChoice("R", 0), BitChoice("G", 0)})
     assert step_zoom(set_zoom(state, MAX_ZOOM), 1).zoom == MAX_ZOOM
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="outside"):
         set_zoom(state, 0)

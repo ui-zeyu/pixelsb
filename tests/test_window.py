@@ -67,7 +67,8 @@ def test_filter_match_follows_the_selection(qtbot: QtBot, rgb_png: Path) -> None
     window.apply(lambda state: set_filter_expr(state, "R == 255"))
     first = window._match.mask
     assert first is not None
-    assert first[0, 0] and not first[1, 0]
+    assert first[0, 0]
+    assert not first[1, 0]
     window.apply(lambda state: select_only(state, "R", 7))
     second = window._match.mask
     assert second is not None
@@ -159,9 +160,11 @@ def test_select_mode_previews_then_appends_on_enter(qtbot: QtBot, rgb_png: Path)
     window.show()
     window.open_path(rgb_png)
     zoom = int(window.store.state.zoom)
-    assert window._mode_move.isChecked() and not window._mode_select.isChecked()
+    assert window._mode_move.isChecked()
+    assert not window._mode_select.isChecked()
     window._mode_select.click()
-    assert window._mode_select.isChecked() and not window._mode_move.isChecked()
+    assert window._mode_select.isChecked()
+    assert not window._mode_move.isChecked()
     qtbot.mousePress(window.canvas, Qt.MouseButton.LeftButton, pos=QPoint(1, 1))
     qtbot.mouseMove(window.canvas, QPoint(zoom + 1, zoom + 1))
     assert "选区" in window._status_view.text()
