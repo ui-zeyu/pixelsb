@@ -32,4 +32,6 @@ uv run ty check
 uv run pytest
 ```
 
-代码分三层：`domain/` 纯逻辑（模型、过滤器编译、位渲染、提取），`io/` 图像加载，`ui/` Qt 界面；测试在 `QT_QPA_PLATFORM=offscreen` 下运行，不依赖真实显示。
+代码分三层：`domain/` 纯逻辑（模型与状态转换、过滤器编译、位渲染、提取、匹配视图），`io/` 图像加载，`ui/` Qt 界面（`canvas` 画布与选区、`inspector` 位选择与提取区、`extract_view` 转储面板、`painting` 绘制原语、`theme` 主题）。
+
+测试在 `QT_QPA_PLATFORM=offscreen` 下运行，不依赖真实显示：逐条用例覆盖领域与界面，`tests/test_properties.py` 另用 hypothesis 把过滤器语法、位选择与渲染丢给参考实现做属性校验。
