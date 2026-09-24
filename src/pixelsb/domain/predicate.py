@@ -5,11 +5,14 @@ Fields: ``left``, ``top``, ``right``, ``bottom`` (a pixel occupies
 the current selection masked onto the plane, and channels without any selected bit
 read as 0; ``R.raw`` is the channel as stored, ``R.bits`` spells the selection
 value out. The expression is parsed with :mod:`ast` and every node is compiled
-into a numpy closure — strings are never evaluated.
+into a numpy closure — strings are never evaluated. Only the fields an
+expression mentions are built for it, so a filter over coordinates alone never
+touches the image samples.
 """
 
 import ast
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from functools import reduce
 from itertools import pairwise
 from typing import Any
@@ -31,7 +34,13 @@ _RECT = "rect"
 _RECT_EDGES = ("left", "top", "right", "bottom")
 _GRID = "grid"
 _GRID_PARAMS = ("x", "y", "step_x", "step_y")
+_GRID_AXES = ("left", "top")
 _FUNCTIONS = (_RECT, _GRID)
+# Fields a function reads on its own, beyond the arguments the expression passes.
+_FUNCTION_FIELDS: dict[str, frozenset[str]] = {
+    _RECT: frozenset(_RECT_EDGES),
+    _GRID: frozenset(_GRID_AXES),
+}
 _BITS = "bits"
 _RAW = "raw"
 # Attributes a channel name accepts: the selection value, and the stored value.
@@ -82,12 +91,18 @@ def _value_key(plane: str, attribute: str) -> str:
     return f"{plane}.{attribute}"
 
 
+@dataclass(frozen=True, slots=True)
 class Filter:
-    """A compiled display filter, evaluated over one image at a time."""
+    """A compiled display filter, evaluated over one image at a time.
 
-    def __init__(self, expression: str, evaluator: Evaluator) -> None:
-        self.expression = expression
-        self._evaluator = evaluator
+    ``fields`` is what the expression actually reads; everything else is left
+    out of the field environment, which is what keeps a coordinate-only filter
+    from copying every channel of the image.
+    """
+
+    expression: str
+    evaluator: Evaluator
+    fields: frozenset[str]
 
     def evaluate(
         self,
@@ -95,9 +110,9 @@ class Filter:
         chosen: frozenset[BitChoice] | None,
     ) -> NDArray[np.bool_]:
         """Return an HxW boolean mask; expressions over coordinates alone broadcast."""
-        values = _field_values(image, chosen)
+        values = _field_values(image, chosen, self.fields)
         with np.errstate(all="ignore"):
-            result = self._evaluator(values)
+            result = self.evaluator(values)
         if result.dtype != np.bool_:
             result = result != 0
         return np.broadcast_to(result, (image.height, image.width))
@@ -110,7 +125,11 @@ def compile_filter(expression: str, planes: tuple[SamplePlane, ...]) -> Filter:
     except SyntaxError as exc:
         raise PredicateError(f"语法错误：{exc.msg}") from exc
     names = field_names(planes)
-    return Filter(expression, _compile_node(tree.body, names))
+    return Filter(
+        expression=expression,
+        evaluator=_compile_node(tree.body, names),
+        fields=_wanted_fields(tree.body, names),
+    )
 
 
 def _compile_node(node: ast.expr, names: dict[str, str]) -> Evaluator:
@@ -156,6 +175,30 @@ def _compile_node(node: ast.expr, names: dict[str, str]) -> Evaluator:
             raise PredicateError(f"不支持的函数调用（可用：{_FUNCTIONS[0]}(x0, y0, x1, y1) 等）")
         case _:
             raise PredicateError(f"不支持的表达式元素：{type(node).__name__}")
+
+
+def _wanted_fields(node: ast.AST, names: dict[str, str]) -> frozenset[str]:
+    """The environment keys an expression reads, so the rest can be skipped.
+
+    A call's name is a function rather than a field, and an attribute's subject
+    is not a field of its own: ``R.raw`` reads ``R.raw`` and nothing else, which
+    is what keeps a raw-only filter off the selection mask.
+    """
+    match node:
+        case ast.Name():
+            return frozenset({_canonical_name(node.id, names)})
+        case ast.Attribute(value=ast.Name(id=field), attr=attribute):
+            return frozenset({_value_key(_canonical_name(field, names), attribute.lower())})
+        case ast.Call(func=ast.Name(id=name), args=arguments, keywords=keywords):
+            named = (keyword.value for keyword in keywords)
+            implicit = _FUNCTION_FIELDS.get(name.lower(), frozenset())
+            return implicit | _union_fields((*arguments, *named), names)
+        case _:
+            return _union_fields(ast.iter_child_nodes(node), names)
+
+
+def _union_fields(nodes: Iterable[ast.AST], names: dict[str, str]) -> frozenset[str]:
+    return frozenset().union(*(_wanted_fields(node, names) for node in nodes))
 
 
 def _canonical_name(field: str, names: dict[str, str]) -> str:
@@ -224,9 +267,8 @@ def _compile_rect(bounds: list[Evaluator]) -> Evaluator:
             x0, x1 = x1, x0
         if y0 > y1:
             y0, y1 = y1, y0
-        return (
-            (env["left"] >= x0) & (env["right"] <= x1) & (env["top"] >= y0) & (env["bottom"] <= y1)
-        )
+        left, top, right, bottom = (env[edge] for edge in _RECT_EDGES)
+        return (left >= x0) & (right <= x1) & (top >= y0) & (bottom <= y1)
 
     return evaluate
 
@@ -247,14 +289,10 @@ def _compile_grid(bounds: list[Evaluator]) -> Evaluator:
             raise PredicateError(f"{_GRID} 的起点坐标不能为负")
         if step_x < 1 or step_y < 1:
             raise PredicateError(f"{_GRID} 的步长必须至少为 1")
+        left, top = (env[axis] for axis in _GRID_AXES)
         # left/top are unsigned, so the subtraction wraps left of the anchor;
         # the >= guards pin those cells to False before the modulo can matter.
-        return (
-            (env["left"] >= x)
-            & ((env["left"] - x) % step_x == 0)
-            & (env["top"] >= y)
-            & ((env["top"] - y) % step_y == 0)
-        )
+        return (left >= x) & ((left - x) % step_x == 0) & (top >= y) & ((top - y) % step_y == 0)
 
     return evaluate
 
@@ -285,23 +323,32 @@ def _compile_compare(ops: list[ast.cmpop], operands: list[Evaluator]) -> Evaluat
 def _field_values(
     image: LoadedImage,
     chosen: frozenset[BitChoice] | None,
+    wanted: frozenset[str],
 ) -> FieldEnv:
+    """The environment for one evaluation, holding only the fields ``wanted`` names."""
     height, width = image.height, image.width
     left = np.arange(width, dtype=np.uint32)[None, :]
     top = np.arange(height, dtype=np.uint32)[:, None]
     # A pixel occupies [left, right) x [top, bottom), so its far edges are +1.
-    values: FieldEnv = {
+    # The coordinates broadcast against the image, so they cost no image memory.
+    edges: FieldEnv = {
         "left": left,
         "top": top,
         "right": left + np.uint32(1),
         "bottom": top + np.uint32(1),
     }
+    values: FieldEnv = {name: array for name, array in edges.items() if name in wanted}
     for plane in image.planes:
+        selected_keys = wanted & {plane.name, _value_key(plane.name, _BITS)}
+        raw_key = _value_key(plane.name, _RAW)
+        if not selected_keys and raw_key not in wanted:
+            continue
         channel = _raw_values(image.samples, plane)
-        selected = _selected_values(channel, plane.name, chosen)
-        values[plane.name] = selected
-        values[_value_key(plane.name, _BITS)] = selected
-        values[_value_key(plane.name, _RAW)] = channel
+        if raw_key in wanted:
+            values[raw_key] = channel
+        if selected_keys:
+            selected = _selected_values(channel, plane.name, chosen)
+            values.update(dict.fromkeys(selected_keys, selected))
     return values
 
 

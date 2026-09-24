@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 
+from pixelsb.domain import predicate
 from pixelsb.domain.models import BitChoice
 from pixelsb.domain.predicate import PredicateError, compile_filter, field_names
 from tests.support import make_image, planes_rgb
@@ -128,6 +129,47 @@ def test_edge_fields_match_the_rect_form() -> None:
     assert _match("bottom == 2").tolist() == [[False, False], [True, True]]
     edges = "left >= 1 and right <= 2 and top >= 0 and bottom <= 1"
     assert _match(edges).tolist() == _match("rect(1, 0, 2, 1)").tolist()
+
+
+def test_a_filter_reports_the_fields_it_reads() -> None:
+    def fields(expression: str) -> set[str]:
+        return set(compile_filter(expression, planes_rgb()).fields)
+
+    assert fields("rect(0, 0, 1, 1)") == {"left", "top", "right", "bottom"}
+    assert fields("grid(0, 0, 2, 2)") == {"left", "top"}
+    assert fields("R.raw > 1") == {"R.raw"}
+    assert fields("R.bits + R") == {"R", "R.bits"}
+    assert fields("B >= R and G < 100") == {"R", "G", "B"}
+    # A call's arguments are read; the function name is not a field of its own.
+    assert fields("rect(0, 0, 1, R.raw)") == {"left", "top", "right", "bottom", "R.raw"}
+
+
+def test_a_coordinate_filter_never_builds_a_channel(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[str] = []
+    read = predicate._raw_values
+
+    def spy(samples: np.ndarray, plane) -> np.ndarray:
+        seen.append(plane.name)
+        return read(samples, plane)
+
+    monkeypatch.setattr(predicate, "_raw_values", spy)
+    assert _match("rect(0, 0, 1, 1)").tolist() == [[True, False], [False, False]]
+    assert _match("grid(0, 0, 1, 1) and top == 0").tolist() == [[True, True], [False, False]]
+    assert seen == []
+
+
+def test_each_channel_is_built_once_per_evaluation(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[str] = []
+    read = predicate._raw_values
+
+    def spy(samples: np.ndarray, plane) -> np.ndarray:
+        seen.append(plane.name)
+        return read(samples, plane)
+
+    monkeypatch.setattr(predicate, "_raw_values", spy)
+    _match("R.raw > B.raw and B.bits > 0 and B > 1")
+    # R.raw and B.raw need the stored values; both B flavours share the one copy.
+    assert sorted(seen) == ["B", "R"]
     assert _match("0 <= left <= 0").tolist() == [[True, False], [True, False]]
     assert not _match("50 <= left <= 100").any()
 

@@ -142,7 +142,7 @@ def _mask_rgb(
         bits = bits_for(chosen, plane.name)
         if not bits:
             continue
-        scaled = _scale_to_byte(_masked_channel(samples[:, :, plane.index], bits), mask_of(bits))
+        scaled = _scale_to_byte(*_masked_channel(samples[:, :, plane.index], bits))
         if plane.name == "R":
             color[:, :, 0] = scaled
             wrote_color = True
@@ -170,17 +170,32 @@ def _mask_rgb(
 def _masked_channel(
     channel: NDArray[np.uint16],
     bits: tuple[int, ...],
-) -> NDArray[np.uint16]:
-    mask = np.uint16(mask_of(bits))
-    return channel & mask
+) -> tuple[NDArray[np.uint16], int]:
+    """The selected bits shifted down to start at bit zero, and their maximum.
+
+    Shifting loses no information: the masked value is the shifted one times
+    ``2 ** low``, and so is the maximum, so the scaled byte is identical. A
+    contiguous run then has a maximum of ``2 ** width - 1``, which is what lets
+    the byte scaling multiply instead of divide for the common selections.
+    """
+    low, high = bits[0], bits[-1]
+    if bits == tuple(range(low, high + 1)):
+        width = high - low + 1
+        run = channel if low == 0 else channel >> np.uint16(low)
+        return run & np.uint16((1 << width) - 1), (1 << width) - 1
+    mask = mask_of(bits)
+    return channel & np.uint16(mask), mask
 
 
-def _scale_to_byte(
-    value: NDArray[np.uint16] | NDArray[np.uint32] | NDArray[np.uint64],
-    maximum: int,
-) -> NDArray[np.uint8]:
+def _scale_to_byte(value: NDArray[np.uint16], maximum: int) -> NDArray[np.uint8]:
+    """Map the masked range 0..maximum onto 0..255."""
     if maximum <= 0:
         return np.zeros(value.shape, dtype=np.uint8)
-    if maximum == 255 and value.dtype == np.uint8:
+    factor = 255 // maximum
+    if factor == 1 and maximum == 255:
         return value.astype(np.uint8)
+    if factor * maximum == 255:
+        # Full bytes and the masks 1, 3 and 15 divide 255 exactly, so one
+        # multiply replaces a whole uint32 divide pass over the image.
+        return (value * np.uint16(factor)).astype(np.uint8)
     return (value.astype(np.uint32) * np.uint32(255) // np.uint32(maximum)).astype(np.uint8)

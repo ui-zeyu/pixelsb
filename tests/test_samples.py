@@ -79,6 +79,24 @@ def test_render_rgb_at_matches_the_gathered_full_render() -> None:
     )
 
 
+def test_every_bit_mask_scales_exactly_like_the_division() -> None:
+    """The multiply fast path must agree with ``value * 255 // maximum``."""
+    rng = np.random.default_rng(7)
+    samples = rng.integers(0, 256, size=(4, 5, 3), dtype=np.uint16)
+    image = make_image(samples, _rgb())
+    for mask in range(1, 256):
+        bits = tuple(bit for bit in range(8) if mask >> bit & 1)
+        chosen = frozenset(BitChoice(name, bit) for name in ("R", "G", "B") for bit in bits)
+        expected = np.stack(
+            [
+                ((samples[:, :, index] & mask).astype(np.uint32) * 255 // mask).astype(np.uint8)
+                for index in range(3)
+            ],
+            axis=-1,
+        )
+        assert np.array_equal(render_rgb(image, chosen), expected), f"mask {mask:#04x}"
+
+
 def test_render_rgb_at_keeps_the_checkerboard_phase() -> None:
     planes = (
         SamplePlane("R", 0, 8, SampleOrigin.RAW),
