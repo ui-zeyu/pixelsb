@@ -298,6 +298,7 @@ class MainWindow(QMainWindow):
         self._scroll.viewport().installEventFilter(self)
         self.canvas.hovered.connect(self._on_hover)
         self.canvas.zoom_requested.connect(self._zoom_by)
+        self.canvas.zoom_scale_requested.connect(self._zoom_scale)
         self.canvas.file_dropped.connect(lambda path: self.open_path(Path(path)))
 
         self.inspector = Inspector()
@@ -579,7 +580,21 @@ class MainWindow(QMainWindow):
         if state.image is None or step == 0:
             return
         new_zoom = min(max(state.zoom + step, MIN_ZOOM), MAX_ZOOM)
-        if new_zoom == state.zoom:
+        self._zoom_around(new_zoom, viewport_x, viewport_y)
+
+    def _zoom_scale(
+        self, factor: float, viewport_x: int | None = None, viewport_y: int | None = None
+    ) -> None:
+        """Trackpad pinch and ⌘+scroll: scale the zoom by a factor in place."""
+        state = self.store.state
+        if state.image is None or factor <= 0:
+            return
+        new_zoom = min(max(state.zoom * factor, MIN_ZOOM), MAX_ZOOM)
+        self._zoom_around(new_zoom, viewport_x, viewport_y)
+
+    def _zoom_around(self, new_zoom: float, viewport_x: int | None, viewport_y: int | None) -> None:
+        state = self.store.state
+        if state.image is None or new_zoom == state.zoom:
             return
         viewport = self._scroll.viewport()
         if viewport_x is None or viewport_y is None:

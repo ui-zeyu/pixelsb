@@ -5,7 +5,7 @@ from functools import lru_cache
 
 import numpy as np
 from numpy.typing import NDArray
-from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import (
     QColor,
     QDragEnterEvent,
@@ -16,12 +16,13 @@ from PySide6.QtGui import (
     QImage,
     QKeyEvent,
     QMouseEvent,
+    QNativeGestureEvent,
     QPainter,
     QPaintEvent,
     QPen,
     QWheelEvent,
 )
-from PySide6.QtWidgets import QScrollArea, QWidget
+from PySide6.QtWidgets import QGestureEvent, QPinchGesture, QScrollArea, QWidget
 
 from pixelsb.domain.geometry import GRID_ZOOM, pixel_at
 from pixelsb.domain.labels import (
@@ -53,6 +54,7 @@ _LUMA_THRESHOLD = 1_500_000
 class ImageCanvas(QWidget):
     hovered = Signal(int, int)
     zoom_requested = Signal(int, int, int)
+    zoom_scale_requested = Signal(float, int, int)
     file_dropped = Signal(str)
 
     def __init__(self, scroll: QScrollArea) -> None:
@@ -72,6 +74,9 @@ class ImageCanvas(QWidget):
         self._left_press: QPoint | None = None
         self._left_dragging = False
         self._left_press_scroll = (0, 0)
+        self.grabGesture(Qt.GestureType.PinchGesture)
+        # Gestures over the letterbox around the image land on the viewport.
+        scroll.viewport().installEventFilter(self)
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setAcceptDrops(True)
@@ -305,15 +310,64 @@ class ImageCanvas(QWidget):
             )
         super().mouseReleaseEvent(event)
 
-    def wheelEvent(self, event: QWheelEvent) -> None:
+    def event(self, event: QEvent) -> bool:
+        if isinstance(event, QNativeGestureEvent):
+            self._native_gesture(event, QPointF(0, 0))
+            return True
+        if isinstance(event, QGestureEvent):
+            self._pinch_gesture(event, QPointF(0, 0))
+            return True
+        return super().event(event)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if isinstance(event, (QNativeGestureEvent, QGestureEvent)):
+            origin = QPointF(self.geometry().topLeft())  # the event is viewport-local
+            if isinstance(event, QNativeGestureEvent):
+                self._native_gesture(event, origin)
+            else:
+                self._pinch_gesture(event, origin)
+            return True
+        if isinstance(event, QWheelEvent) and self._zoom_modifier(event):
+            self.wheelEvent(event)
+            return True
+        return super().eventFilter(watched, event)
+
+    def _native_gesture(self, event: QNativeGestureEvent, origin: QPointF) -> None:
+        """Trackpad pinch on macOS arrives as native magnification events."""
+        if event.gestureType() == Qt.NativeGestureType.ZoomNativeGesture:
+            self._emit_scale(1.0 + event.value(), event.position() - origin)
+        elif event.gestureType() == Qt.NativeGestureType.SmartZoomNativeGesture:
+            self._emit_scale(2.0 if event.value() > 0 else 0.5, event.position() - origin)
+
+    def _pinch_gesture(self, event: QGestureEvent, origin: QPointF) -> None:
+        """Touchscreen pinch, delivered through Qt's gesture framework."""
+        pinch = event.gesture(Qt.GestureType.PinchGesture)
+        if isinstance(pinch, QPinchGesture) and pinch.state() == Qt.GestureState.GestureUpdated:
+            self._emit_scale(pinch.scaleFactor(), pinch.centerPoint() - origin)
+
+    def _emit_scale(self, factor: float, position: QPointF) -> None:
+        if factor <= 0 or factor == 1.0:
+            return
+        anchor = self.mapTo(self._scroll.viewport(), position.toPoint())
+        self.zoom_scale_requested.emit(factor, anchor.x(), anchor.y())
+
+    def _zoom_modifier(self, event: QWheelEvent) -> bool:
         modifiers = event.modifiers()
-        zooming = bool(
+        return bool(
             modifiers & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.MetaModifier)
         )
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        zooming = self._zoom_modifier(event)
         if zooming:
-            step = 1 if event.angleDelta().y() > 0 else -1
             viewport_pos = self.mapTo(self._scroll.viewport(), event.position().toPoint())
-            self.zoom_requested.emit(step, viewport_pos.x(), viewport_pos.y())
+            pixels = event.pixelDelta()
+            if pixels.isNull():
+                step = 1 if event.angleDelta().y() > 0 else -1
+                self.zoom_requested.emit(step, viewport_pos.x(), viewport_pos.y())
+            else:  # a trackpad: zoom continuously with the fingers
+                factor = math.exp(pixels.y() / 250.0)
+                self.zoom_scale_requested.emit(factor, viewport_pos.x(), viewport_pos.y())
             event.accept()
             return
         dx, dy = _pan_delta(event)

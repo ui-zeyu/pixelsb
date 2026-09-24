@@ -109,12 +109,16 @@ def test_the_gutter_paints_the_offsets(qtbot: QtBot, extract_png: Path) -> None:
     assert view._gutter.geometry().top() == viewport.top()
 
 
-def test_the_bit_grids_sit_in_cards_that_hug_the_left(qtbot: QtBot, extract_png: Path) -> None:
+def test_the_bit_grids_fill_the_panel_width(qtbot: QtBot, extract_png: Path) -> None:
     inspector = _inspector(qtbot, extract_png)
     card = inspector._canvas_card
+    matrix = inspector._canvas_matrix
     assert card.objectName() == "card"
-    assert card.x() == 16  # the panel's own margin, no stretching to the right
-    assert 240 <= card.width() <= inspector.width() - 40  # natural size, hugging left
+    assert card.x() == 16
+    assert card.width() >= inspector.width() - 40  # the card spans the panel
+    assert matrix.width() >= card.width() - 24  # and the grid fills the card
+    rightmost = max(box.geometry().right() for box in matrix._boxes.values())
+    assert rightmost >= matrix.width() * 0.9  # the bit columns spread to the edges
 
 
 def test_the_presets_and_detach_share_the_section_header(qtbot: QtBot, extract_png: Path) -> None:

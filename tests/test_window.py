@@ -1,7 +1,9 @@
 from itertools import pairwise
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, Qt
+import pytest
+from PySide6.QtCore import QPoint, QPointF, Qt
+from PySide6.QtGui import QNativeGestureEvent, QPointingDevice
 from PySide6.QtWidgets import QToolButton
 from pytestqt.qtbot import QtBot
 
@@ -162,6 +164,45 @@ def test_the_zoom_label_fits_the_widest_value(qtbot: QtBot) -> None:
     window.show()
     window._zoom_label.setText(text.zoom_label(123.4567))
     assert window._zoom_label.sizeHint().width() <= window._zoom_label.width()
+
+
+def test_a_trackpad_pinch_scales_the_zoom_in_place(qtbot: QtBot, rgb_png: Path) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.resize(1200, 800)
+    window.show()
+    window.open_path(rgb_png)
+    window.apply(lambda state: set_zoom(state, 4.0))
+    window._zoom_scale(1.25, 100, 50)
+    assert window.store.state.zoom == pytest.approx(5.0)
+    window._zoom_scale(0.5, 100, 50)
+    assert window.store.state.zoom == pytest.approx(2.5)
+
+
+def test_a_native_pinch_gesture_requests_a_scale(qtbot: QtBot, rgb_png: Path) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.resize(1200, 800)
+    window.show()
+    window.open_path(rgb_png)
+    window.apply(lambda state: set_zoom(state, 4.0))
+    before = window.store.state.zoom
+    event = QNativeGestureEvent(
+        Qt.NativeGestureType.ZoomNativeGesture,
+        QPointingDevice.primaryPointingDevice(),
+        2,
+        QPointF(30, 20),
+        QPointF(30, 20),
+        QPointF(31, 21),
+        0.04,
+        QPointF(0, 0),
+    )
+    # Real delivery invokes the widget's event() with the native gesture.
+    assert window.canvas.event(event) is True
+    assert window.store.state.zoom == pytest.approx(before * 1.04)
+    # The same gesture over the letterbox reaches the canvas through the filter.
+    assert window.canvas.eventFilter(window._scroll.viewport(), event) is True
+    assert window.store.state.zoom == pytest.approx(before * 1.04 * 1.04)
 
 
 def test_the_filter_box_gets_a_light_clear_icon(qtbot: QtBot) -> None:

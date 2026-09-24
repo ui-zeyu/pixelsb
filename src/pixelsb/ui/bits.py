@@ -6,7 +6,7 @@ partial state when only part of the group is selected.
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QMouseEvent
-from PySide6.QtWidgets import QCheckBox, QGridLayout, QWidget
+from PySide6.QtWidgets import QCheckBox, QGridLayout, QSizePolicy, QWidget
 
 from pixelsb.domain.models import BitChoice, SamplePlane
 from pixelsb.ui import text
@@ -100,6 +100,11 @@ class BitMatrix(QWidget):
                 )
                 self._layout.addWidget(box, row, column)
                 self._boxes[(plane.name, bit)] = box
+        # Spread the bit columns over whatever width the panel gives the grid;
+        # the channel-label column keeps its own width.
+        self._layout.setColumnStretch(0, 0)
+        for column in range(1, max_depth + 1):
+            self._layout.setColumnStretch(column, 1)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         # Swallow clicks on empty grid cells so they do not reach the parent.
@@ -136,6 +141,8 @@ def _members(plane: SamplePlane, bits: range, chosen: frozenset[BitChoice] | Non
 def _header_box(label: str) -> QCheckBox:
     box = QCheckBox(label)
     box.setObjectName(HEADER_OBJECT)
+    # Fixed, so the label column stays narrow while the bit columns spread.
+    box.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
     return box
 
 
