@@ -7,7 +7,7 @@ from pytestqt.qtbot import QtBot
 from pixelsb.domain.detect import Detection, detect_patterns
 from pixelsb.domain.extract import format_extract
 from pixelsb.domain.models import ExtractEncoding
-from pixelsb.ui.extract_view import ExtractView, _row_span
+from pixelsb.ui.extract_view import ExtractView, _row_spans
 
 _PNG = b"\x89PNG\r\n\x1a\n"
 
@@ -81,9 +81,9 @@ def test_highlights_survive_a_search_that_keeps_the_row(qtbot: QtBot) -> None:
 )
 def test_spans_map_stream_offsets_onto_dump_rows(offset: int, row: int, column: int) -> None:
     rows = tuple(format_extract(b"\x00" * 64))
-    assert _row_span(rows, Detection(offset, "x", 1)) == (row, column, 1, False)
+    assert _row_spans(rows, (Detection(offset, "x", 1),)) == [(row, column, 1, False)]
 
 
 def test_a_span_past_the_rows_has_nothing(qtbot: QtBot) -> None:
     view = _view(qtbot, b"\x00" * 16)
-    assert _row_span(view._rows, Detection(16, "x", 1)) is None
+    assert _row_spans(view._rows, (Detection(16, "x", 1),)) == []

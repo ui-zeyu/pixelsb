@@ -21,7 +21,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from pixelsb.domain import bytes_text
-from pixelsb.domain.models import RgbArray
+from pixelsb.domain.models import RgbaArray, RgbArray
 
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 _JPEG_SIGNATURE = b"\xff\xd8"
@@ -289,13 +289,16 @@ def _png_residual_findings(data: bytes, pos: int) -> list[Finding]:
     return findings
 
 
-def render_blocks(payloads: Sequence[bytes], header: PngHeader, palette: bytes = b"") -> RgbArray:
+def render_blocks(
+    payloads: Sequence[bytes], header: PngHeader, palette: bytes = b""
+) -> RgbArray | RgbaArray:
     """Render selected block payloads as the pixels they would show.
 
     The payloads are read in file order as one pixel stream: a zlib stream is
     decompressed (raw scanline bytes work too), short streams are padded so a
     half-smuggled image still shows, and the scanlines are reconstructed under
-    the file's own IHDR geometry. Interlaced data is declined.
+    the file's own IHDR geometry. Interlaced data is declined. A color type that
+    carries alpha renders as HxWx4, so a transparent stream stays transparent.
     """
     if header.interlace != 0:
         raise ValueError("interlaced pixel data is not supported")
@@ -313,7 +316,7 @@ def render_blocks(payloads: Sequence[bytes], header: PngHeader, palette: bytes =
         raise ValueError("this color type has no single-stride layout")
     raw = raw[:budget].ljust(budget, b"\x00")
     rows = _unfilter(raw, header.height, stride, header.bytes_per_pixel())
-    return _to_rgb(rows, header, palette)
+    return _to_pixels(rows, header, palette)
 
 
 def _unfilter(raw: bytes, height: int, stride: int, bpp: int) -> NDArray[np.uint8]:
@@ -400,8 +403,8 @@ def _paeth(left: int, up: int, up_left: int) -> int:
     return up if to_up <= to_corner else up_left
 
 
-def _to_rgb(rows: NDArray[np.uint8], header: PngHeader, palette: bytes) -> RgbArray:
-    """Packed scanlines in, an RGB array out; alpha and extra channels drop."""
+def _to_pixels(rows: NDArray[np.uint8], header: PngHeader, palette: bytes) -> RgbArray | RgbaArray:
+    """Packed scanlines in, HxWx3 or HxWx4 bytes out; extra channels drop, alpha stays."""
     width, depth, color = header.width, header.bit_depth, header.color_type
     channels = _CHANNELS[color]
     if depth == 8:
@@ -412,19 +415,26 @@ def _to_rgb(rows: NDArray[np.uint8], header: PngHeader, palette: bytes) -> RgbAr
     else:
         bits = np.unpackbits(rows, axis=1)[:, : width * channels]
         pixels = bits.reshape(header.height, width, channels) * (255 // (2**depth - 1))
-    if color == 0:
-        rgb = np.repeat(pixels, 3, axis=2)
-    elif color == 2:
-        rgb = pixels[..., :3]
-    elif color == 3:
-        entries = np.frombuffer(palette, np.uint8).reshape(-1, 3)
-        indexes = np.clip(pixels[..., 0], 0, max(len(entries) - 1, 0))
-        rgb = entries[indexes] if len(entries) else np.zeros((header.height, width, 3), np.uint8)
-    elif color == 4:
-        rgb = np.repeat(pixels[..., :1], 3, axis=2)
-    else:
-        rgb = pixels[..., :3]
-    return np.ascontiguousarray(rgb.astype(np.uint8))
+    match color:
+        case 0:  # gray
+            return _bytes(np.repeat(pixels, 3, axis=2))
+        case 2:  # RGB
+            return _bytes(pixels[..., :3])
+        case 3:  # palette entries, which carry no alpha of their own
+            entries = np.frombuffer(palette, np.uint8).reshape(-1, 3)
+            if not len(entries):
+                return _bytes(np.zeros((header.height, width, 3), np.uint8))
+            indexes = np.clip(pixels[..., 0], 0, len(entries) - 1)
+            return _bytes(entries[indexes])
+        case 4:  # gray + alpha
+            gray = np.repeat(pixels[..., :1], 3, axis=2)
+            return _bytes(np.concatenate([gray, pixels[..., -1:]], axis=2))
+        case _:  # RGBA
+            return _bytes(np.concatenate([pixels[..., :3], pixels[..., -1:]], axis=2))
+
+
+def _bytes(pixels: NDArray[np.uint8]) -> RgbArray | RgbaArray:
+    return np.ascontiguousarray(pixels.astype(np.uint8))
 
 
 def _scan_jpeg(data: bytes) -> ContainerReport:

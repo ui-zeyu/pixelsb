@@ -355,7 +355,7 @@ def test_rendering_a_file_matches_what_the_writer_put_in(tmp_path: Path, mode: s
     kinds = {raw[row * (stride + 1)] for row in range(report.header.height)}
     assert len(kinds) >= 3  # the case is worth running only if the filters differ
     source = np.asarray(samples).reshape(report.header.height, report.header.width, channels)
-    expected = np.repeat(source, 3, axis=2) if channels == 1 else source[..., :3]
+    expected = np.repeat(source, 3, axis=2) if channels == 1 else source
     assert np.array_equal(render_blocks(payloads, report.header, report.palette), expected)
 
 

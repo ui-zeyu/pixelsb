@@ -23,8 +23,14 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from pixelsb.domain.models import BitChoice, LoadedImage, SampleArray, SamplePlane
-from pixelsb.domain.selection import bits_for
+from pixelsb.domain.models import (
+    BitChoice,
+    IndexArray,
+    Raster,
+    SampleArray,
+    SamplePlane,
+)
+from pixelsb.domain.selection import bits_for, mask_of
 
 type Value = NDArray[Any]
 type FieldEnv = dict[str, Value]
@@ -151,19 +157,15 @@ class Filter:
     evaluator: Evaluator
     fields: frozenset[str]
 
-    def evaluate(
-        self,
-        image: LoadedImage,
-        chosen: frozenset[BitChoice] | None,
-    ) -> NDArray[np.bool_]:
+    def evaluate(self, raster: Raster) -> NDArray[np.bool_]:
         """Return an HxW boolean mask; expressions over coordinates alone broadcast."""
-        values = _field_values(image, chosen, self.fields)
+        values = _field_values(raster, self.fields)
         try:
             with np.errstate(all="ignore"):
                 result = self.evaluator(values)
             if result.dtype != np.bool_:
                 result = result != 0
-            return np.broadcast_to(result, (image.height, image.width))
+            return np.broadcast_to(result, (raster.height, raster.width))
         except (OverflowError, ValueError) as exc:
             # A number too wide for the field it meets, or operands that will not
             # broadcast: the expression is at fault, so it is reported as such.
@@ -417,16 +419,18 @@ def _compile_compare(ops: list[ast.cmpop], operands: list[Evaluator]) -> Evaluat
 
 
 def _field_values(
-    image: LoadedImage,
-    chosen: frozenset[BitChoice] | None,
+    raster: Raster,
     wanted: frozenset[str],
 ) -> FieldEnv:
-    """The environment for one evaluation, holding only the fields ``wanted`` names."""
-    height, width = image.height, image.width
-    left = np.arange(width, dtype=np.uint32)[None, :]
-    top = np.arange(height, dtype=np.uint32)[:, None]
+    """The environment for one evaluation, holding only the fields ``wanted`` names.
+
+    The coordinates are the pixels' own, so a cropped raster's ``left`` and ``top``
+    name the source columns and rows its cells come from, not their places in it.
+    """
+    left = _axis(raster.columns, raster.width)[None, :]
+    top = _axis(raster.rows, raster.height)[:, None]
     # A pixel occupies [left, right) x [top, bottom), so its far edges are +1.
-    # The coordinates broadcast against the image, so they cost no image memory.
+    # The coordinates broadcast against the raster, so they cost no image memory.
     edges: FieldEnv = {
         "left": left,
         "top": top,
@@ -434,20 +438,25 @@ def _field_values(
         "bottom": top + np.uint32(1),
     }
     values: FieldEnv = {name: array for name, array in edges.items() if name in wanted}
-    for plane in image.planes:
+    for plane in raster.planes:
         selection_key = _value_key(plane.name, _BITS)
         bits = _wanted_bits(wanted, plane.name)
         if plane.name not in wanted and selection_key not in wanted and not bits:
             continue
         # One copy of the channel serves the stored value and every bit of it.
-        stored = _stored_values(image.samples, plane)
+        stored = _stored_values(raster.samples, plane)
         if plane.name in wanted:
             values[plane.name] = stored
         if selection_key in wanted:
-            values[selection_key] = _selected_values(stored, plane.name, chosen)
+            values[selection_key] = _selected_values(stored, plane.name, raster.selection)
         for bit in bits:
             values[_value_key(plane.name, str(bit))] = (stored >> np.uint32(bit)) & np.uint32(1)
     return values
+
+
+def _axis(index: IndexArray | None, size: int) -> NDArray[np.uint32]:
+    """Source coordinates along one axis: a cropped raster's own, else 0..size-1."""
+    return np.arange(size, dtype=np.uint32) if index is None else index.astype(np.uint32)
 
 
 def _wanted_bits(wanted: frozenset[str], plane: str) -> tuple[int, ...]:
@@ -470,14 +479,12 @@ def _stored_values(samples: SampleArray, plane: SamplePlane) -> Value:
 def _selected_values(
     channel: Value,
     plane: str,
-    chosen: frozenset[BitChoice] | None,
+    chosen: frozenset[BitChoice],
 ) -> Value:
     """The channel masked onto the selected bits; no selected bit reads as 0."""
-    if chosen is None:
-        return channel
     bits = bits_for(chosen, plane)
     if not bits:
         return np.zeros(channel.shape, dtype=np.uint32)
     if len(bits) == 1:
         return (channel >> np.uint32(bits[0])) & np.uint32(1)
-    return channel & np.uint32(sum(1 << bit for bit in bits))
+    return channel & np.uint32(mask_of(bits))

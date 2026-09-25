@@ -1,46 +1,25 @@
-"""Bit planes and preview compositing."""
-
-from dataclasses import dataclass
+"""Bit planes and the picture the selected ones compose."""
 
 import numpy as np
 from numpy.typing import NDArray
 
 from pixelsb.domain.models import (
-    BitChoice,
-    LoadedImage,
+    COLOR_SLOTS,
+    ChannelArray,
+    IndexArray,
+    Raster,
+    RgbaArray,
     RgbArray,
     SampleArray,
     SamplePlane,
     plane_named,
 )
-from pixelsb.domain.selection import bits_for, effective_selection
-
-type IndexArray = NDArray[np.intp]
-type ChannelArray = NDArray[np.uint8]
+from pixelsb.domain.selection import bits_for, mask_of
 
 _CHECKER_DARK = 232
 _CHECKER_LIGHT = 255
-# Where a plane's bytes land in the rendered image.
-_COLOR_SLOTS = ("R", "G", "B")
+# A gray plane standing in for the whole image, in the order they are tried.
 _GRAY_SLOTS = ("L", "Index")
-
-
-@dataclass(frozen=True, slots=True)
-class RenderRequest:
-    """One render: which bits of which planes, over which pixels.
-
-    ``rows`` and ``columns`` are the source indices when the render is of a
-    gathered sub-block rather than the whole image; the checkerboard pattern
-    needs them to keep its phase.
-    """
-
-    samples: SampleArray
-    planes: tuple[SamplePlane, ...]
-    chosen: frozenset[BitChoice]
-    height: int
-    width: int
-    rows: IndexArray | None = None
-    columns: IndexArray | None = None
 
 
 def bit_plane(
@@ -56,6 +35,31 @@ def bit_plane(
     channel = samples[:, :, plane.index]
     selected = ((channel >> np.uint16(bit)) & np.uint16(1)).astype(np.uint8)
     return selected * np.uint8(255)
+
+
+def render_raster(raster: Raster) -> RgbArray:
+    """Compose the selected bits into the RGB picture the canvas paints.
+
+    Transparency is painted as a checkerboard, which is a viewing aid: the file a
+    dump is saved to keeps the alpha channel instead (:func:`render_export`).
+    """
+    painted, alpha = _painted(raster)
+    if alpha is None:
+        return painted
+    return composite_on_checkerboard(
+        np.dstack([painted, alpha]), rows=raster.rows, columns=raster.columns
+    )
+
+
+def render_export(raster: Raster) -> RgbArray | RgbaArray:
+    """The composed picture as a saved file holds it: alpha kept, no checkerboard.
+
+    The same rule the region dimming follows — what is only there to look at is
+    not written into the file — so a picture whose selection carries an alpha
+    channel is written with four channels and stays transparent.
+    """
+    painted, alpha = _painted(raster)
+    return painted if alpha is None else np.dstack([painted, alpha])
 
 
 def composite_on_checkerboard(
@@ -88,93 +92,45 @@ def composite_on_checkerboard(
     return mixed.astype(np.uint8)
 
 
-def render_rgb(
-    image: LoadedImage,
-    selection: frozenset[BitChoice] | None,
-) -> RgbArray:
-    """Selected bits keep their original channel and weight. One bit renders as a bitmap."""
-    return _render(
-        RenderRequest(
-            samples=image.samples,
-            planes=image.planes,
-            chosen=effective_selection(image, selection),
-            height=image.height,
-            width=image.width,
-        )
-    )
-
-
-def render_rgb_at(
-    image: LoadedImage,
-    selection: frozenset[BitChoice] | None,
-    ys: IndexArray,
-    xs: IndexArray,
-) -> RgbArray:
-    """Render only the pixels at the given row/column indices.
-
-    Compacted views need a fraction of the pixels — gathering the samples first
-    keeps the bit-plane work proportional to the view, not the image.
-    """
-    return _render(
-        RenderRequest(
-            samples=image.samples[np.ix_(ys, xs)],
-            planes=image.planes,
-            chosen=effective_selection(image, selection),
-            height=ys.size,
-            width=xs.size,
-            rows=ys,
-            columns=xs,
-        )
-    )
-
-
-def _render(request: RenderRequest) -> RgbArray:
-    if not request.chosen:
-        return np.zeros((request.height, request.width, 3), dtype=np.uint8)
-    if len(request.chosen) == 1:
-        choice = next(iter(request.chosen))
-        gray = bit_plane(request.samples, plane_named(request.planes, choice.plane), choice.bit)
-        return np.stack([gray, gray, gray], axis=-1)
-    return _compose(request)
-
-
-def _compose(request: RenderRequest) -> RgbArray:
-    """Assemble the channels the selection touches, in plane order.
+def _painted(raster: Raster) -> tuple[RgbArray, ChannelArray | None]:
+    """The color planes the selection paints, and its alpha channel when it has one.
 
     The first group that carries anything paints the picture: the color triplet
     (a channel the selection misses stays black), then a gray plane standing in
     for the whole image, then alpha, which alone reads as gray rather than
-    compositing with itself. Alpha over a painted picture is what the
-    checkerboard shows through instead.
+    compositing with itself. An alpha channel travels back beside the colors, so
+    a caller can either layer it over a checkerboard or keep it in the file.
     """
-    scaled = _scaled_planes(request)
+    chosen = raster.selection
+    if not chosen:
+        return np.zeros((raster.height, raster.width, 3), dtype=np.uint8), None
+    if len(chosen) == 1:
+        choice = next(iter(chosen))
+        gray = bit_plane(raster.samples, plane_named(raster.planes, choice.plane), choice.bit)
+        return np.stack([gray, gray, gray], axis=-1), None
+    scaled = _scaled_planes(raster)
     alpha = scaled.get("A")
-    colors = [scaled.get(slot) for slot in _COLOR_SLOTS]
+    colors = [scaled.get(slot) for slot in COLOR_SLOTS]
     gray = next((scaled[slot] for slot in _GRAY_SLOTS if slot in scaled), None)
     if any(channel is not None for channel in colors):
-        blank = np.zeros((request.height, request.width), dtype=np.uint8)
+        blank = np.zeros((raster.height, raster.width), dtype=np.uint8)
         painted = np.stack([blank if channel is None else channel for channel in colors], axis=-1)
-    elif gray is not None:
+        return painted, alpha
+    if gray is not None:
         # A gray plane stands in for the whole image, as it does on screen.
-        painted = np.stack([gray, gray, gray], axis=-1)
-    elif alpha is not None:
+        return np.stack([gray, gray, gray], axis=-1), alpha
+    if alpha is not None:
         # Alpha alone reads as a gray image rather than compositing with itself.
-        return np.stack([alpha, alpha, alpha], axis=-1)
-    else:
-        return np.zeros((request.height, request.width, 3), dtype=np.uint8)
-    if alpha is None:
-        return painted
-    return composite_on_checkerboard(
-        np.dstack([painted, alpha]), rows=request.rows, columns=request.columns
-    )
+        return np.stack([alpha, alpha, alpha], axis=-1), None
+    return np.zeros((raster.height, raster.width, 3), dtype=np.uint8), None
 
 
-def _scaled_planes(request: RenderRequest) -> dict[str, ChannelArray]:
+def _scaled_planes(raster: Raster) -> dict[str, ChannelArray]:
     """One scaled byte array per plane the selection touches."""
     return {
-        plane.name: _scale_to_byte(*_masked_channel(request.samples[:, :, plane.index], bits))
-        for plane in request.planes
-        if (bits := bits_for(request.chosen, plane.name))
+        plane.name: _scale_to_byte(*_masked_channel(raster.samples[:, :, plane.index], bits))
+        for plane in raster.planes
+        if (bits := bits_for(raster.selection, plane.name))
     }
 
 
@@ -194,7 +150,7 @@ def _masked_channel(
         width = high - low + 1
         run = channel if low == 0 else channel >> np.uint16(low)
         return run & np.uint16((1 << width) - 1), (1 << width) - 1
-    mask = sum(1 << bit for bit in bits)
+    mask = mask_of(bits)
     return channel & np.uint16(mask), mask
 
 

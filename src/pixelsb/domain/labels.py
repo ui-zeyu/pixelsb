@@ -4,18 +4,15 @@ import math
 from functools import cache
 
 import numpy as np
-from numpy.typing import NDArray
 
 from pixelsb.domain.formatting import format_sample
 from pixelsb.domain.models import (
     MIN_ZOOM,
     DisplayFormat,
-    LoadedImage,
-    PixelCoord,
+    Raster,
     SampleArray,
-    ViewerState,
 )
-from pixelsb.domain.selection import bits_for, effective_selection, mask_of
+from pixelsb.domain.selection import bits_for, mask_of
 
 LABEL_PAD = 2
 FONT_FILL = 0.72
@@ -52,42 +49,36 @@ def zoom_required(text: str) -> int:
     return int(max(MIN_ZOOM, by_width, by_height, cap))
 
 
-def pixel_text(state: ViewerState, coord: PixelCoord) -> str:
-    texts = region_texts(state, coord.x, coord.y, coord.x + 1, coord.y + 1)
-    return texts[0] if texts else ""
+def region_texts(
+    raster: Raster,
+    fmt: DisplayFormat,
+    x0: int,
+    y0: int,
+    x1: int,
+    y1: int,
+) -> list[str]:
+    """Labels for a rectangle of the raster's cells, row-major. One line per channel.
 
-
-def region_texts(state: ViewerState, x0: int, y0: int, x1: int, y1: int) -> list[str]:
-    """Labels for a rectangle of pixels, row-major. One line per active channel."""
-    image = state.image
-    if image is None:
-        return []
+    The coordinates are cells, not source pixels: a cropped raster's labels read
+    what it drew, which is the state the canvas paints from.
+    """
     x0 = max(x0, 0)
     y0 = max(y0, 0)
-    x1 = min(x1, image.width)
-    y1 = min(y1, image.height)
+    x1 = min(x1, raster.width)
+    y1 = min(y1, raster.height)
     if x1 - x0 <= 0 or y1 - y0 <= 0:
         return []
-    return _texts(state, image, image.samples[y0:y1, x0:x1])
+    return _texts(raster, fmt, raster.samples[y0:y1, x0:x1])
 
 
-def region_texts_at(state: ViewerState, xs: NDArray[np.intp], ys: NDArray[np.intp]) -> list[str]:
-    """Labels for the pixels at the given source coordinates, row-major."""
-    image = state.image
-    if image is None or xs.size == 0 or ys.size == 0:
-        return []
-    return _texts(state, image, image.samples[ys][:, xs])
-
-
-def _texts(state: ViewerState, image: LoadedImage, region: SampleArray) -> list[str]:
+def _texts(raster: Raster, fmt: DisplayFormat, region: SampleArray) -> list[str]:
     """Rendered labels for one gathered block of pixels, row-major."""
-    chosen = effective_selection(image, state.selection)
-    if not chosen:
+    if not raster.selection:
         return [""] * (region.shape[0] * region.shape[1])
-    active = [plane for plane in image.planes if bits_for(chosen, plane.name)]
+    active = [plane for plane in raster.planes if bits_for(raster.selection, plane.name)]
     joined: list[str] | None = None
     for plane in active:
-        bits = bits_for(chosen, plane.name)
+        bits = bits_for(raster.selection, plane.name)
         channel = region[:, :, plane.index]
         if len(bits) == 1:
             shown = (channel >> np.uint16(bits[0])) & np.uint16(1)
@@ -95,7 +86,7 @@ def _texts(state: ViewerState, image: LoadedImage, region: SampleArray) -> list[
         else:
             shown = channel & np.uint16(mask_of(bits))
             depth = max(bits) + 1
-        table = _format_table(depth, state.value_format)
+        table = _format_table(depth, fmt)
         strings = list(map(table.__getitem__, shown.ravel().tolist()))
         if len(active) > 1:
             name = plane.name + ":"
@@ -115,19 +106,15 @@ def _format_table(depth: int, fmt: DisplayFormat) -> tuple[str, ...]:
     return tuple(format_sample(value, depth, fmt) for value in range(1 << depth))
 
 
-def widest_text(state: ViewerState) -> str:
+def widest_text(raster: Raster, fmt: DisplayFormat) -> str:
     """The longest label the selection can produce, used to fit the font."""
-    image = state.image
-    if image is None:
+    if not raster.selection:
         return ""
-    chosen = effective_selection(image, state.selection)
-    if not chosen:
-        return ""
-    active = [plane for plane in image.planes if bits_for(chosen, plane.name)]
+    active = [plane for plane in raster.planes if bits_for(raster.selection, plane.name)]
     parts: list[str] = []
     for plane in active:
-        shown, depth = _largest_value(bits_for(chosen, plane.name))
-        rendered = format_sample(shown, depth, state.value_format)
+        shown, depth = _largest_value(bits_for(raster.selection, plane.name))
+        rendered = format_sample(shown, depth, fmt)
         parts.append(rendered if len(active) == 1 else f"{plane.name}:{rendered}")
     return "\n".join(parts)
 

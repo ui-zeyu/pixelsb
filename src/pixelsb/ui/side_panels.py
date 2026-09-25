@@ -22,7 +22,7 @@ _RAIL_MARGIN = 6
 class Panel(StrEnum):
     """The pages the rail switches between."""
 
-    BITS = "bits"
+    EXTRACT = "extract"
     INFO = "info"
 
 

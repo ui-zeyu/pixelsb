@@ -11,7 +11,7 @@ from PySide6.QtWidgets import QLabel, QPushButton
 from pytestqt.qtbot import QtBot
 
 from pixelsb.domain.models import LoadedImage
-from pixelsb.io.loading import image_from_rgb, load_image
+from pixelsb.io.loading import image_from_pixels, load_image
 from pixelsb.ui import text
 from pixelsb.ui.info import InfoPanel
 from tests.support import chunk as _chunk
@@ -86,7 +86,7 @@ def test_the_scan_waits_until_the_page_is_seen(qtbot: QtBot, tmp_path: Path) -> 
     assert panel._name.text() == ""  # hidden pages are not read
     panel.show()
     assert panel._name.text() == "case.png"
-    assert panel._path.text() == str(path)
+    assert panel._path.text() == text.breakable(str(path))
     assert panel._facts.text() == text.file_facts(image)
     assert text.INFO_NO_EXIF in _label_texts(panel)
 
@@ -170,17 +170,6 @@ def test_a_fake_idat_warns_and_shows_the_flag(qtbot: QtBot, tmp_path: Path) -> N
     assert "疑似 flag" in panel._hits.text()
 
 
-def test_clicking_a_block_name_renders_its_stream(qtbot: QtBot, tmp_path: Path) -> None:
-    panel = _panel(qtbot, _png(tmp_path))
-    rendered: list[LoadedImage] = []
-    panel.render_requested.connect(rendered.append)
-    panel._on_block_rendered(1, True)  # the IDAT: its stream is the real picture
-    assert len(rendered) == 1
-    image = rendered[0]
-    assert (image.width, image.height) == (2, 2)
-    assert [plane.name for plane in image.planes] == ["R", "G", "B"]
-
-
 def test_a_stream_offers_one_radio_at_its_head(qtbot: QtBot, tmp_path: Path) -> None:
     """Three chunks, one picture: the radio belongs to the stream, not to each chunk."""
     panel = _panel(qtbot, _split_idat_png(tmp_path))
@@ -229,28 +218,13 @@ def test_the_radio_renders_and_the_block_name_dumps(qtbot: QtBot, tmp_path: Path
     assert "块转储 · IHDR" in panel._dump_view._type_label.text()
     panel._radios[2].setChecked(True)  # the fake stream's radio: its pixels render
     assert len(rendered) == 1
+    assert (rendered[0].width, rendered[0].height) == (1, 1)  # the smuggled stream is one pixel
+    assert [plane.name for plane in rendered[0].planes] == ["R", "G", "B"]
     assert panel._canvas_note.text() == text.canvas_note(report.blocks[2], 1)
     assert "块转储 · IHDR" in panel._dump_view._type_label.text()  # the dump stayed put
     assert panel._selected == 0
     assert _is_shown(panel, 2)
     assert not _is_shown(panel, 1)  # the other stream is no longer the one on canvas
-
-
-def test_a_fresh_file_checks_the_stream_it_shows_without_rendering(
-    qtbot: QtBot, tmp_path: Path
-) -> None:
-    """Opening already shows stream 1; saying so must not re-render it."""
-    image = load_image(_split_idat_png(tmp_path))
-    panel = InfoPanel()
-    qtbot.addWidget(panel)
-    panel.show()
-    rendered: list[LoadedImage] = []
-    panel.render_requested.connect(rendered.append)
-    panel.set_image(image)  # the census runs with the spy watching
-    assert rendered == []  # the default check is not a render
-    assert panel._radios[1].isChecked()
-    assert not panel._radios[0].isChecked()
-    assert not panel._radios[3].isChecked()
 
 
 def test_a_failed_render_leaves_the_radio_where_the_canvas_is(qtbot: QtBot, tmp_path: Path) -> None:
@@ -277,7 +251,7 @@ def test_a_render_keeps_the_census_and_the_selection(
     path = _fake_idat_png(tmp_path)
     panel = _panel(qtbot, path)
     panel._on_block_dumped(2)  # the fake IDAT picked for the dump
-    rendered = image_from_rgb(path, np.zeros((1, 1, 3), dtype=np.uint8))
+    rendered = image_from_pixels(path, np.zeros((1, 1, 3), dtype=np.uint8))
     monkeypatch.setattr(
         "pixelsb.ui.info.inspect_container",
         lambda _path: pytest.fail("a render re-scanned the file"),
@@ -300,12 +274,22 @@ def test_clicking_a_smuggled_stream_renders_the_smuggled_bytes(
 
 
 def test_a_fresh_file_marks_the_first_stream_as_shown(qtbot: QtBot, tmp_path: Path) -> None:
-    """The canvas opens on the file itself: the census says so from the start."""
-    panel = _panel(qtbot, _split_idat_png(tmp_path))
+    """The canvas opens on the file itself: the census says so, and renders nothing."""
+    path = _split_idat_png(tmp_path)
+    rendered: list[LoadedImage] = []
+    panel = InfoPanel()
+    qtbot.addWidget(panel)
+    panel.show()
+    panel.render_requested.connect(rendered.append)
+    panel.set_image(load_image(path))  # the census runs with the spy watching
     report = panel._report
     assert report is not None
+    assert rendered == []  # the default check is not a render
+    assert panel._radios[1].isChecked()  # the stream's head, where its radio sits
+    assert not panel._radios[0].isChecked()
+    assert not panel._radios[3].isChecked()
     assert panel._canvas_note.text() == text.canvas_note(report.blocks[1], 2)
-    assert _is_shown(panel, 1)  # the stream's head, where its radio sits
+    assert _is_shown(panel, 1)
     assert not _is_shown(panel, 2)
     assert not _is_shown(panel, 0)
 

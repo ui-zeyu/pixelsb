@@ -2,12 +2,41 @@
 
 from dataclasses import dataclass
 
-from PySide6.QtCore import SignalInstance
-from PySide6.QtWidgets import QButtonGroup, QFrame, QHBoxLayout, QLabel, QPushButton, QWidget
+from PySide6.QtCore import Qt, SignalInstance
+from PySide6.QtWidgets import (
+    QButtonGroup,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLayout,
+    QPushButton,
+    QWidget,
+)
 
 from pixelsb.ui import theme
 
 _SEGMENT_NAMES = ("segmentLeft", "segmentRight")
+
+# Both Enter keys: the main one and the keypad's, wherever one commits.
+RETURN_KEYS = frozenset({Qt.Key.Key_Return, Qt.Key.Key_Enter})
+
+
+def drain(layout: QLayout) -> None:
+    """Empty ``layout`` immediately.
+
+    The widget leaves its parent before the deferred deletion, so nothing stale
+    answers a later search of the widget tree; it is hidden on the way out, so
+    the orphan cannot stand in for a window while it waits to be destroyed.
+    """
+    while (item := layout.takeAt(0)) is not None:
+        widget = item.widget()
+        if widget is not None:
+            widget.hide()
+            widget.setParent(None)
+            widget.deleteLater()
+        inner = item.layout()
+        if inner is not None:
+            drain(inner)
 
 
 def section_title(label: str) -> QLabel:

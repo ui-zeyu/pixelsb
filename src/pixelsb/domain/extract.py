@@ -15,12 +15,12 @@ from pixelsb.domain.models import (
     BitOrder,
     ExtractEncoding,
     ExtractOrder,
-    LoadedImage,
+    Raster,
     SampleArray,
     SamplePlane,
     ScanOrder,
 )
-from pixelsb.domain.selection import bits_for, effective_selection
+from pixelsb.domain.selection import bits_for
 
 DISPLAY_LINES = 4096
 BYTES_PER_ROW = 16
@@ -61,30 +61,24 @@ class ExtractRow:
         return self.text if self.offset is None else self.text[:HEX_WIDTH]
 
 
-def extract_bytes(
-    image: LoadedImage,
-    chosen: frozenset[BitChoice] | None,
-    match: NDArray[np.bool_] | None = None,
-    *,
-    order: ExtractOrder = DEFAULT_ORDER,
-) -> bytes:
-    """Pack the selected bits into bytes, in the requested order.
+def extract_bytes(raster: Raster, order: ExtractOrder = DEFAULT_ORDER) -> bytes:
+    """Pack the raster's bits into bytes, in the requested order.
 
-    The stream walks the pixels in ``order.scan``, each pixel's channels in
-    ``order.planes``, and each channel's selected bits from low to high; every
-    eight bits become a byte, the first of them the high or low end of it.
-    ``match`` (HxW bool) limits the stream to the pixels that pass the display
-    filter; surviving pixels keep their bit order and are re-packed densely.
+    The stream walks the pixels the masks left standing in ``order.scan``, each
+    pixel's channels in ``order.planes``, and each channel's selected bits from
+    low to high; every eight bits become a byte, the first of them the high or
+    low end of it. Pixels the region masks dropped are skipped, and the ones that
+    survive keep their bit order and are re-packed densely.
     """
-    selection = effective_selection(image, chosen)
+    selection = raster.selection
     if not selection:
         return b""
     # Select the surviving pixels first: expanding every bit plane of a large
     # image just to discard most of it is slow and allocation heavy.
-    rows = _pixel_rows(image.samples, match, order.scan)
+    rows = _pixel_rows(raster, order.scan)
     columns = [
         _bit_column(rows, plane.index, bit)
-        for plane in ordered_planes(image.planes, order)
+        for plane in ordered_planes(raster.planes, order)
         for bit in bits_for(selection, plane.name)
     ]
     if not columns:
@@ -137,23 +131,21 @@ def order_choices(
     return tuple(permutations(used))
 
 
-def _pixel_rows(
-    samples: SampleArray,
-    match: NDArray[np.bool_] | None,
-    scan: ScanOrder,
-) -> SampleArray:
+def _pixel_rows(raster: Raster, scan: ScanOrder) -> SampleArray:
     """The pixels to read, in scan order: rows first (XY) or columns first (YZ).
 
-    A transposed view reads the same samples with the axes swapped, and the
-    filter travels with it, so the surviving pixels keep column order. The
-    reshape of that view is the one copy this order costs.
+    A transposed view reads the same cells with the axes swapped, and what the
+    region masks kept travels with it, so the surviving pixels keep column order.
+    The reshape of that view is the one copy this order costs.
     """
+    samples = raster.samples
+    live = raster.live
     if scan is ScanOrder.YZ:
         samples = samples.transpose(1, 0, 2)
-        match = None if match is None else match.T
-    if match is None:
+        live = None if live is None else live.T
+    if live is None:
         return samples.reshape(-1, samples.shape[2])
-    return samples[match]
+    return samples[live]
 
 
 def _bit_column(rows: SampleArray, index: int, bit: int) -> NDArray[np.uint8]:
@@ -193,7 +185,7 @@ def decode_row(row: ExtractRow, encoding: ExtractEncoding) -> str:
         text = bytes_text.as_text(row.data)
     else:
         text = row.data.decode(encoding.value, errors="replace")
-    return "".join(char if char.isprintable() else "." for char in text)
+    return _printable(text)
 
 
 def decode_rows(rows: Sequence[ExtractRow], encoding: ExtractEncoding) -> list[str]:
@@ -229,6 +221,11 @@ def _decode_joined(
         # The lookback only finishes characters the row above already showed.
         incremental.decode(preceding[-_LOOKBACK:])
     text = incremental.decode(row.data)
+    return _printable(text)
+
+
+def _printable(text: str) -> str:
+    """Text as a dump row shows it: everything unprintable becomes a dot."""
     return "".join(char if char.isprintable() else "." for char in text)
 
 

@@ -62,10 +62,24 @@ QLabel {{ background: transparent; color: {TEXT}; }}
 QLabel#muted, QLabel#note, QLabel#zoomLabel, QLabel#sectionTitle {{ color: {TEXT_MUTED}; }}
 QLabel#sectionTitle {{ font-size: 11px; font-weight: 600; }}
 QLabel#note {{ font-size: 11px; }}
+QLabel#note[warn="true"] {{ color: {WARNING}; }}
 QLabel#zoomLabel {{ font-size: 12px; }}
 QLabel#infoName {{ font-size: 13px; font-weight: 600; }}
 QLabel#infoLine {{ font-size: 12px; }}
-QLabel#warnNote {{ color: {WARNING}; font-size: 12px; }}
+QLabel#warnNote, QLabel#detailWarn {{ color: {WARNING}; font-size: 12px; }}
+QLabel#detailWarn {{ font-size: 11px; }}
+QLabel#layerName {{ font-size: 12px; }}
+QLabel#layerDetail {{ color: {TEXT_MUTED}; font-size: 11px; }}
+QLabel#layerName[off="true"], QLabel#layerDetail[off="true"] {{ color: {TEXT_DISABLED}; }}
+
+QFrame#layerRow {{
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+}}
+QFrame#layerRow:hover {{ background: {HOVER}; }}
+QFrame#layerRow[selected="true"] {{ background: {HOVER}; border-color: {ACCENT}; }}
+QFrame#layerRow[off="true"] {{ background: {FIELD}; }}
 
 QPushButton, QComboBox {{
     background: {SURFACE};
@@ -96,6 +110,18 @@ QPushButton#blockName[dumped="true"] {{ background: {HOVER}; border-color: {ACCE
 QPushButton#ghost {{ border: none; background: transparent; color: {TEXT}; padding: 2px 8px; }}
 QPushButton#ghost:hover {{ background: {HOVER}; }}
 QPushButton#ghost:pressed {{ background: {PRESSED}; }}
+QToolButton#ghostButton {{
+    border: none;
+    background: transparent;
+    color: {TEXT};
+    font-size: 14px;
+    padding: 0 6px;
+    border-radius: 6px;
+}}
+QToolButton#ghostButton::menu-indicator {{ image: none; }}
+QToolButton#ghostButton:hover {{ background: {HOVER}; color: {ACCENT}; }}
+QToolButton#ghostButton:pressed {{ background: {PRESSED}; }}
+QToolButton#ghostButton:disabled {{ color: {TEXT_DISABLED}; }}
 QPushButton#stepper {{
     border: none;
     background: transparent;
@@ -165,12 +191,20 @@ QScrollArea#panelArea, QScrollArea#panelArea > QWidget > QWidget {{
     border: none;
     border-left: 1px solid {HAIRLINE};
 }}
+QScrollArea#gridArea, QScrollArea#gridArea > QWidget > QWidget {{
+    background: transparent;
+    border: none;
+}}
 QScrollArea#dumpArea, QScrollArea#dumpArea > QWidget > QWidget {{
     background: {SURFACE};
     border: none;
 }}
-QFrame#sidePanel {{ background: {SURFACE}; border-right: 1px solid {HAIRLINE}; }}
 QFrame#sideRail {{ background: {SURFACE}; border-left: 1px solid {HAIRLINE}; }}
+QScrollArea#layerArea, QScrollArea#layerArea > QWidget > QWidget {{
+    background: {SURFACE};
+    border: none;
+    border-right: 1px solid {HAIRLINE};
+}}
 QToolButton#railButton {{
     border: none;
     border-radius: 6px;
@@ -311,6 +345,13 @@ def _paint_partial(painter: QPainter, box: QRectF, *, enabled: bool) -> None:
 def _inside(box: QRectF, x: float, y: float) -> QPointF:
     """A point in ``box``, given as fractions of its width and height."""
     return QPointF(box.x() + box.width() * x, box.y() + box.height() * y)
+
+
+def repolish(widget: QWidget) -> None:
+    """Make the stylesheet see a property or object name just set on ``widget``."""
+    style = widget.style()
+    style.unpolish(widget)
+    style.polish(widget)
 
 
 def apply_theme(application: QApplication) -> None:

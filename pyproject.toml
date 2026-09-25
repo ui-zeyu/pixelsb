@@ -1,6 +1,6 @@
 [project]
 name = "pixelsb"
-version = "0.7.0"
+version = "0.8.0"
 description = "像素级图像查看器，用于查看通道数值、位平面和位组合。"
 readme = "README.md"
 authors = [
@@ -45,11 +45,14 @@ select = [
 [tool.ruff.lint.per-file-ignores]
 "src/pixelsb/ui/**/*.py" = ["N802"]
 "src/pixelsb/ui/text.py" = ["N802", "RUF001"]
+"src/pixelsb/domain/commands.py" = ["RUF001"]
 "src/pixelsb/domain/extract.py" = ["RUF001"]
 "src/pixelsb/domain/predicate.py" = ["RUF001"]
 "tests/test_extract.py" = ["RUF001"]
 "tests/test_readout.py" = ["RUF001"]
-"tests/test_inspector.py" = ["RUF001"]
+"tests/test_commands.py" = ["RUF001"]
+"tests/test_extract_panel.py" = ["RUF001"]
+"tests/test_layers_panel.py" = ["RUF001"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["pixelsb", "tests"]

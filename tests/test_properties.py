@@ -1,29 +1,35 @@
-"""Property tests: the compiler and the renderers against naive references."""
+"""Property tests: the compiler, the stack, and the renderers against naive references."""
 
 import numpy as np
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
+from numpy.typing import NDArray
 
 from pixelsb.domain.extract import extract_bytes
 from pixelsb.domain.geometry import SLIDER_STEPS, slider_position, slider_zoom
-from pixelsb.domain.match_view import match_span, match_view
 from pixelsb.domain.models import (
     MAX_ZOOM,
     BitChoice,
     BitOrder,
+    BitsMask,
+    CropMask,
     ExtractOrder,
     LoadedImage,
+    Raster,
     ScanOrder,
 )
 from pixelsb.domain.predicate import PredicateError, compile_filter
-from pixelsb.domain.samples import render_rgb
-from tests.support import make_image, planes_rgb
+from pixelsb.domain.samples import render_raster
+from pixelsb.domain.selection import all_bits
+from pixelsb.domain.stack import apply_mask, match_span
+from tests.support import make_image, planes_rgb, raster
 
 _BITS = st.sets(st.integers(min_value=0, max_value=7), min_size=1, max_size=8)
 _COORDS = st.integers(min_value=0, max_value=8)
 _STEPS = st.integers(min_value=1, max_value=6)
 _SIZES = st.integers(min_value=1, max_value=6)
+_PATTERNS = st.integers(min_value=0, max_value=0xFFFF)
 
 
 def _image(width: int, height: int, seed: int = 0) -> LoadedImage:
@@ -31,8 +37,48 @@ def _image(width: int, height: int, seed: int = 0) -> LoadedImage:
     return make_image(rng.integers(0, 256, size=(height, width, 3)).astype(np.uint16), planes_rgb())
 
 
-def _mask(expression: str, image: LoadedImage) -> np.ndarray:
-    return compile_filter(expression, image.planes).evaluate(image, None)
+def _bits_of(image: LoadedImage, bits: set[int]) -> frozenset[BitChoice]:
+    return frozenset(BitChoice(plane.name, bit) for plane in image.planes for bit in bits)
+
+
+def _selected(image: LoadedImage, bits: set[int]) -> Raster:
+    """The raster that image makes with those bits of every channel selected."""
+    return raster(image, BitsMask(_bits_of(image, bits)))
+
+
+def _whole_channel(image: LoadedImage, name: str) -> Raster:
+    """The raster that image makes with all eight bits of one channel selected."""
+    return raster(image, BitsMask(frozenset(BitChoice(name, bit) for bit in range(8))))
+
+
+def _select_in(raster: Raster, bits: set[int]) -> Raster:
+    """That raster with those bits of every channel selected instead."""
+    chosen = frozenset(BitChoice(plane.name, bit) for plane in raster.planes for bit in bits)
+    return apply_mask(raster, BitsMask(chosen))
+
+
+def _marked(image: LoadedImage, live: NDArray[np.bool_]) -> Raster:
+    """A raster of that image with those pixels standing as the ones that survived."""
+    return Raster(
+        samples=image.samples,
+        planes=image.planes,
+        selection=all_bits(image.planes),
+        live=live,
+    )
+
+
+def _pattern(side: int, pattern: int) -> NDArray[np.bool_]:
+    """The 4x4 (or ``side``-square) bit pattern an integer spells out."""
+    return np.array(
+        [
+            [bool((pattern | 1) >> (row * side + column) & 1) for column in range(side)]
+            for row in range(side)
+        ]
+    )
+
+
+def _mask(expression: str, image: LoadedImage) -> NDArray[np.bool_]:
+    return compile_filter(expression, image.planes).evaluate(raster(image))
 
 
 @given(width=_SIZES, height=_SIZES, x=_COORDS, y=_COORDS, step_x=_STEPS, step_y=_STEPS)
@@ -99,7 +145,6 @@ def test_a_bit_field_is_that_bit_of_the_stored_channel(bit: int) -> None:
 def test_the_render_is_the_divide_reference(bits: set[int]) -> None:
     """Whatever the selected bits, scaling them to bytes goes by the exact field."""
     image = _image(5, 4, seed=11)
-    chosen = frozenset(BitChoice(name, bit) for name in ("R", "G", "B") for bit in bits)
     field = sum(1 << bit for bit in bits)
     expected = np.stack(
         [
@@ -108,13 +153,12 @@ def test_the_render_is_the_divide_reference(bits: set[int]) -> None:
         ],
         axis=-1,
     )
-    assert np.array_equal(render_rgb(image, chosen), expected)
+    assert np.array_equal(render_raster(_selected(image, bits)), expected)
 
 
 @given(bits=_BITS)
 def test_the_extract_stream_packs_the_selected_bits_msb_first(bits: set[int]) -> None:
     image = _image(3, 2, seed=5)
-    chosen = frozenset(BitChoice(name, bit) for name in ("R", "G", "B") for bit in bits)
     stream = [
         (int(image.samples[row, column, plane.index]) >> bit) & 1
         for row in range(image.height)
@@ -123,32 +167,29 @@ def test_the_extract_stream_packs_the_selected_bits_msb_first(bits: set[int]) ->
         for bit in range(8)
         if bit in bits
     ]
-    assert extract_bytes(image, chosen) == np.packbits(stream).tobytes()
+    assert extract_bytes(_selected(image, bits)) == np.packbits(stream).tobytes()
 
 
-@given(pattern=st.integers(min_value=0, max_value=0xFFFF))
-def test_a_compacted_view_is_the_span_of_the_match(pattern: int) -> None:
+@given(pattern=_PATTERNS)
+def test_cropping_crops_to_the_rows_and_columns_its_pixels_touch(pattern: int) -> None:
     side = 4
-    # Bit zero is always set, so the view always has something to show.
-    match = np.array(
-        [
-            [bool((pattern | 1) >> (row * side + column) & 1) for column in range(side)]
-            for row in range(side)
-        ]
-    )
-    span = match_span(match)
+    live = _pattern(side, pattern)  # its first bit is always set, so something survives
+    cropped = apply_mask(_marked(_image(side, side), live), CropMask())
+    span = match_span(live)
     assert span is not None
-    ys, xs = span
-    view = match_view(np.zeros((ys.size, xs.size, 3), dtype=np.uint8), match, ys, xs, (1, 2, 3))
-    # Only the rows and columns the match touches are in the view at all.
-    assert view.xs.tolist() == [column for column in range(side) if match[:, column].any()]
-    assert view.ys.tolist() == [row for row in range(side) if match[row, :].any()]
-    for dy in range(view.height):
-        for dx in range(view.width):
-            coord = view.source_at(dx, dy)
-            # Each cell is its own source pixel, and carries that pixel's bit.
-            assert view.display_of(coord) == (dx, dy)
-            assert bool(view.match[dy, dx]) == bool(match[coord.y, coord.x])
+    rows, columns = span
+    assert cropped.rows is not None
+    assert cropped.columns is not None
+    assert cropped.rows.tolist() == rows.tolist()
+    assert cropped.columns.tolist() == columns.tolist()
+    mask = cropped.live
+    assert mask is not None
+    for dy in range(cropped.height):
+        for dx in range(cropped.width):
+            coord = cropped.source_at(dx, dy)
+            # Every cell is its own source pixel; which ones take part is `live`.
+            assert cropped.cell_of(coord) == (dx, dy)
+            assert bool(mask[dy, dx]) == bool(live[coord.y, coord.x])
 
 
 @given(zoom=st.integers(min_value=1, max_value=int(MAX_ZOOM)))
@@ -156,10 +197,6 @@ def test_the_slider_round_trips_every_whole_zoom(zoom: int) -> None:
     position = slider_position(zoom)
     assert 0 <= position <= SLIDER_STEPS
     assert slider_zoom(position) == zoom
-
-
-def _chosen(image: LoadedImage, bits: set[int]) -> frozenset[BitChoice]:
-    return frozenset(BitChoice(plane.name, bit) for plane in image.planes for bit in bits)
 
 
 def _transposed(image: LoadedImage) -> LoadedImage:
@@ -172,24 +209,19 @@ def test_the_column_order_is_the_transposed_image_read_by_rows(
 ) -> None:
     image = _image(width, height, seed=seed)
     columns = ExtractOrder(scan=ScanOrder.YZ)
-    assert extract_bytes(image, _chosen(image, bits), order=columns) == extract_bytes(
-        _transposed(image), _chosen(image, bits)
+    assert extract_bytes(_selected(image, bits), columns) == extract_bytes(
+        _selected(_transposed(image), bits)
     )
 
 
-@given(pattern=st.integers(min_value=0, max_value=0xFFFF), bits=_BITS)
-def test_the_column_order_carries_the_filter_along(pattern: int, bits: set[int]) -> None:
+@given(pattern=_PATTERNS, bits=_BITS)
+def test_the_column_order_carries_the_live_mask_along(pattern: int, bits: set[int]) -> None:
     side = 4
     image = _image(side, side, seed=7)
-    mask = np.array(
-        [
-            [bool(pattern >> (row * side + column) & 1) for column in range(side)]
-            for row in range(side)
-        ]
-    )
+    live = _pattern(side, pattern)
     columns = ExtractOrder(scan=ScanOrder.YZ)
-    assert extract_bytes(image, _chosen(image, bits), mask, order=columns) == extract_bytes(
-        _transposed(image), _chosen(image, bits), mask.T
+    assert extract_bytes(_select_in(_marked(image, live), bits), columns) == extract_bytes(
+        _select_in(_marked(_transposed(image), live.T), bits)
     )
 
 
@@ -198,23 +230,21 @@ def test_low_first_returns_the_stored_bytes_of_a_whole_channel(
     width: int, height: int, seed: int
 ) -> None:
     image = _image(width, height, seed=seed)
-    chosen = frozenset(BitChoice("R", bit) for bit in range(8))
+    whole_red = _whole_channel(image, "R")
     stored = image.samples[:, :, 0].astype(np.uint8).tobytes()
     low_first = ExtractOrder(bit_order=BitOrder.LSB)
-    assert extract_bytes(image, chosen, order=low_first) == stored
+    assert extract_bytes(whole_red, low_first) == stored
     # High first packs bit 0 into the top of the byte, which mirrors it.
     mirrored = bytes(int(f"{byte:08b}"[::-1], 2) for byte in stored)
-    assert extract_bytes(image, chosen) == mirrored
+    assert extract_bytes(whole_red) == mirrored
 
 
 @given(width=_SIZES, height=_SIZES, seed=st.integers(0, 5))
 def test_a_channel_order_permutes_the_byte_groups_of_every_pixel(
     width: int, height: int, seed: int
 ) -> None:
-    image = _image(width, height, seed=seed)
-    chosen = frozenset(BitChoice(name, bit) for name in ("R", "G", "B") for bit in range(8))
-    every = extract_bytes(image, chosen)
-    reversed_channels = ExtractOrder(planes=("B", "G", "R"))
-    swapped = extract_bytes(image, chosen, order=reversed_channels)
+    every_channel = _selected(_image(width, height, seed=seed), set(range(8)))
+    every = extract_bytes(every_channel)
+    swapped = extract_bytes(every_channel, ExtractOrder(planes=("B", "G", "R")))
     groups = [every[start : start + 3] for start in range(0, len(every), 3)]
     assert swapped == b"".join(group[::-1] for group in groups)

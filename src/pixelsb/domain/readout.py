@@ -4,8 +4,8 @@ from dataclasses import dataclass
 
 from pixelsb.domain.formatting import format_sample
 from pixelsb.domain.labels import widest_text, zoom_required
-from pixelsb.domain.models import BitChoice, LoadedImage, PixelCoord, ViewerState
-from pixelsb.domain.selection import bits_for, effective_selection, shown_channel_value
+from pixelsb.domain.models import BitChoice, DisplayFormat, PixelCoord, Raster, ViewerState
+from pixelsb.domain.selection import active_bits, bits_for, shown_channel_value, whole
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,50 +20,47 @@ class ChannelValue:
 class Readout:
     cursor: PixelCoord
     channels: tuple[ChannelValue, ...]
-    bits: tuple[BitChoice, ...] | None  # None: every bit, that is the original image
+    bits: tuple[BitChoice, ...] | None  # None: every bit of every plane
 
 
-def build_readout(state: ViewerState) -> Readout | None:
-    """The cursor pixel's numbers, or ``None`` while no pixel is under the cursor."""
-    image = state.image
+def build_readout(state: ViewerState, raster: Raster) -> Readout | None:
+    """The cursor pixel's numbers, or ``None`` while the raster does not show it."""
     cursor = state.cursor
-    if image is None or cursor is None:
+    if cursor is None:
         return None
-    chosen = effective_selection(image, state.selection)
+    cell = raster.cell_of(cursor)
+    if cell is None:
+        return None
+    column, row = cell
     return Readout(
         cursor=cursor,
-        channels=_channels(image, cursor, chosen, state),
-        bits=None if state.selection is None else active_bits(image, chosen),
+        channels=_channels(raster, row, column, state.value_format),
+        bits=None
+        if whole(raster.planes, raster.selection)
+        else active_bits(raster.planes, raster.selection),
     )
 
 
-def active_bits(image: LoadedImage, chosen: frozenset[BitChoice]) -> tuple[BitChoice, ...]:
-    """The selected bits in plane order, then low to high."""
-    return tuple(
-        BitChoice(plane.name, bit) for plane in image.planes for bit in bits_for(chosen, plane.name)
-    )
-
-
-def label_zoom(state: ViewerState) -> int | None:
+def label_zoom(state: ViewerState, raster: Raster) -> int | None:
     """The zoom at which pixel numbers become legible, or ``None`` when none do."""
-    text = widest_text(state)
+    text = widest_text(raster, state.value_format)
     if not text:
         return None
     return zoom_required(text)
 
 
 def _channels(
-    image: LoadedImage,
-    cursor: PixelCoord,
-    chosen: frozenset[BitChoice],
-    state: ViewerState,
+    raster: Raster,
+    row: int,
+    column: int,
+    fmt: DisplayFormat,
 ) -> tuple[ChannelValue, ...]:
-    sample = tuple(image.samples[cursor.y, cursor.x].tolist())
-    rows: list[ChannelValue] = []
-    for plane in image.planes:
-        bits = bits_for(chosen, plane.name)
+    sample = tuple(raster.samples[row, column].tolist())
+    values: list[ChannelValue] = []
+    for plane in raster.planes:
+        bits = bits_for(raster.selection, plane.name)
         if not bits:
             continue
         shown, depth = shown_channel_value(sample[plane.index], bits)
-        rows.append(ChannelValue(plane.name, format_sample(shown, depth, state.value_format)))
-    return tuple(rows)
+        values.append(ChannelValue(plane.name, format_sample(shown, depth, fmt)))
+    return tuple(values)

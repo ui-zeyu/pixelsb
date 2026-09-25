@@ -46,20 +46,24 @@ def load_frame(path: Path, index: int) -> LoadedImage:
         raise ImageLoadError(str(exc)) from exc
 
 
-def image_from_rgb(path: Path, rgb: NDArray[np.uint8]) -> LoadedImage:
-    """Wrap rendered pixels as a viewable image, provenance kept as ``path``."""
-    height, width = rgb.shape[:2]
+def image_from_pixels(path: Path, pixels: NDArray[np.uint8]) -> LoadedImage:
+    """Wrap rendered pixels as a viewable image, provenance kept as ``path``.
+
+    Three channels read as RGB, four as RGBA: a stream rendered from a block that
+    carries alpha keeps its transparency rather than dropping it.
+    """
+    if pixels.ndim != 3 or pixels.shape[2] not in (3, 4):
+        raise ValueError("expected an HxWx3 or HxWx4 array")
+    height, width, channels = pixels.shape
+    names = ("R", "G", "B", "A")[:channels]
+    specs = tuple((name, 8, SampleOrigin.RAW) for name in names)
     return LoadedImage(
         path=Path(path),
-        source_mode="RGB",
+        source_mode="RGB" if channels == 3 else "RGBA",
         width=width,
         height=height,
-        samples=_stack(rgb[..., 0], rgb[..., 1], rgb[..., 2]),
-        planes=_planes(
-            ("R", 8, SampleOrigin.RAW),
-            ("G", 8, SampleOrigin.RAW),
-            ("B", 8, SampleOrigin.RAW),
-        ),
+        samples=_stack(*(pixels[..., index] for index in range(channels))),
+        planes=_planes(*specs),
         frame_count=1,
         frame_index=0,
     )
@@ -85,7 +89,7 @@ def _decode(
 ) -> LoadedImage:
     if image.width < 1 or image.height < 1:
         raise ImageLoadError("image has no pixels")
-    samples, planes = _DECODERS.get(image.mode, _converted)(image)
+    samples, planes = _with_color_key(image, _DECODERS.get(image.mode, _converted)(image))
     return LoadedImage(
         path=path,
         source_mode=image.mode,
@@ -178,6 +182,33 @@ def _palette_alpha(image: Image.Image) -> Decoded:
             ("B", 8, SampleOrigin.PALETTE),
             ("A", 8, SampleOrigin.RAW),
         ),
+    )
+
+
+def _with_color_key(image: Image.Image, decoded: Decoded) -> Decoded:
+    """Add the alpha plane a PNG color key implies, for the pictures that lack one.
+
+    A truecolor or gray PNG can name one transparent sample in its tRNS chunk
+    instead of carrying an alpha channel; PIL keeps that key in ``info`` and hands
+    the pixels over without it. Turning it into an alpha plane is what makes such
+    a file behave like the others: transparency on the canvas, ``A`` to select in
+    the bit grid and to extract. Formats that really carry alpha already have one,
+    so they are left exactly as decoded.
+    """
+    samples, planes = decoded
+    key = image.info.get("transparency")
+    if key is None or any(plane.name == "A" for plane in planes):
+        return decoded
+    if isinstance(key, int):
+        transparent = samples[..., 0] == np.uint16(key)
+    elif isinstance(key, tuple) and len(key) == len(planes):
+        transparent = np.all(samples == np.array(key, dtype=np.uint16), axis=-1)
+    else:
+        return decoded  # a key this decoder cannot line up with the samples
+    alpha = np.where(transparent, np.uint16(0), np.uint16(255)).astype(np.uint16)
+    return (
+        np.concatenate([samples, alpha[..., None]], axis=-1),
+        (*planes, SamplePlane("A", len(planes), 8, SampleOrigin.RAW)),
     )
 
 

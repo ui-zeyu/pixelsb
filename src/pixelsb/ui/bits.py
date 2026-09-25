@@ -12,8 +12,9 @@ from PySide6.QtWidgets import QApplication, QCheckBox, QGridLayout, QSizePolicy,
 
 from pixelsb.domain.models import BitChoice, SamplePlane
 from pixelsb.ui import text
+from pixelsb.ui.controls import drain
 
-CELL_SIZE = 20
+CELL_SIZE = 18
 HEADER_OBJECT = "headerBox"
 
 
@@ -22,8 +23,8 @@ class BitMatrix(QWidget):
     channel_toggle = Signal(str, bool)
     column_toggle = Signal(int, bool)
 
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
         self._layout = QGridLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
         self._layout.setHorizontalSpacing(3)
@@ -67,10 +68,7 @@ class BitMatrix(QWidget):
             )
 
     def _rebuild(self, planes: tuple[SamplePlane, ...]) -> None:
-        while item := self._layout.takeAt(0):
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
+        drain(self._layout)
         self._boxes.clear()
         self._row_boxes.clear()
         self._col_boxes.clear()

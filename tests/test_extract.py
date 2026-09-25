@@ -15,35 +15,50 @@ from pixelsb.domain.extract import (
 from pixelsb.domain.models import (
     BitChoice,
     BitOrder,
+    BitsMask,
+    CropMask,
     ExtractEncoding,
     ExtractOrder,
-    LoadedImage,
+    Mask,
+    Raster,
+    RegionMask,
     SampleOrigin,
     SamplePlane,
     ScanOrder,
 )
-from tests.support import make_image, planes_rgb, planes_rgba
+from tests.support import make_image, planes_rgb, planes_rgba, raster
+
+_LSB_PAIR = frozenset({BitChoice("R", 0), BitChoice("G", 0)})
 
 
-def _image(samples: list) -> LoadedImage:
-    return make_image(np.array(samples, dtype=np.uint16), planes_rgb())
+def _board(samples: list, *masks: Mask) -> Raster:
+    """A raster of the RGB image those samples make, under that stack of masks."""
+    return raster(make_image(np.array(samples, dtype=np.uint16), planes_rgb()), *masks)
 
 
-def test_extract_without_selection_uses_every_bit() -> None:
-    image = _image([[[0xA5, 0x0F, 0x3C]]])
-    assert extract_bytes(image, None) == bytes([0xA5, 0xF0, 0x3C])
+def test_extract_without_a_bits_mask_uses_every_bit() -> None:
+    board = _board([[[0xA5, 0x0F, 0x3C]]])
+    assert extract_bytes(board) == bytes([0xA5, 0xF0, 0x3C])
 
 
-def test_extract_only_packs_the_matching_pixels() -> None:
-    image = _image([[[0b0001, 0b0001, 0], [0b0001, 0b0000, 0]]])
-    chosen = frozenset({BitChoice("R", 0), BitChoice("G", 0)})
-    assert extract_bytes(image, chosen) == bytes([0b11100000])
-    first_only = np.array([[True, False]])
-    assert extract_bytes(image, chosen, first_only) == bytes([0b11000000])
-    second_only = np.array([[False, True]])
-    assert extract_bytes(image, chosen, second_only) == bytes([0b10000000])
-    none_match = np.array([[False, False]])
-    assert extract_bytes(image, chosen, none_match) == b""
+def test_extract_only_packs_the_pixels_a_region_mask_kept() -> None:
+    samples = [[[0b0001, 0b0001, 0], [0b0001, 0b0000, 0]]]
+    board = _board(samples, BitsMask(_LSB_PAIR))
+    assert extract_bytes(board) == bytes([0b11100000])
+    first_only = _board(samples, BitsMask(_LSB_PAIR), RegionMask("left == 0"))
+    assert extract_bytes(first_only) == bytes([0b11000000])
+    second_only = _board(samples, BitsMask(_LSB_PAIR), RegionMask("left == 1"))
+    assert extract_bytes(second_only) == bytes([0b10000000])
+    none_match = _board(samples, BitsMask(_LSB_PAIR), RegionMask("left > 100"))
+    assert extract_bytes(none_match) == b""
+
+
+def test_cropping_the_canvas_does_not_change_the_stream() -> None:
+    samples = [[[1, 1, 0], [1, 0, 0]], [[0, 1, 0], [1, 1, 1]]]
+    stack = (BitsMask(_LSB_PAIR), RegionMask("top == 0"))
+    assert extract_bytes(_board(samples, *stack, CropMask())) == extract_bytes(
+        _board(samples, *stack)
+    )
 
 
 def test_format_rows_keep_the_offset_beside_the_text() -> None:
@@ -151,43 +166,47 @@ def test_filter_matches_hex_ascii_or_offset() -> None:
 
 def test_channel_order_reads_the_channels_in_the_sequence_it_names() -> None:
     # One bit per channel, each set to a distinguishable value.
-    image = _image([[[0b0001, 0b0010, 0b0000]]])
     chosen = frozenset({BitChoice("R", 0), BitChoice("G", 1), BitChoice("B", 0)})
-    assert extract_bytes(image, chosen) == bytes([0b11000000])
+    board = _board([[[0b0001, 0b0010, 0b0000]]], BitsMask(chosen))
+    assert extract_bytes(board) == bytes([0b11000000])
     reversed_order = ExtractOrder(planes=("B", "G", "R"))
-    assert extract_bytes(image, chosen, order=reversed_order) == bytes([0b01100000])
+    assert extract_bytes(board, reversed_order) == bytes([0b01100000])
 
 
 def test_scan_order_reads_the_pixels_column_by_column() -> None:
-    image = _image([[[1, 0, 0], [0, 0, 0]], [[1, 0, 0], [0, 0, 0]]])
-    chosen = frozenset({BitChoice("R", 0)})
+    board = _board(
+        [[[1, 0, 0], [0, 0, 0]], [[1, 0, 0], [0, 0, 0]]],
+        BitsMask(frozenset({BitChoice("R", 0)})),
+    )
     # Row by row the first column's two pixels are split by the second column's;
     # column by column they come together.
-    assert extract_bytes(image, chosen) == bytes([0b10100000])
+    assert extract_bytes(board) == bytes([0b10100000])
     columns = ExtractOrder(scan=ScanOrder.YZ)
-    assert extract_bytes(image, chosen, order=columns) == bytes([0b11000000])
+    assert extract_bytes(board, columns) == bytes([0b11000000])
 
 
 def test_bit_order_fills_each_byte_from_the_end_it_names() -> None:
     samples = np.zeros((8, 1, 3), dtype=np.uint16)
     samples[0, 0, 0] = 1  # only the first pixel's lowest red bit is set
-    image = make_image(samples, planes_rgb())
-    chosen = frozenset({BitChoice("R", 0)})
-    assert extract_bytes(image, chosen) == bytes([0b10000000])
+    board = raster(
+        make_image(samples, planes_rgb()),
+        BitsMask(frozenset({BitChoice("R", 0)})),
+    )
+    assert extract_bytes(board) == bytes([0b10000000])
     low_first = ExtractOrder(bit_order=BitOrder.LSB)
-    assert extract_bytes(image, chosen, order=low_first) == bytes([0b00000001])
+    assert extract_bytes(board, low_first) == bytes([0b00000001])
 
 
 def test_the_three_orders_compose_into_one_stream() -> None:
     # A 2x3 image whose pixels carry their own number 0..5 in the low three bits
     # of R, G, B, so every combination of the three orders reads differently.
-    image = _image(
+    board = _board(
         [
             [[0, 0, 0], [1, 0, 0], [0, 1, 0]],
             [[1, 1, 0], [0, 0, 1], [1, 0, 1]],
-        ]
+        ],
+        BitsMask(frozenset({BitChoice(name, 0) for name in ("R", "G", "B")})),
     )
-    chosen = frozenset({BitChoice(name, 0) for name in ("R", "G", "B")})
     cases = {
         (("R", "G", "B"), BitOrder.MSB, ScanOrder.XY): bytes([0x11, 0x63, 0x40]),
         (("R", "G", "B"), BitOrder.LSB, ScanOrder.XY): bytes([0x88, 0xC6, 0x02]),
@@ -200,7 +219,7 @@ def test_the_three_orders_compose_into_one_stream() -> None:
     }
     for (planes, bit_order, scan), packed in cases.items():
         order = ExtractOrder(planes=planes, bit_order=bit_order, scan=scan)
-        assert extract_bytes(image, chosen, order=order) == packed, (planes, bit_order, scan)
+        assert extract_bytes(board, order) == packed, (planes, bit_order, scan)
 
 
 def test_order_choices_offer_every_arrangement_of_three_channels() -> None:

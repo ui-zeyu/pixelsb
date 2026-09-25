@@ -5,7 +5,42 @@ import pytest
 from PIL import Image
 
 from pixelsb.domain.models import SampleOrigin
-from pixelsb.io.loading import ImageLoadError, load_frame, load_image
+from pixelsb.io.loading import ImageLoadError, image_from_pixels, load_frame, load_image
+
+
+def test_image_from_pixels_keeps_a_fourth_channel() -> None:
+    """A stream rendered with alpha becomes an image with an alpha plane."""
+    rgba = np.zeros((2, 3, 4), dtype=np.uint8)
+    rgba[..., 3] = 200
+    image = image_from_pixels(Path("rendered.png"), rgba)
+    assert image.source_mode == "RGBA"
+    assert [plane.name for plane in image.planes] == ["R", "G", "B", "A"]
+    assert image.samples[0, 0].tolist() == [0, 0, 0, 200]
+    plain = image_from_pixels(Path("plain.png"), np.zeros((2, 3, 3), dtype=np.uint8))
+    assert plain.source_mode == "RGB"
+    assert [plane.name for plane in plain.planes] == ["R", "G", "B"]
+    with pytest.raises(ValueError, match="HxWx3 or HxWx4"):
+        image_from_pixels(Path("bad.png"), np.zeros((2, 3, 2), dtype=np.uint8))
+
+
+def test_a_color_key_png_gains_an_alpha_plane(tmp_path: Path) -> None:
+    """A PNG can name one transparent sample instead of carrying a channel."""
+    rgb = np.array([[[10, 20, 30], [1, 2, 3]]], dtype=np.uint8)
+    path = tmp_path / "keyed.png"
+    Image.fromarray(rgb, "RGB").save(path, transparency=(10, 20, 30))
+    image = load_image(path)
+    assert [plane.name for plane in image.planes] == ["R", "G", "B", "A"]
+    assert image.samples[0, 0].tolist() == [10, 20, 30, 0]  # the key is the clear one
+    assert image.samples[0, 1].tolist() == [1, 2, 3, 255]
+
+
+def test_a_gray_color_key_png_gains_an_alpha_plane(tmp_path: Path) -> None:
+    path = tmp_path / "keyed-gray.png"
+    Image.fromarray(np.array([[7, 9]], dtype=np.uint8), "L").save(path, transparency=7)
+    image = load_image(path)
+    assert [plane.name for plane in image.planes] == ["L", "A"]
+    assert image.samples[0, 0].tolist() == [7, 0]
+    assert image.samples[0, 1].tolist() == [9, 255]
 
 
 def test_rgb_and_rgba_keep_raw_channels(tmp_path: Path) -> None:

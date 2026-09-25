@@ -24,18 +24,14 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QGestureEvent, QPinchGesture, QScrollArea, QWidget
 
-from pixelsb.domain.adjust import apply_adjust
 from pixelsb.domain.geometry import GRID_ZOOM, pixel_at
-from pixelsb.domain.labels import (
-    region_texts,
-    region_texts_at,
-    widest_text,
-)
-from pixelsb.domain.match_view import MatchView, match_span, match_view
-from pixelsb.domain.models import LoadedImage, PixelCoord, RgbArray, ViewerState
-from pixelsb.domain.samples import render_rgb, render_rgb_at
+from pixelsb.domain.labels import region_texts, widest_text
+from pixelsb.domain.models import PixelCoord, Raster, RgbArray, ViewerState
+from pixelsb.domain.samples import render_raster
 from pixelsb.ui import text
+from pixelsb.ui.controls import RETURN_KEYS
 from pixelsb.ui.painting import (
+    blank_out,
     bright_map,
     cell_of,
     draw_empty_state,
@@ -64,15 +60,15 @@ _EMPTY_TARGET = QSize(320, 240)
 class _Frame:
     """Everything one viewer state draws, and the keys that say when to rebuild.
 
-    ``qimage`` is what the painter blits, ``rgb`` and ``match`` are what the
-    numeric labels read, and ``target`` is the canvas size the zoom asks for.
-    The empty state has no pixels, so it holds a placeholder size instead.
+    ``qimage`` is what the painter blits, ``rgb`` and ``raster`` are what the
+    numeric labels read and the cursor maps through, and ``target`` is the canvas
+    size the zoom asks for. The empty state has no pixels, so it holds a
+    placeholder size instead.
     """
 
     qimage: QImage | None = None
     rgb: RgbArray | None = None
-    view: MatchView | None = None
-    match: NDArray[np.bool_] | None = None
+    raster: Raster | None = None
     no_match: bool = False
     target: QSize = _EMPTY_TARGET
     content_key: tuple[object, ...] | None = None
@@ -80,15 +76,11 @@ class _Frame:
 
     @property
     def width(self) -> int:
-        if self.view is not None:
-            return self.view.width
-        return 0 if self.rgb is None else self.rgb.shape[1]
+        return 0 if self.raster is None else self.raster.width
 
     @property
     def height(self) -> int:
-        if self.view is not None:
-            return self.view.height
-        return 0 if self.rgb is None else self.rgb.shape[0]
+        return 0 if self.raster is None else self.raster.height
 
     def at_zoom(self, zoom: float) -> QSize:
         """The canvas size these pixels ask for at ``zoom``."""
@@ -142,21 +134,17 @@ class ImageCanvas(QWidget):
         return self._state
 
     def displayed_size(self) -> tuple[int, int] | None:
-        image = self._state.image
         frame = self._frame
-        if image is None or frame.qimage is None:
+        if frame.qimage is None:
             return None
         return frame.width, frame.height
 
-    def displayed_at(self, coord: PixelCoord) -> tuple[int, int] | None:
-        """Where a source pixel sits on the canvas now; ``None`` when hidden."""
-        view = self._frame.view
-        if view is not None:
-            return view.display_of(coord)
-        image = self._state.image
-        if image is None or not 0 <= coord.x < image.width or not 0 <= coord.y < image.height:
+    def displayed_at(self, coord: PixelCoord | None) -> tuple[int, int] | None:
+        """Where a source pixel sits on the canvas now; ``None`` when it is hidden."""
+        raster = self._frame.raster
+        if raster is None or coord is None:
             return None
-        return coord.x, coord.y
+        return raster.cell_of(coord)
 
     def set_mode(self, mode: CanvasMode) -> None:
         """Switch what a plain left drag does, and the cursor that announces it."""
@@ -169,33 +157,13 @@ class ImageCanvas(QWidget):
             return Qt.CursorShape.CrossCursor
         return Qt.CursorShape.OpenHandCursor if self._space_down else Qt.CursorShape.ArrowCursor
 
-    def _compacted_view(
-        self,
-        image: LoadedImage,
-        state: ViewerState,
-        match: NDArray[np.bool_] | None,
-    ) -> MatchView | None:
-        """Render only the matched pixels; ``None`` outside the compacted mode."""
-        if not state.only_matched or match is None or match.shape != (image.height, image.width):
-            return None
-        span = match_span(match)
-        if span is None:
-            return None
-        ys, xs = span
-        rendered = apply_adjust(render_rgb_at(image, state.selection, ys, xs), state.adjust)
-        return match_view(rendered, match, ys, xs, _CANVAS_RGB)
-
-    def set_state(
-        self,
-        state: ViewerState,
-        match: NDArray[np.bool_] | None = None,
-    ) -> None:
+    def set_state(self, state: ViewerState, raster: Raster | None = None) -> None:
         previous = self._state
         if state.image is None or state.image is not previous.image:
             # The region belongs to the image it was dragged on.
             self._marquee_origin = None
             self._marquee = None
-        frame = self._frame_for(state, match)
+        frame = self._frame_for(state, raster)
         if frame.rgb is not self._frame.rgb:
             self._bright = None
         rebuilt = frame.content_key != self._frame.content_key
@@ -212,66 +180,58 @@ class ImageCanvas(QWidget):
         for coord in (previous.cursor, state.cursor):
             self._repaint_pixel(coord, state.zoom)
 
-    def _frame_for(
-        self,
-        state: ViewerState,
-        match: NDArray[np.bool_] | None,
-    ) -> _Frame:
+    def _frame_for(self, state: ViewerState, raster: Raster | None) -> _Frame:
         """The frame for one state, rendering again only when its content moved."""
         image = state.image
-        if image is None:
+        if image is None or raster is None:
             return _Frame()
         # The image object itself is the identity: id() values get recycled
         # after the previous image is freed, which would hit a stale cache.
-        content = (image, state.selection, state.filter_expr, state.only_matched, state.adjust)
-        labels = (state.value_format, state.selection, state.filter_expr, match is not None)
+        content = (image, state.layers)
+        # The format is all that changes the numbers without changing the pixels:
+        # everything else they read follows from the content key.
+        labels = (state.value_format,)
         frame = self._frame
         if content == frame.content_key:
-            # The same pixels: only the zoom, the match, or the numbers changed.
-            return replace(frame, match=match, label_key=labels, target=frame.at_zoom(state.zoom))
-        return self._render_frame(image, state, match, content, labels)
+            # The same pixels: only the zoom, or the numbers drawn over them, moved.
+            return replace(frame, label_key=labels, target=frame.at_zoom(state.zoom))
+        return self._render_frame(state, raster, content, labels)
 
     def _render_frame(
         self,
-        image: LoadedImage,
         state: ViewerState,
-        match: NDArray[np.bool_] | None,
+        raster: Raster,
         content: tuple[object, ...],
         labels: tuple[object, ...],
     ) -> _Frame:
         """Render one state's pixels, at whatever the current zoom asks for."""
-        frame = self._rendered_frame(image, state, match, content, labels)
+        frame = self._rendered_frame(raster, content, labels)
         return replace(frame, target=frame.at_zoom(state.zoom))
 
     def _rendered_frame(
         self,
-        image: LoadedImage,
-        state: ViewerState,
-        match: NDArray[np.bool_] | None,
+        raster: Raster,
         content: tuple[object, ...],
         labels: tuple[object, ...],
     ) -> _Frame:
-        view = self._compacted_view(image, state, match)
-        if view is not None:
-            return _Frame(
-                qimage=qimage_from_rgb(view.rgb),
-                rgb=view.rgb,
-                view=view,
-                match=match,
-                content_key=content,
-                label_key=labels,
-            )
-        if state.only_matched and match is not None and not match.any():
-            return _Frame(match=match, no_match=True, content_key=content, label_key=labels)
-        # A shape-stale match falls back to the plain render rather than fading
-        # pixels it does not describe.
-        rgb = apply_adjust(render_rgb(image, state.selection), state.adjust)
-        if match is not None and match.shape == rgb.shape[:2]:
-            fade_out(rgb, match)
+        """The picture for one raster: its bits composed, and what it left out marked.
+
+        A stack that cropped shows the canvas behind the pixels it dropped, so the
+        picture reads as the ones it kept; one that only filtered fades them
+        instead, which keeps the shape of the image around them.
+        """
+        if raster.width < 1 or raster.height < 1:
+            return _Frame(raster=raster, no_match=True, content_key=content, label_key=labels)
+        rgb = render_raster(raster)
+        if raster.live is not None:
+            if raster.cropped:
+                blank_out(rgb, raster.live, _CANVAS_RGB)
+            else:
+                fade_out(rgb, raster.live)
         return _Frame(
             qimage=qimage_from_rgb(rgb),
             rgb=rgb,
-            match=match,
+            raster=raster,
             content_key=content,
             label_key=labels,
         )
@@ -341,7 +301,7 @@ class ImageCanvas(QWidget):
             painter.drawImage(dest, qimage, source)
         if zoom >= GRID_ZOOM:
             draw_grid(painter, source, zoom)
-        draw_marker(painter, frame.view, self._state.cursor, zoom)
+        draw_marker(painter, self.displayed_at(self._state.cursor), zoom)
         draw_marquee(painter, self._marquee, zoom)
         self._draw_labels(painter, self._state, source, zoom)
 
@@ -354,32 +314,30 @@ class ImageCanvas(QWidget):
     ) -> None:
         frame = self._frame
         rgb = frame.rgb
-        image = state.image
-        font = label_font(widest_text(state), zoom)
-        if font is None or rgb is None or image is None:
+        raster = frame.raster
+        if rgb is None or raster is None:
             return
-        height, width = rgb.shape[:2]
-        # Labels, colors, and the match mask are all clipped to the same bounds,
+        font = label_font(widest_text(raster, state.value_format), zoom)
+        if font is None:
+            return
+        height, width = raster.height, raster.width
+        # Labels, colors, and the live mask are all clipped to the same bounds,
         # so they cannot disagree even if a cached buffer lags behind the state.
         x0 = max(int(source.x()), 0)
         y0 = max(int(source.y()), 0)
-        x1 = min(x0 + int(source.width()), width, image.width)
-        y1 = min(y0 + int(source.height()), height, image.height)
+        x1 = min(x0 + int(source.width()), width)
+        y1 = min(y0 + int(source.height()), height)
         columns = x1 - x0
         rows = y1 - y0
         if columns <= 0 or rows <= 0:
             return
-        view = frame.view
-        if view is None:
-            texts = region_texts(state, x0, y0, x1, y1)
-            match = frame.match
-            if match is not None and match.shape != (height, width):
-                match = None
-        else:
-            texts = region_texts_at(state, view.xs[x0:x1], view.ys[y0:y1])
-            match = view.match
+        texts = region_texts(raster, state.value_format, x0, y0, x1, y1)
+        match = raster.live
         if not any(texts):
             return
+        # A pixel a region mask faded keeps its numbers: the one under the cursor
+        # always shows its label, so the readout and the picture say the same thing.
+        hovered = self.displayed_at(state.cursor)
         if self._bright is None:
             self._bright = bright_map(rgb)
         bright = self._bright[y0:y1, x0:x1]
@@ -395,7 +353,11 @@ class ImageCanvas(QWidget):
                 if not label:
                     continue
                 row, column = cell_of(index, columns)
-                if match is not None and not match[y0 + row, x0 + column]:
+                if (
+                    match is not None
+                    and not match[y0 + row, x0 + column]
+                    and hovered != (x0 + column, y0 + row)
+                ):
                     continue
                 rect = QRectF(
                     (x0 + column) * zoom,
@@ -588,7 +550,7 @@ class ImageCanvas(QWidget):
             event.accept()
             return
         if (
-            event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+            event.key() in RETURN_KEYS
             and self._marquee is not None
             and self._marquee_origin is None
         ):
@@ -620,33 +582,24 @@ class ImageCanvas(QWidget):
         self.hovered.emit(coord.x, coord.y)
 
     def _coord(self, point: QPoint) -> PixelCoord | None:
-        image = self._state.image
-        if image is None:
+        raster = self._frame.raster
+        if raster is None:
             return None
-        view = self._frame.view
-        width = view.width if view is not None else image.width
-        height = view.height if view is not None else image.height
-        cell = pixel_at(point.x(), point.y(), self._state.zoom, width, height)
+        cell = pixel_at(point.x(), point.y(), self._state.zoom, raster.width, raster.height)
         if cell is None:
             return None
-        if view is not None:
-            return view.source_at(cell.x, cell.y)
-        return cell
+        return raster.source_at(cell.x, cell.y)
 
     def _clamped_pixel(self, point: QPoint) -> tuple[int, int] | None:
-        """The pixel under ``point``, clamped into the shown raster."""
-        image = self._state.image
-        if image is None:
+        """The source pixel under ``point``, clamped into the raster on show."""
+        raster = self._frame.raster
+        if raster is None or raster.width < 1 or raster.height < 1:
             return None
-        view = self._frame.view
-        width = view.width if view is not None else image.width
-        height = view.height if view is not None else image.height
         zoom = self._state.zoom
-        x = min(max(int(point.x() / zoom), 0), width - 1)
-        y = min(max(int(point.y() / zoom), 0), height - 1)
-        if view is not None:
-            return int(view.xs[x]), int(view.ys[y])
-        return x, y
+        x = min(max(int(point.x() / zoom), 0), raster.width - 1)
+        y = min(max(int(point.y() / zoom), 0), raster.height - 1)
+        source = raster.source_at(x, y)
+        return source.x, source.y
 
     def _start_marquee(self, point: QPoint) -> None:
         origin = self._clamped_pixel(point)

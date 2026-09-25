@@ -6,7 +6,7 @@ picks up an offset: the gutter and the byte ruler are chrome painted outside the
 document.
 """
 
-from functools import partial
+from bisect import bisect_right
 from math import ceil
 from typing import override
 
@@ -563,9 +563,9 @@ class ExtractView(QWidget):
         return chip
 
     def _reveal(self, detection: Detection) -> None:
-        span = _row_span(self._rows, detection)
-        if span is not None:
-            self.hex_pane.reveal(*span[:3])
+        spans = _row_spans(self._rows, (detection,))
+        if spans:
+            self.hex_pane.reveal(*spans[0][:3])
 
     def set_marks(self, marks: tuple[Detection, ...]) -> None:
         """Static highlight spans of the dump itself, kept beside the finds."""
@@ -574,12 +574,7 @@ class ExtractView(QWidget):
 
     def _apply_highlights(self) -> None:
         """Re-tint the dump: the document resets whenever the rows change."""
-        spans = [
-            span
-            for span in map(partial(_row_span, self._rows), (*self._marks, *self._detections))
-            if span is not None
-        ]
-        self.hex_pane.set_highlights(spans)
+        self.hex_pane.set_highlights(_row_spans(self._rows, (*self._marks, *self._detections)))
 
     def sync_encoding(self, encoding: ExtractEncoding) -> None:
         """Follow the state's encoding without asking for it back."""
@@ -616,22 +611,33 @@ class ExtractView(QWidget):
         return menu
 
 
-def _row_span(
+def _row_spans(
     rows: tuple[ExtractRow, ...],
-    detection: Detection,
-) -> tuple[int, int, int, bool] | None:
-    """Where a detection sits in the rows on screen, filtered rows included.
+    detections: tuple[Detection, ...],
+) -> list[tuple[int, int, int, bool]]:
+    """Where each detection sits in the rows on screen, filtered rows included.
 
     ``(row, byte column, length, flagged)`` against the rows as displayed — a
-    find inside a row the search filtered out simply has no span.
+    find inside a row the search filtered out simply has no span. Rows keep
+    their stream order, so the row a find lands in is one binary search away,
+    however many rows the dump holds.
     """
-    for index, row in enumerate(rows):
-        if row.offset is None:
+    placed = [
+        (index, offset) for index, row in enumerate(rows) if (offset := row.offset) is not None
+    ]
+    offsets = [offset for _index, offset in placed]
+    spans = []
+    for detection in detections:
+        position = bisect_right(offsets, detection.offset) - 1
+        if position < 0:
             continue
-        column = detection.offset - row.offset
-        if 0 <= column < BYTES_PER_ROW:
-            return index, column, min(detection.length, BYTES_PER_ROW - column), detection.flagged
-    return None
+        index, offset = placed[position]
+        column = detection.offset - offset
+        if column < BYTES_PER_ROW:
+            spans.append(
+                (index, column, min(detection.length, BYTES_PER_ROW - column), detection.flagged)
+            )
+    return spans
 
 
 def highlight_format(flagged: bool) -> QTextCharFormat:

@@ -15,8 +15,7 @@ from pixelsb.domain.labels import (
     font_pixel_size,
     label_fits,
 )
-from pixelsb.domain.match_view import MatchView
-from pixelsb.domain.models import PixelCoord, RgbArray
+from pixelsb.domain.models import RgbArray
 from pixelsb.ui import text, theme
 
 # Canvas ink: the cursor marker, its halo, the pixel grid, and the region fill.
@@ -135,9 +134,14 @@ def bright_map(rgb: RgbArray) -> NDArray[np.bool_]:
     return weighted.sum(axis=-1) > _LUMA_THRESHOLD
 
 
-def fade_out(rgb: RgbArray, match: NDArray[np.bool_]) -> None:
-    """Push the pixels that fail the filter toward the canvas color, in place."""
-    rgb[~match] = 255 - (255 - rgb[~match]) // _DIM_KEEP
+def fade_out(rgb: RgbArray, live: NDArray[np.bool_]) -> None:
+    """Push the pixels that are not in the view toward the canvas color, in place."""
+    rgb[~live] = 255 - (255 - rgb[~live]) // _DIM_KEEP
+
+
+def blank_out(rgb: RgbArray, live: NDArray[np.bool_], background: tuple[int, int, int]) -> None:
+    """Show the canvas itself where a cropped stack kept no pixel, in place."""
+    rgb[~live] = background
 
 
 def draw_empty_state(
@@ -166,18 +170,13 @@ def _shifted(rect: QRect, offset: int) -> QRect:
 
 def draw_marker(
     painter: QPainter,
-    view: MatchView | None,
-    coord: PixelCoord | None,
+    cell: tuple[int, int] | None,
     zoom: float,
 ) -> None:
-    if coord is None:
+    """The cursor box on one raster cell; nothing is drawn without a cell."""
+    if cell is None:
         return
-    dx, dy = coord.x, coord.y
-    if view is not None:
-        cell = view.display_of(coord)
-        if cell is None:
-            return
-        dx, dy = cell
+    dx, dy = cell
     rect = QRectF(dx * zoom, dy * zoom, zoom, zoom)
     painter.setBrush(Qt.BrushStyle.NoBrush)
     halo = QPen(_CURSOR_HALO)

@@ -11,7 +11,6 @@ from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
     QLabel,
-    QLayout,
     QLineEdit,
     QPushButton,
     QRadioButton,
@@ -28,9 +27,9 @@ from pixelsb.domain.extract import BYTES_PER_ROW, filter_extract, format_extract
 from pixelsb.domain.models import ExtractEncoding, LoadedImage
 from pixelsb.io.classify import stream_classifier
 from pixelsb.io.inspect import exif_entries, inspect_container
-from pixelsb.io.loading import image_from_rgb
+from pixelsb.io.loading import image_from_pixels
 from pixelsb.ui import text, theme
-from pixelsb.ui.controls import hairline, section_title
+from pixelsb.ui.controls import drain, hairline, section_title
 from pixelsb.ui.extract_view import ExtractView, dump_font
 
 _MAX_BLOCKS = 64  # the census list stops here; huge files still scan in full
@@ -129,7 +128,7 @@ class InfoPanel(QWidget):
         rows.addWidget(self._dump_search)
         rows.addWidget(self._dump)
         self._exif_layout = QVBoxLayout()
-        rows.addWidget(_card(section_title(text.SECTION_EXIF), *_exif_body(self._exif_layout)))
+        rows.addWidget(_card(section_title(text.SECTION_EXIF), _exif_host(self._exif_layout)))
         rows.addStretch(1)
         layout.addWidget(self._form, 1)
         self._form.setVisible(False)
@@ -159,8 +158,8 @@ class InfoPanel(QWidget):
         if image.path == self._scanned_path:
             return  # a block render replaces the canvas image, not the file described here
         self._scanned_path = image.path
-        self._name.setText(image.path.name)
-        self._path.setText(str(image.path))
+        self._name.setText(text.breakable(image.path.name))
+        self._path.setText(text.breakable(str(image.path)))
         self._facts.setText(text.file_facts(image))
         self._planes.setText(text.planes_text(image))
         try:
@@ -199,7 +198,7 @@ class InfoPanel(QWidget):
         return self._dump_view.content_width() + _DUMP_MARGINS
 
     def _show_blocks(self) -> None:
-        _drain(self._blocks_layout)
+        drain(self._blocks_layout)
         self._name_buttons = {}
         self._radios = {}
         report = self._report
@@ -241,7 +240,7 @@ class InfoPanel(QWidget):
                 4,
             )
             self._blocks_layout.addWidget(_preview(block), row, 5)
-        self._name_width(shown)
+        self._name_width()
         # The payload taste fills the right end, so a row reads across the panel.
         self._blocks_layout.setColumnStretch(5, 1)
         hidden = len(report.blocks) - _MAX_BLOCKS
@@ -249,9 +248,9 @@ class InfoPanel(QWidget):
             self._blocks_layout.addWidget(_note(text.more_blocks(hidden)), len(shown), 0, 1, 6)
         self._mark_rendered()
 
-    def _name_width(self, blocks: Sequence[Block]) -> None:
+    def _name_width(self) -> None:
         """One width for every block name, so the column of buttons lines up."""
-        buttons = [self._name_buttons[row] for row in range(len(blocks))]
+        buttons = list(self._name_buttons.values())
         if not buttons:
             return
         widest = max(button.sizeHint().width() for button in buttons)
@@ -276,7 +275,7 @@ class InfoPanel(QWidget):
         block = report.blocks[row]
         payloads = self._stream_payloads(block)
         try:
-            rgb = render_blocks(payloads, report.header, report.palette)
+            pixels = render_blocks(payloads, report.header, report.palette)
         except (ValueError, OverflowError) as exc:
             _restyle(self._canvas_note, "warnNote")
             self._canvas_note.setText(text.render_failed(str(exc)))
@@ -286,7 +285,7 @@ class InfoPanel(QWidget):
         self._canvas_note.setText(text.canvas_note(block, len(payloads)))
         self._canvas_row = row
         self._mark_rendered()
-        self.render_requested.emit(image_from_rgb(image.path, rgb))
+        self.render_requested.emit(image_from_pixels(image.path, pixels))
 
     def _revert_canvas_row(self) -> None:
         """Put the radios back where the canvas really is, after a failed render."""
@@ -304,9 +303,7 @@ class InfoPanel(QWidget):
                 continue
             button.setProperty("shown", shown)
             button.setProperty("dumped", dumped)
-            style = button.style()
-            style.unpolish(button)
-            style.polish(button)
+            theme.repolish(button)
 
     def _stream_payloads(self, block: Block) -> list[bytes]:
         """The block's bytes, or those of every chunk in its stream."""
@@ -366,7 +363,7 @@ class InfoPanel(QWidget):
         return classification.label if classification else ""
 
     def _show_exif(self, entries: tuple[tuple[str, str], ...]) -> None:
-        _drain(self._exif_layout)
+        drain(self._exif_layout)
         if not entries:
             self._exif_layout.addWidget(_note(text.INFO_NO_EXIF))
             return
@@ -376,16 +373,16 @@ class InfoPanel(QWidget):
         table.setVerticalSpacing(4)
         for row, (tag, value) in enumerate(entries):
             table.addWidget(_note(tag), row, 0)
-            table.addWidget(_note(value, name="infoLine"), row, 1)
+            table.addWidget(_note(text.breakable(value), name="infoLine"), row, 1)
         table.setColumnStretch(1, 1)
         self._exif_layout.addLayout(table)
 
 
-def _exif_body(layout: QVBoxLayout) -> tuple[QWidget, ...]:
+def _exif_host(layout: QVBoxLayout) -> QWidget:
     """The EXIF card's inner widget: a host the table is drained into."""
     host = QWidget()
     host.setLayout(layout)
-    return (host,)
+    return host
 
 
 def _card(*widgets: QWidget) -> QFrame:
@@ -400,24 +397,10 @@ def _card(*widgets: QWidget) -> QFrame:
     return card
 
 
-def _drain(layout: QLayout) -> None:
-    """Empty ``layout`` immediately; deleteLater alone would leave ghosts."""
-    while (item := layout.takeAt(0)) is not None:
-        widget = item.widget()
-        if widget is not None:
-            widget.setParent(None)
-            widget.deleteLater()
-        inner = item.layout()
-        if inner is not None:
-            _drain(inner)
-
-
 def _restyle(label: QLabel, name: str) -> None:
     """Swap a label's style object and make the stylesheet see the new name."""
     label.setObjectName(name)
-    style = label.style()
-    style.unpolish(label)
-    style.polish(label)
+    theme.repolish(label)
 
 
 def _radio_rows(blocks: Sequence[Block]) -> set[int]:
@@ -440,7 +423,7 @@ def _radio_rows(blocks: Sequence[Block]) -> set[int]:
 
 def _preview(block: Block) -> QLabel:
     """The block's payload as printable text, at the right end of its row."""
-    label = _note(text.block_preview(block))
+    label = _note(block.preview)
     label.setFont(dump_font())
     # Whatever the panel width leaves is enough: a long taste clips at the right
     # edge rather than wrapping, which would make its row taller than the rest.

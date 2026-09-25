@@ -3,9 +3,17 @@ import pytest
 from numpy.typing import NDArray
 
 from pixelsb.domain import predicate
-from pixelsb.domain.models import BitChoice, LoadedImage, SampleArray, SamplePlane
+from pixelsb.domain.models import (
+    BitChoice,
+    BitsMask,
+    CropMask,
+    LoadedImage,
+    RegionMask,
+    SampleArray,
+    SamplePlane,
+)
 from pixelsb.domain.predicate import Field, PredicateError, compile_filter, field_names
-from tests.support import make_image, planes_rgb
+from tests.support import make_image, planes_rgb, raster
 
 _SAMPLES = np.array(
     [
@@ -21,7 +29,9 @@ def _image() -> LoadedImage:
 
 
 def _match(expression: str, chosen: frozenset[BitChoice] | None = None) -> NDArray[np.bool_]:
-    return compile_filter(expression, planes_rgb()).evaluate(_image(), chosen)
+    """The mask an expression makes of the sample image, over that bit selection."""
+    stack = () if chosen is None else (BitsMask(chosen),)
+    return compile_filter(expression, planes_rgb()).evaluate(raster(_image(), *stack))
 
 
 def test_comparisons_and_logic() -> None:
@@ -35,9 +45,27 @@ def test_arithmetic_and_chained_comparison() -> None:
     assert _match("not (R > 0)").tolist() == [[False, True], [False, True]]
 
 
+def test_boolean_operands_commute_over_the_same_pixels() -> None:
+    """Both operands read the one incoming raster, so the order cannot matter."""
+    forward = _match("r > 0 and b.1")
+    assert forward.tolist() == [[True, False], [True, False]]
+    assert np.array_equal(forward, _match("b.1 and r > 0"))
+    assert np.array_equal(forward, _match("not (not r > 0 or not b.1)"))
+
+
 def test_coordinates_cover_both_axes() -> None:
     assert _match("left == 0 and top == 1").tolist() == [[False, False], [True, False]]
     assert _match("left >= 1").tolist() == [[False, True], [False, True]]
+
+
+def test_coordinates_name_the_source_pixels_a_cropped_raster_came_from() -> None:
+    cropped = raster(_image(), RegionMask("left >= 1"), CropMask())
+    filter_ = compile_filter("left == 1", planes_rgb())
+    assert filter_.evaluate(cropped).tolist() == [[True], [True]]
+    assert compile_filter("left == 0", planes_rgb()).evaluate(cropped).tolist() == [
+        [False],
+        [False],
+    ]
     assert _match("top == 0").tolist() == [[True, True], [False, False]]
 
 

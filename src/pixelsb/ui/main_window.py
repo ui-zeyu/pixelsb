@@ -1,13 +1,10 @@
-"""Main window: toolbar, canvas, inspector, and keyboard shortcuts."""
+"""Main window: the layer panel, the canvas, the extract page, and the shortcuts."""
 
 from collections.abc import Callable
-from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from typing import override
 
-import numpy as np
-from numpy.typing import NDArray
 from PySide6.QtCore import QEvent, QObject, Qt, QTimer
 from PySide6.QtGui import (
     QCloseEvent,
@@ -23,7 +20,6 @@ from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QApplication,
     QButtonGroup,
-    QCheckBox,
     QComboBox,
     QFileDialog,
     QFrame,
@@ -36,7 +32,6 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSlider,
-    QSpinBox,
     QSplitter,
     QStatusBar,
     QTextEdit,
@@ -44,28 +39,35 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from pixelsb.domain.adjust import apply_adjust
+from pixelsb.domain.commands import CommandError, parse, text_of
 from pixelsb.domain.geometry import SLIDER_STEPS, initial_zoom, slider_position, slider_zoom
 from pixelsb.domain.models import (
     MAX_ZOOM,
     MIN_ZOOM,
-    BitChoice,
     BitOrder,
     DisplayFormat,
     ExtractEncoding,
     LoadedImage,
+    Mask,
     PixelCoord,
+    Raster,
+    RegionMask,
     ScanOrder,
-    ViewAdjust,
     ViewerState,
 )
-from pixelsb.domain.predicate import PredicateError, compile_filter
-from pixelsb.domain.samples import render_rgb
-from pixelsb.domain.selection import effective_selection
+from pixelsb.domain.samples import render_export
+from pixelsb.domain.stack import resolve
 from pixelsb.domain.transitions import (
+    add_layer,
+    add_mask_text,
+    bits_position,
+    clear_layers,
     cycle_format,
+    filter_position,
     move_cursor,
+    move_layer,
     open_image,
+    remove_layer,
     select_all_bits,
     select_lsb,
     select_lsb_at,
@@ -77,27 +79,25 @@ from pixelsb.domain.transitions import (
     set_column,
     set_cursor,
     set_extract_encoding,
-    set_filter_expr,
     set_format,
     set_frame,
-    set_only_matched,
+    set_layer_enabled,
+    set_mask_text,
     set_scan_order,
-    set_threshold_level,
     set_zoom,
     step_channel,
     step_focus_bit,
     step_plane,
     toggle_bit,
-    toggle_grayscale,
-    toggle_invert,
-    toggle_threshold,
 )
 from pixelsb.io.loading import ImageLoadError, load_frame, load_image
-from pixelsb.io.writing import save_rgb
+from pixelsb.io.writing import save_image
 from pixelsb.ui import text, theme
 from pixelsb.ui.canvas import CanvasMode, ImageCanvas
+from pixelsb.ui.controls import RETURN_KEYS
+from pixelsb.ui.extract_panel import ExtractPanel
 from pixelsb.ui.info import InfoPanel
-from pixelsb.ui.inspector import Inspector
+from pixelsb.ui.layers import LayerPanel
 from pixelsb.ui.painting import lighten_clear_button
 from pixelsb.ui.side_panels import Panel, SidePanels
 from pixelsb.ui.store import Store, Transition
@@ -108,8 +108,8 @@ type ErrorReporter = Callable[[str], None]
 _FILTER_ERROR_STYLE = f"QLineEdit {{ border: 1px solid {theme.DANGER}; }}"
 _TEXT_INPUTS = (QLineEdit, QAbstractSpinBox, QPlainTextEdit, QTextEdit, QComboBox)
 _CANVAS_MIN_WIDTH = 260
-_LEFT_MIN_WIDTH = 160
-_LEFT_WIDTH = 220
+_LEFT_MIN_WIDTH = 240
+_LEFT_WIDTH = 288
 _NUDGE_STEP = 8  # a shift-arrow moves this many pixels instead of one
 _FORMAT_ITEMS = tuple(
     (fmt.value, label)
@@ -133,22 +133,8 @@ _COMMAND_MODIFIERS = (
     | Qt.KeyboardModifier.MetaModifier
     | Qt.KeyboardModifier.AltModifier
 )
-_CHANNEL_LETTERS = ("R", "G", "A", "L")
+_CHANNEL_LETTERS = ("R", "G", "B", "A", "L")
 _ORDERED_LETTERS = tuple(str(index) for index in range(1, 10))
-
-
-@dataclass(frozen=True, slots=True)
-class _Match:
-    """The applied display filter's verdict for one state.
-
-    An empty verdict means nothing is being filtered; an ``error`` means the
-    expression does not compile, and ``passed`` is how many pixels ``mask``
-    holds when there is no error.
-    """
-
-    mask: NDArray[np.bool_] | None = None
-    error: str | None = None
-    passed: int = 0
 
 
 class MainWindow(QMainWindow):
@@ -156,8 +142,11 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.store = Store()
         self._reporter = reporter or self._report_with_dialog
-        self._match = _Match()
-        self._match_key: object = None
+        self._raster: Raster | None = None
+        self._raster_key: object = None
+        self._command_error = ""
+        self._box_edit_key: object = None  # the state the box's own line already covers
+        self._box_authoring = False
         self._panel_sized = False
         self.setWindowTitle(text.APP_NAME)
         self.resize(1200, 800)
@@ -198,6 +187,18 @@ class MainWindow(QMainWindow):
             event.type() == QEvent.Type.KeyPress
             and isinstance(event, QKeyEvent)
             and watched is self._filter_edit
+            and event.key() in RETURN_KEYS
+            and event.modifiers() & Qt.KeyboardModifier.ShiftModifier
+        ):
+            # Taken here rather than in returnPressed: the box reports a plain
+            # Enter, and the shift is what says to stack the line instead of
+            # writing over the operation in hand.
+            self._commit_filter(new=True)
+            return True
+        if (
+            event.type() == QEvent.Type.KeyPress
+            and isinstance(event, QKeyEvent)
+            and watched is self._filter_edit
             and event.key() == Qt.Key.Key_Escape
         ):
             self._clear_filter()
@@ -234,9 +235,9 @@ class MainWindow(QMainWindow):
         width = self.width()
         handles = 2 * self._splitter.handleWidth()
         # Both pages hold a two-pane dump; the wider one decides the panel.
-        wanted = max(self.inspector.preferred_width(), self.info_panel.preferred_width())
+        wanted = max(self.extract_panel.preferred_width(), self.info_panel.preferred_width())
         limit = max(width - handles - _LEFT_WIDTH - _CANVAS_MIN_WIDTH, 1)
-        panel = min(max(wanted, self.inspector.minimumWidth()), limit)
+        panel = min(max(wanted, self.extract_panel.minimumWidth()), limit)
         canvas = max(width - panel - _LEFT_WIDTH - handles, 1)
         self._splitter.setSizes([_LEFT_WIDTH, canvas, panel])
 
@@ -269,12 +270,10 @@ class MainWindow(QMainWindow):
         quit_action.triggered.connect(_drop_checked(self.close))
 
         view_menu = self.menuBar().addMenu(text.VIEW_MENU)
-        view_menu.addAction(text.ORIGINAL).triggered.connect(
-            _drop_checked(partial(self.apply, select_all_bits))
-        )
-        view_menu.addAction(text.ALL_LSB).triggered.connect(
-            _drop_checked(partial(self.apply, select_lsbs))
-        )
+        self._original_action = view_menu.addAction(text.ORIGINAL)
+        self._original_action.triggered.connect(_drop_checked(partial(self.apply, clear_layers)))
+        self._lsb_action = view_menu.addAction(text.ALL_LSB)
+        self._lsb_action.triggered.connect(_drop_checked(partial(self.apply, select_lsbs)))
 
         help_menu = self.menuBar().addMenu(text.HELP_MENU)
         help_action = help_menu.addAction(text.SHORTCUTS)
@@ -299,7 +298,6 @@ class MainWindow(QMainWindow):
         widgets = (
             *self._filter_widgets(),
             *self._mode_widgets(),
-            *self._adjust_widgets(),
             *self._zoom_widgets(),
             self._export_button,
         )
@@ -310,7 +308,12 @@ class MainWindow(QMainWindow):
         return row
 
     def _filter_widgets(self) -> tuple[QWidget, ...]:
-        """The expression box, its debounce, and the pass count beside it."""
+        """The command box and the pass count beside it.
+
+        A line is applied when it is asked for — Enter, or Esc to drop the mask
+        — never as it is typed: a command can cost a full redraw of the picture,
+        and a sentence half written is not a line to run.
+        """
         self._filter_edit = QLineEdit()
         self._filter_edit.setPlaceholderText(text.FILTER_PLACEHOLDER)
         self._filter_edit.setClearButtonEnabled(True)
@@ -318,24 +321,15 @@ class MainWindow(QMainWindow):
         self._filter_edit.setMinimumWidth(220)
         self._filter_edit.setFixedHeight(theme.CONTROL_HEIGHT)
         self._filter_edit.setToolTip(text.FILTER_TIP)
-        self._filter_edit.textEdited.connect(lambda _text: self._filter_timer.start())
+        self._filter_edit.textEdited.connect(lambda _text: self._clear_command_error())
         self._filter_edit.returnPressed.connect(self._commit_filter)
-        self._filter_timer = QTimer(self)
-        self._filter_timer.setSingleShot(True)
-        self._filter_timer.setInterval(200)
-        self._filter_timer.timeout.connect(self._apply_filter_text)
         find_shortcut = QShortcut(QKeySequence.StandardKey.Find, self)
         find_shortcut.activated.connect(self._focus_filter)
         self._filter_count = _muted_label()
         return self._filter_edit, self._filter_count
 
     def _mode_widgets(self) -> tuple[QWidget, ...]:
-        """The compacted-view switch and the exclusive 移动 / 选区 pair."""
-        self._only_matched = QCheckBox(text.ONLY_MATCHED)
-        self._only_matched.setToolTip(text.ONLY_MATCHED_TIP)
-        self._only_matched.setFixedHeight(theme.CONTROL_HEIGHT)
-        self._only_matched.toggled.connect(self._on_only_matched)
-
+        """The exclusive 移动 / 选区 pair."""
         self._mode_move = QPushButton(text.MODE_MOVE)
         self._mode_select = QPushButton(text.MODE_SELECT)
         for button, tip in (
@@ -353,43 +347,7 @@ class MainWindow(QMainWindow):
         self._mode_group.addButton(self._mode_select)
         self._mode_group.setExclusive(True)
         self._mode_group.buttonClicked.connect(self._on_mode)
-        return self._only_matched, self._mode_move, self._mode_select
-
-    def _adjust_widgets(self) -> tuple[QWidget, ...]:
-        """The view post-processing toggles, and the threshold box when it is on."""
-        self._invert_toggle = self._adjust_button(
-            text.ADJUST_INVERT, text.ADJUST_INVERT_TIP, toggle_invert
-        )
-        self._grayscale_toggle = self._adjust_button(
-            text.ADJUST_GRAYSCALE, text.ADJUST_GRAYSCALE_TIP, toggle_grayscale
-        )
-        self._threshold_toggle = self._adjust_button(
-            text.ADJUST_THRESHOLD, text.ADJUST_THRESHOLD_TIP, toggle_threshold
-        )
-        self._threshold_level = QSpinBox()
-        self._threshold_level.setRange(0, 255)
-        self._threshold_level.setValue(self.store.state.adjust.level)
-        self._threshold_level.setFixedWidth(64)
-        self._threshold_level.setFixedHeight(theme.CONTROL_HEIGHT)
-        self._threshold_level.setToolTip(text.THRESHOLD_LEVEL_TIP)
-        self._threshold_level.setVisible(False)
-        self._threshold_level.valueChanged.connect(self._on_threshold_level)
-        return (
-            self._invert_toggle,
-            self._grayscale_toggle,
-            self._threshold_toggle,
-            self._threshold_level,
-        )
-
-    def _adjust_button(self, label: str, tip: str, transition: Transition) -> QPushButton:
-        """A checkable ghost toggle; the state stays the single source of truth."""
-        button = QPushButton(label)
-        button.setObjectName("ghost")
-        button.setCheckable(True)
-        button.setToolTip(tip)
-        button.setFixedHeight(theme.CONTROL_HEIGHT)
-        button.clicked.connect(_drop_checked(partial(self.apply, transition)))
-        return button
+        return self._mode_move, self._mode_select
 
     def _zoom_widgets(self) -> tuple[QWidget, ...]:
         """The zoom steppers, the slider, the readout, and the format switch."""
@@ -455,33 +413,45 @@ class MainWindow(QMainWindow):
         self.canvas.region_committed.connect(self._on_region_committed)
         self.canvas.region_canceled.connect(self._on_region_canceled)
 
-        self.inspector = Inspector()
-        self.inspector.bit_clicked.connect(self._on_bit)
-        self.inspector.channel_toggle.connect(self._on_channel_toggle)
-        self.inspector.column_toggle.connect(self._on_column_toggle)
-        self.inspector.original_requested.connect(partial(self.apply, select_all_bits))
-        self.inspector.lsbs_requested.connect(partial(self.apply, select_lsbs))
-        self.inspector.plane_step.connect(self._on_plane_step)
-        self.inspector.channel_step.connect(self._on_channel_step)
-        self.inspector.encoding_requested.connect(self._on_encoding)
-        self.inspector.channel_order_requested.connect(self._on_channel_order)
-        self.inspector.bit_order_requested.connect(self._on_bit_order)
-        self.inspector.scan_requested.connect(self._on_scan_order)
-        self.inspector.save_requested.connect(self._save_extract)
+        self.extract_panel = ExtractPanel()
+        self.extract_panel.bit_clicked.connect(self._on_bit)
+        self.extract_panel.channel_toggle.connect(self._on_channel_toggle)
+        self.extract_panel.column_toggle.connect(self._on_column_toggle)
+        self.extract_panel.original_requested.connect(self._on_all_bits)
+        self.extract_panel.lsbs_requested.connect(self._on_lsbs)
+        self.extract_panel.plane_step.connect(self._on_plane_step)
+        self.extract_panel.channel_step.connect(self._on_channel_step)
+        self.extract_panel.encoding_requested.connect(self._on_encoding)
+        self.extract_panel.channel_order_requested.connect(self._on_channel_order)
+        self.extract_panel.bit_order_requested.connect(self._on_bit_order)
+        self.extract_panel.scan_requested.connect(self._on_scan_order)
+        self.extract_panel.save_requested.connect(self._save_extract)
+
+        self.layers_panel = LayerPanel()
+        self.layers_panel.add_requested.connect(self._on_layer_added)
+        self.layers_panel.remove_requested.connect(self._on_layer_removed)
+        self.layers_panel.move_requested.connect(self._on_layer_moved)
+        self.layers_panel.enabled_requested.connect(self._on_layer_enabled)
+        self.layers_panel.selection_changed.connect(self._on_layer_selected)
 
         self.info_panel = InfoPanel()
         self.info_panel.render_requested.connect(self.open_loaded)
         self._panels = SidePanels()
         self._panels.add(Panel.INFO, text.PANEL_INFO, text.PANEL_INFO_TIP, self.info_panel)
-        self._panels.add(Panel.BITS, text.PANEL_BITS, text.PANEL_BITS_TIP, self.inspector)
+        self._panels.add(
+            Panel.EXTRACT, text.PANEL_EXTRACT, text.PANEL_EXTRACT_TIP, self.extract_panel
+        )
 
-        self._left_panel = QFrame()
-        self._left_panel.setObjectName("sidePanel")
-        self._left_panel.setMinimumWidth(_LEFT_MIN_WIDTH)
+        left = QScrollArea()
+        left.setObjectName("layerArea")
+        left.setWidgetResizable(True)
+        left.setFrameShape(QFrame.Shape.NoFrame)
+        left.setWidget(self.layers_panel)
+        left.setMinimumWidth(_LEFT_MIN_WIDTH)
 
         splitter = QSplitter()
         self._splitter = splitter
-        splitter.addWidget(self._left_panel)
+        splitter.addWidget(left)
         splitter.addWidget(self._scroll)
         splitter.addWidget(self._panels)
         splitter.setStretchFactor(0, 0)
@@ -533,7 +503,7 @@ class MainWindow(QMainWindow):
             self._nudge(arrows[0] * step, arrows[1] * step)
             return True
         if (bit_step := _FOCUS_BIT_KEYS.get(key)) is not None:
-            self.apply(partial(step_focus_bit, delta=bit_step))
+            self.apply(partial(step_focus_bit, delta=bit_step, layer=self._bits_layer()))
             return True
         if (direction := _ZOOM_KEYS.get(key)) is not None:
             self._zoom_by(direction)
@@ -550,93 +520,184 @@ class MainWindow(QMainWindow):
         if label == "F":
             self.apply(cycle_format)
             return True
+        layer = self._bits_layer()
         if label in _CHANNEL_LETTERS:
-            self.apply(partial(select_lsb, name=label))
+            self.apply(partial(select_lsb, name=label, layer=layer))
             return True
         if label in _ORDERED_LETTERS:
-            self.apply(partial(select_lsb_at, index=int(label) - 1))
+            self.apply(partial(select_lsb_at, position=int(label) - 1, layer=layer))
             return True
         return False
 
     def _apply(self, state: ViewerState) -> None:
-        match = self._filter_match(state)
-        self._sync_controls(state)
-        self.canvas.set_state(state, match.mask)
-        self.inspector.set_state(state, match.mask)
+        raster = self._resolve(state)
+        # The layer panel settles its selection first, so the filter box and the
+        # bit grid that follow it read a layer the new stack really has.
+        self.layers_panel.set_state(state, raster)
+        self._sync_controls(state, raster)
+        self.canvas.set_state(state, raster)
+        self.extract_panel.set_state(state, raster, bits_layer=self._bits_layer())
         self.info_panel.set_image(state.image)
-        info = status_info(state)
-        filtering = bool(state.filter_expr.strip())
-        if filtering and match.error is not None:
-            info = f"{info}  {text.FILTER_ERROR}{match.error}"
-        self._status_info.setText(info)
-        self._status_view.setText(status_view(state))
-        self._filter_count.setText(self._count_text(state, match))
-        self._filter_edit.setStyleSheet(_FILTER_ERROR_STYLE if match.error else "")
+        self._status_info.setText(self._info_text(state, raster))
+        self._status_view.setText(status_view(state, raster))
+        self._filter_count.setText(self._count_text(state, raster))
         image = state.image
         title = text.APP_NAME if image is None else f"{image.path.name} — {text.APP_NAME}"
         if self.windowTitle() != title:
             self.setWindowTitle(title)
 
-    def _count_text(self, state: ViewerState, match: _Match) -> str:
+    def _bits_layer(self) -> int | None:
+        """The bits mask the grid and the shortcuts work on: the layer in hand.
+
+        The grid lives in the extract panel, so both panels need the same answer;
+        ``None`` means no bits mask is in play and an edit brings one into being.
+        """
+        return bits_position(self.store.state.layers, self.layers_panel.selected)
+
+    def _resolve(self, state: ViewerState) -> Raster | None:
+        """The raster a state works out to, remembered for as long as the stack stands.
+
+        Every consumer of one state reads this one raster, and the stack — image
+        and layers together — is what decides it, so moving the cursor costs no
+        pixel work at all.
+        """
+        image = state.image
+        key = None if image is None else (image, state.layers)
+        if key != self._raster_key:
+            self._raster_key = key
+            self._raster = None if image is None else resolve(image, state.layers)
+        return self._raster
+
+    def _info_text(self, state: ViewerState, raster: Raster | None) -> str:
+        """Status bar, left: what is open, and any mask line the box or stack refused."""
+        info = status_info(state)
+        errors = (
+            [f"{text.FILTER_ERROR}{failure.message}" for failure in raster.failures]
+            if (raster is not None)
+            else []
+        )
+        if self._command_error:
+            errors.append(f"{text.FILTER_ERROR}{self._command_error}")
+        return "  ".join((info, *errors))
+
+    def _count_text(self, state: ViewerState, raster: Raster | None) -> str:
         """The pass count at the right end of the filter row, empty when idle."""
         image = state.image
-        if image is None or not state.filter_expr.strip() or match.error is not None:
+        if image is None or raster is None or raster.live is None:
             return ""
-        return text.filter_count(match.passed, image.width * image.height)
+        return text.filter_count(raster.live_count, image.width * image.height)
 
-    def _filter_match(self, state: ViewerState) -> _Match:
-        """The compiled filter's verdict, cached on the expression it was built for."""
-        image = state.image
-        if image is None or not state.filter_expr.strip():
-            return _Match()
-        key = (state.filter_expr, image, state.selection)
-        if key == self._match_key:
-            return self._match
-        self._match_key = key
-        try:
-            compiled = compile_filter(state.filter_expr, image.planes)
-            mask = compiled.evaluate(image, effective_selection(image, state.selection))
-        except PredicateError as exc:
-            self._match = _Match(error=str(exc))
-        else:
-            self._match = _Match(mask=mask, passed=int(mask.sum()))
-        return self._match
+    def _commit_filter(self, *, new: bool = False) -> None:
+        """Enter runs the line the box holds, and writes it back as the operation it ran.
 
-    def _commit_filter(self) -> None:
-        """Enter applies the filter right away and keeps the caret in the box."""
-        self._filter_timer.stop()
-        self._apply_filter_text()
+        Shift+Enter stacks it instead: the new operation goes on top, and the one
+        in hand keeps its command and its place. Either way the box and the
+        recipe row then read alike — ``b>r`` lands as ``b > r``, ``xor 0xff`` as
+        ``xor 0xFF``. A line still being typed, or one the box refused, stays
+        exactly as the typist left it, to be finished.
+        """
+        typed = self._filter_edit.text()
+        self._apply_filter_text(new=new)
+        if self._command_error:
+            return
+        command = self._command_text(typed)
+        if command is not None:
+            self._write_box(command)
 
     def _clear_filter(self) -> None:
-        """Esc clears the filter and hands the keyboard back to the canvas."""
-        self._filter_timer.stop()
-        self._filter_edit.clear()
+        """Esc empties the box; on an already empty box it drops the operation it edits.
+
+        Two steps, so escaping out of a line never costs the operation underneath
+        it: the first press takes the words back, the second one — with nothing
+        left to take — deletes that operation and hands back the canvas.
+        """
+        if self._filter_edit.text():
+            self._filter_edit.clear()
+            self._clear_command_error()
+            return
         self._apply_filter_text()
         self.canvas.setFocus(Qt.FocusReason.ShortcutFocusReason)
 
-    def _apply_filter_text(self) -> None:
-        expression = self._filter_edit.text()
-        state = self.store.state
-        cleared = not expression.strip()
-        if expression == state.filter_expr and (not cleared or not state.only_matched):
+    def _clear_command_error(self) -> None:
+        """Typing another word clears the complaint: the line is being fixed."""
+        if not self._command_error:
             return
+        self._command_error = ""
+        self._filter_edit.setStyleSheet("")
+        self._status_info.setText(self._info_text(self.store.state, self._raster))
 
-        def update(current: ViewerState) -> ViewerState:
-            updated = set_filter_expr(current, expression)
-            # A cleared filter has nothing to show exclusively, so uncheck.
-            return set_only_matched(updated, on=False) if cleared else updated
+    def _apply_filter_text(self, *, new: bool = False) -> None:
+        """The box's text becomes a mask: a command, or a region expression.
 
-        self.apply(update)
-
-    def _on_only_matched(self, checked: bool) -> None:
-        self.apply(partial(set_only_matched, on=checked))
-        self._fit()
+        A command the box cannot read raises before anything changes, so the
+        stack keeps the layer it had and the box keeps the line for fixing.
+        The state the box itself applied is remembered as its own, so the sync
+        that follows does not echo it back over the typist's words. ``new``
+        stacks the line on top whatever the box was editing — Shift+Enter — so
+        it applies even when the line is the one already in the box.
+        """
+        expression = self._filter_edit.text()
+        self._command_error = ""
+        if self.store.state.image is not None and (new or expression != self._box_text()):
+            try:
+                self._box_authoring = True
+                transition = (
+                    partial(add_mask_text, text=expression)
+                    if new
+                    else partial(set_mask_text, text=expression, layer=self.layers_panel.selected)
+                )
+                self.apply(transition)
+                state = self.store.state
+                self._box_edit_key = None if state.image is None else (state.image, state.layers)
+            except CommandError as exc:
+                self._command_error = str(exc)
+            finally:
+                self._box_authoring = False
+        if self._command_error:
+            self._status_info.setText(self._info_text(self.store.state, self._raster))
+        self._sync_filter_box(self._raster)
 
     def _focus_filter(self) -> None:
         self._filter_edit.setFocus(Qt.FocusReason.ShortcutFocusReason)
         self._filter_edit.selectAll()
 
-    def _sync_controls(self, state: ViewerState) -> None:
+    def _box_position(self) -> int | None:
+        """Which layer the filter box is editing, if any."""
+        image = self.store.state.image
+        planes = () if image is None else image.planes
+        return filter_position(self.store.state.layers, planes, self.layers_panel.selected)
+
+    def _box_text(self) -> str:
+        """What the filter box holds: the command line of the layer it edits."""
+        position = self._box_position()
+        image = self.store.state.image
+        if position is None or image is None:
+            return ""
+        return text_of(self.store.state.layers[position].mask, image.planes) or ""
+
+    def _command_text(self, line: str) -> str | None:
+        """How the operation a line names writes itself, or ``None`` when it names none.
+
+        This is the wording the recipe row holds, so a line the box has just run
+        can be written back in it. ``None`` covers a sentence still being typed
+        and a mask no command spells (a bit selection with no bits), so neither
+        is rewritten.
+        """
+        image = self.store.state.image
+        if image is None:
+            return None
+        mask = parse(line, image.planes)
+        return None if mask is None else text_of(mask, image.planes)
+
+    def _write_box(self, line: str) -> None:
+        """Put a line in the box as the box's own doing, never as the typist's."""
+        if self._filter_edit.text() == line:
+            return
+        self._filter_edit.blockSignals(True)
+        self._filter_edit.setText(line)
+        self._filter_edit.blockSignals(False)
+
+    def _sync_controls(self, state: ViewerState, raster: Raster | None) -> None:
         image = state.image
         combo = self._format_combo
         combo.blockSignals(True)
@@ -645,19 +706,12 @@ class MainWindow(QMainWindow):
             combo.setCurrentIndex(index)
         combo.blockSignals(False)
         self._zoom_label.setText(text.zoom_label(state.zoom))
-        self._filter_edit.blockSignals(True)
-        if self._filter_edit.text() != state.filter_expr:
-            self._filter_edit.setText(state.filter_expr)
-        self._filter_edit.blockSignals(False)
-        self._filter_timer.stop()
+        self._sync_filter_box(raster)
         enabled = image is not None
         for widget in (
             self._filter_edit,
             self._mode_move,
             self._mode_select,
-            self._invert_toggle,
-            self._grayscale_toggle,
-            self._threshold_toggle,
             self._zoom_in,
             self._zoom_out,
             self._zoom_fit,
@@ -666,20 +720,6 @@ class MainWindow(QMainWindow):
             self._export_button,
         ):
             widget.setEnabled(enabled)
-        for button, on in (
-            (self._invert_toggle, state.adjust.invert),
-            (self._grayscale_toggle, state.adjust.grayscale),
-            (self._threshold_toggle, state.adjust.threshold),
-        ):
-            button.blockSignals(True)
-            button.setChecked(on)
-            button.blockSignals(False)
-        level = self._threshold_level
-        level.blockSignals(True)
-        if level.value() != state.adjust.level:
-            level.setValue(state.adjust.level)
-        level.blockSignals(False)
-        level.setVisible(enabled and state.adjust.threshold)
         multi = image is not None and image.frame_count > 1
         self._frame_prev.setEnabled(multi)
         self._frame_next.setEnabled(multi)
@@ -695,30 +735,80 @@ class MainWindow(QMainWindow):
         self._zoom_slider.blockSignals(True)
         self._zoom_slider.setValue(slider_position(state.zoom))
         self._zoom_slider.blockSignals(False)
-        only = self._only_matched
-        only.setEnabled(enabled and bool(state.filter_expr.strip()) and self._match.error is None)
-        only.blockSignals(True)
-        if only.isChecked() != state.only_matched:
-            only.setChecked(state.only_matched)
-        only.blockSignals(False)
 
-    def _on_bit(self, plane: str, bit: int, exclusive: bool) -> None:
-        if exclusive:
-            self.apply(partial(select_only, plane=plane, bit=bit))
-        else:
-            self.apply(partial(toggle_bit, plane=plane, bit=bit))
+    # --- the layer panel ---------------------------------------------------
 
-    def _on_channel_toggle(self, name: str, checked: bool) -> None:
-        self.apply(partial(set_channel, name=name, on=checked))
+    def _sync_filter_box(self, raster: Raster | None, *, force: bool = False) -> None:
+        """Point the filter box at the layer it edits, and mark the text when at fault.
 
-    def _on_column_toggle(self, bit: int, checked: bool) -> None:
-        self.apply(partial(set_column, bit=bit, on=checked))
+        The box holds the typist's own words, so a resync waits for the state to
+        move underneath it: a line the box itself applied is never echoed back
+        mid-sentence — trailing spaces and all — and only a change from elsewhere
+        (the bit grid, the presets, a picked layer) rewrites the text. Enter is
+        the other rewrite: it writes the line back as the command it ran. A
+        refused line stays for fixing; picking a layer forces the rewrite
+        regardless.
+        """
+        position = self._box_position()
+        image = self.store.state.image
+        key = None if image is None else (image, self.store.state.layers)
+        if (
+            (key != self._box_edit_key or force)
+            and not self._box_authoring
+            and not self._command_error
+        ):
+            self._write_box("" if position is None else self._box_text())
+            self._command_error = ""
+            self._box_edit_key = key
+        failed = bool(self._command_error) or (
+            raster is not None
+            and position is not None
+            and any(failure.index == position for failure in raster.failures)
+        )
+        self._filter_edit.setStyleSheet(_FILTER_ERROR_STYLE if failed else "")
 
-    def _on_plane_step(self, delta: int) -> None:
-        self.apply(partial(step_plane, delta=delta))
+    def _on_layer_selected(self) -> None:
+        """The panel picked another layer: the filter box and the bit grid follow it.
 
-    def _on_channel_step(self, delta: int) -> None:
-        self.apply(partial(step_channel, delta=delta))
+        The rewrite is forced: the click names a new edit target, so the box
+        shows that layer's command even while the box still holds focus.
+        """
+        self._sync_filter_box(self._raster, force=True)
+        self.extract_panel.set_state(self.store.state, self._raster, bits_layer=self._bits_layer())
+
+    def _on_layer_added(self, mask: Mask) -> None:
+        self.apply(partial(add_layer, mask=mask))
+
+    def _on_layer_removed(self, layer: int) -> None:
+        self.apply(partial(remove_layer, layer=layer))
+
+    def _on_layer_moved(self, layer: int, step: int) -> None:
+        self.apply(partial(move_layer, layer=layer, step=step))
+
+    def _on_layer_enabled(self, layer: int, on: bool) -> None:
+        self.apply(partial(set_layer_enabled, layer=layer, on=on))
+
+    def _on_bit(self, layer: int, plane: str, bit: int, exclusive: bool) -> None:
+        transition = select_only if exclusive else toggle_bit
+        self.apply(partial(transition, plane=plane, bit=bit, layer=layer))
+
+    def _on_channel_toggle(self, layer: int, name: str, checked: bool) -> None:
+        self.apply(partial(set_channel, name=name, on=checked, layer=layer))
+
+    def _on_column_toggle(self, layer: int, bit: int, checked: bool) -> None:
+        self.apply(partial(set_column, bit=bit, on=checked, layer=layer))
+
+    def _on_plane_step(self, layer: int, delta: int) -> None:
+        self.apply(partial(step_plane, delta=delta, layer=layer))
+
+    def _on_channel_step(self, layer: int, delta: int) -> None:
+        self.apply(partial(step_channel, delta=delta, layer=layer))
+
+    def _on_all_bits(self, layer: int) -> None:
+        self.apply(partial(select_all_bits, layer=layer))
+
+    def _on_lsbs(self, layer: int) -> None:
+        self.apply(partial(select_lsbs, layer=layer))
 
     def _on_format(self, index: int) -> None:
         fmt = _enum_at(self._format_combo, index, DisplayFormat)
@@ -740,9 +830,6 @@ class MainWindow(QMainWindow):
 
     def _on_scan_order(self, value: str) -> None:
         self.apply(partial(set_scan_order, scan=ScanOrder(value)))
-
-    def _on_threshold_level(self, value: int) -> None:
-        self.apply(partial(set_threshold_level, level=value))
 
     def _step_frame(self, delta: int) -> None:
         """Load and show the neighboring frame, keeping the whole view state."""
@@ -768,18 +855,13 @@ class MainWindow(QMainWindow):
         selected, _chosen = QFileDialog.getSaveFileName(
             self, text.VIEW_EXPORT, f"{image.path.stem}.png", text.ANY_FILE
         )
-        if selected:
-            self._write_view(Path(selected), image, state.selection, state.adjust)
+        if selected and self._raster is not None:
+            self._write_view(Path(selected), self._raster)
 
-    def _write_view(
-        self,
-        path: Path,
-        image: LoadedImage,
-        selection: frozenset[BitChoice] | None,
-        adjust: ViewAdjust,
-    ) -> None:
+    def _write_view(self, path: Path, raster: Raster) -> None:
+        """Save the composed view: what the canvas paints, alpha kept as alpha."""
         try:
-            save_rgb(apply_adjust(render_rgb(image, selection), adjust), path)
+            save_image(render_export(raster), path)
         except (OSError, ValueError) as exc:
             self._reporter(text.save_failed(str(exc)))
             return
@@ -796,7 +878,7 @@ class MainWindow(QMainWindow):
         if not selected:
             return
         try:
-            Path(selected).write_bytes(self.inspector.extract_data())
+            Path(selected).write_bytes(self.extract_panel.extract_data())
         except OSError as exc:
             self._reporter(text.save_failed(str(exc)))
             return
@@ -824,24 +906,18 @@ class MainWindow(QMainWindow):
         self._status_view.setText(text.selection_ready(x0, y0, x1, y1, count))
 
     def _on_region_canceled(self) -> None:
-        self._status_view.setText(status_view(self.store.state))
+        self._status_view.setText(status_view(self.store.state, self._raster))
 
     def _on_region_committed(self, x0: int, y0: int, x1: int, y1: int) -> None:
-        """Append the previewed region; the parenthesized prefix keeps `or` intact."""
-        rect = f"rect({x0}, {y0}, {x1 + 1}, {y1 + 1})"
-        current = self._filter_edit.text().strip()
-        self._filter_edit.setText(f"({current}) and {rect}" if current else rect)
-        self._commit_filter()
+        """The dragged region becomes a region mask of its own, on top of the stack."""
+        mask = RegionMask(f"rect({x0}, {y0}, {x1 + 1}, {y1 + 1})")
+        self.apply(partial(add_layer, mask=mask))
 
     def _region_hits(self, x0: int, y0: int, x1: int, y1: int) -> int | None:
-        """Pixels the appended rect would leave selected, against the applied filter."""
-        image = self.store.state.image
-        if image is None or self._match.error is not None:
+        """Pixels the dragged rect would leave standing, against the stack as it is."""
+        if self._raster is None:
             return None
-        mask = self._match.mask
-        if mask is None:
-            return (y1 - y0 + 1) * (x1 - x0 + 1)
-        return int(mask[y0 : y1 + 1, x0 : x1 + 1].sum())
+        return self._raster.live_in(x0, y0, x1, y1)
 
     def _on_mode(self, button: QPushButton) -> None:
         self.canvas.set_mode(CanvasMode.SELECT if button is self._mode_select else CanvasMode.PAN)
@@ -948,7 +1024,7 @@ class MainWindow(QMainWindow):
     def _copy(self) -> None:
         clipboard = QApplication.clipboard()
         if clipboard is not None:
-            clipboard.setText(readout_text(self.store.state))
+            clipboard.setText(readout_text(self.store.state, self._raster))
 
     def _open_dialog(self) -> None:
         selected, _chosen = QFileDialog.getOpenFileName(self, text.OPEN, "", text.IMAGE_FILTER)
