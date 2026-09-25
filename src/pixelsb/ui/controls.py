@@ -3,11 +3,26 @@
 from dataclasses import dataclass
 
 from PySide6.QtCore import SignalInstance
-from PySide6.QtWidgets import QButtonGroup, QHBoxLayout, QPushButton, QWidget
+from PySide6.QtWidgets import QButtonGroup, QFrame, QHBoxLayout, QLabel, QPushButton, QWidget
 
 from pixelsb.ui import theme
 
 _SEGMENT_NAMES = ("segmentLeft", "segmentRight")
+
+
+def section_title(label: str) -> QLabel:
+    """The small muted caption above a section of a panel."""
+    title = QLabel(label)
+    title.setObjectName("sectionTitle")
+    return title
+
+
+def hairline() -> QFrame:
+    """The one-pixel rule between a panel's sections."""
+    line = QFrame()
+    line.setObjectName("hairline")
+    line.setFixedHeight(1)
+    return line
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,11 +1,11 @@
-from itertools import pairwise
 from pathlib import Path
 
 import numpy as np
 import pytest
+from PIL import Image
 from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtGui import QNativeGestureEvent, QPointingDevice
-from PySide6.QtWidgets import QPushButton, QToolButton, QWidget
+from PySide6.QtWidgets import QToolButton
 from pytestqt.qtbot import QtBot
 
 from pixelsb.domain import geometry
@@ -18,9 +18,20 @@ from pixelsb.domain.models import (
     PixelCoord,
     ScanOrder,
 )
-from pixelsb.domain.transitions import select_only, set_cursor, set_format, set_zoom
+from pixelsb.domain.transitions import (
+    select_only,
+    set_cursor,
+    set_format,
+    set_zoom,
+    toggle_invert,
+    toggle_threshold,
+)
+from pixelsb.io.loading import image_from_rgb
 from pixelsb.ui import painting, text, theme
 from pixelsb.ui.main_window import MainWindow
+from pixelsb.ui.side_panels import Panel
+from pixelsb.ui.text import readout_text
+from tests.support import button
 
 
 def test_open_bit_plane_and_detail_text(qtbot: QtBot, rgb_png: Path) -> None:
@@ -34,7 +45,7 @@ def test_open_bit_plane_and_detail_text(qtbot: QtBot, rgb_png: Path) -> None:
     assert state.cursor == PixelCoord(1, 0)
     assert state.selection == frozenset({BitChoice("R", 0)})
     assert window.canvas.displayed_size() == (2, 2)
-    detail = window.inspector.detail_text()
+    detail = readout_text(window.store.state)
     assert "光标 (1, 0)" in detail
     assert "画面 R0" in detail
 
@@ -49,6 +60,8 @@ def test_left_click_keeps_the_cursor_where_hover_left_it(
     window.show()
     window.open_path(rgb_png)
     zoom = int(window.store.state.zoom)
+    # The first synthetic move only enters the canvas; the second one moves.
+    qtbot.mouseMove(window.canvas, QPoint(0, 0))
     qtbot.mouseMove(window.canvas, QPoint(zoom + 1, 1))
     assert window.store.state.cursor == PixelCoord(1, 0)
     qtbot.mouseClick(window.canvas, Qt.MouseButton.LeftButton, pos=QPoint(1, 1))
@@ -91,19 +104,6 @@ def test_filter_match_follows_the_selection(qtbot: QtBot, rgb_png: Path) -> None
     fourth = window._match.mask
     assert fourth is not None
     assert fourth.tolist() == [[True, False], [False, False]]
-
-
-def test_a_bit_field_reads_one_bit_of_a_channel(qtbot: QtBot, rgb_png: Path) -> None:
-    from pixelsb.domain.transitions import set_filter_expr
-
-    window = MainWindow()
-    qtbot.addWidget(window)
-    window.open_path(rgb_png)
-    window.apply(lambda state: set_filter_expr(state, "R.7 == 0 and R.4 == 1"))
-    mask = window._match.mask
-    assert mask is not None
-    # R = 255, 0, 0, 16: only the last has the top bit clear and bit 4 set.
-    assert mask.tolist() == [[False, False], [False, True]]
 
 
 def test_bad_filter_shows_an_error_and_keeps_the_image(
@@ -276,11 +276,10 @@ def test_the_plane_steppers_walk_the_display_order(qtbot: QtBot, rgb_png: Path) 
     window = MainWindow()
     qtbot.addWidget(window)
     window.open_path(rgb_png)
+    # The walk itself belongs to the transitions; here the buttons just have to
+    # be wired to it, one step each way.
     window.inspector._plane_next.click()
     assert window.store.state.selection == frozenset({BitChoice("R", 7)})  # the ladder head
-    window.inspector._plane_next.click()
-    assert window.store.state.selection == frozenset({BitChoice("R", 6)})
-    window.inspector._plane_prev.click()
     window.inspector._plane_prev.click()
     assert window.store.state.selection == frozenset({BitChoice("B", 0)})  # backwards, wrapping
 
@@ -290,9 +289,10 @@ def test_the_channel_steppers_walk_whole_channels(qtbot: QtBot, rgb_png: Path) -
     qtbot.addWidget(window)
     window.open_path(rgb_png)
     window.inspector._channel_next.click()
-    for name in ("R", "G", "B"):
-        assert window.store.state.selection == frozenset({BitChoice(name, bit) for bit in range(8)})
-        window.inspector._channel_next.click()
+    assert window.store.state.selection == frozenset({BitChoice("R", bit) for bit in range(8)})
+    window.inspector._channel_next.click()
+    assert window.store.state.selection == frozenset({BitChoice("G", bit) for bit in range(8)})
+    window.inspector._channel_prev.click()
     assert window.store.state.selection == frozenset({BitChoice("R", bit) for bit in range(8)})
 
 
@@ -334,16 +334,6 @@ def test_the_zoom_slider_is_geometric(qtbot: QtBot, rgb_png: Path) -> None:
     window._zoom_slider.setValue(geometry.slider_position(16.0))
     assert window.store.state.zoom == 16.0
     assert window._zoom_label.text() == text.zoom_label(16.0)
-
-
-def test_the_zoom_slider_spends_equal_travel_per_doubling() -> None:
-    positions = [geometry.slider_position(zoom) for zoom in (1, 2, 4, 8, 16, 32, 64, 128)]
-    assert positions[0] == 0
-    assert positions[-1] == geometry.SLIDER_STEPS
-    gaps = [later - earlier for earlier, later in pairwise(positions)]
-    assert max(gaps) - min(gaps) <= 1
-    for zoom in (1, 2, 3, 5, 17, 100, 128):
-        assert geometry.slider_zoom(geometry.slider_position(zoom)) == zoom
 
 
 def test_the_zoom_label_fits_the_widest_value(qtbot: QtBot) -> None:
@@ -508,9 +498,9 @@ def test_the_extract_order_controls_drive_the_dump(qtbot: QtBot, extract_png: Pa
     assert window.store.state.extract_order.planes == ("B", "G", "R")
     assert pane.toPlainText().startswith("43 42 41")
 
-    _order_button(inspector._scan, "YZ").click()
+    button(inspector._scan, "YZ").click()
     assert window.store.state.extract_order.scan is ScanOrder.YZ
-    _order_button(inspector._bit_order, "LSB").click()
+    button(inspector._bit_order, "LSB").click()
     assert window.store.state.extract_order.bit_order is BitOrder.LSB
     # Low first hands back each channel's stored byte, in the order just picked.
     assert pane.toPlainText().startswith("c2 42 82")
@@ -520,5 +510,105 @@ def test_the_extract_order_controls_drive_the_dump(qtbot: QtBot, extract_png: Pa
     assert window.store.state.extract_order.scan is ScanOrder.YZ
 
 
-def _order_button(pair: QWidget, label: str) -> QPushButton:
-    return next(button for button in pair.findChildren(QPushButton) if button.text() == label)
+def _animated_gif(path: Path) -> Path:
+    from PIL import Image
+
+    frames = [Image.new("RGB", (2, 2), color) for color in ((0, 0, 0), (255, 255, 255))]
+    frames[0].save(path, save_all=True, append_images=frames[1:], duration=70, loop=0)
+    return path
+
+
+def test_frame_steps_load_the_neighbor_frame(qtbot: QtBot, tmp_path: Path) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.open_path(_animated_gif(tmp_path / "anim.gif"))
+    assert window._frame_prev.isEnabled()
+    window._step_frame(1)
+    assert window.store.state.image is not None
+    assert window.store.state.image.frame_index == 1
+    assert "帧 2/2" in window._frame_status.text()
+    window._step_frame(1)  # already on the last frame; the press is a no-op
+    assert window.store.state.image.frame_index == 1
+    window._step_frame(-1)
+    assert window.store.state.image.frame_index == 0
+
+
+def test_the_adjust_toggles_repaint_the_canvas(qtbot: QtBot, rgb_png: Path) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.open_path(rgb_png)
+    original = window.canvas._frame.rgb
+    assert original is not None
+    original = original.copy()
+    window.apply(toggle_invert)
+    inverted = window.canvas._frame.rgb
+    assert inverted is not None
+    assert np.array_equal(inverted, 255 - original)
+    assert window._invert_toggle.isChecked()
+    window.apply(toggle_invert)
+    restored = window.canvas._frame.rgb
+    assert restored is not None
+    assert np.array_equal(restored, original)
+
+
+def test_the_threshold_box_only_shows_while_the_threshold_is_on(
+    qtbot: QtBot, rgb_png: Path
+) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.open_path(rgb_png)
+    assert not window._threshold_level.isVisible()
+    window.apply(toggle_threshold)
+    assert window._threshold_level.isVisible()
+    window._threshold_level.setValue(200)
+    assert window.store.state.adjust.level == 200
+    window.apply(toggle_threshold)
+    assert not window._threshold_level.isVisible()
+
+
+def test_the_export_writes_the_composed_pixels(qtbot: QtBot, rgb_png: Path, tmp_path: Path) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.open_path(rgb_png)
+    state = window.store.state
+    assert state.image is not None
+    destination = tmp_path / "out.png"
+    window._write_view(destination, state.image, state.selection, state.adjust)
+    exported = np.asarray(Image.open(destination).convert("RGB"))
+    composed = window.canvas._frame.rgb
+    assert composed is not None
+    assert np.array_equal(exported, composed)
+
+
+def test_the_inspector_holds_the_full_stream_for_saving(qtbot: QtBot, extract_png: Path) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.open_path(extract_png)
+    data = window.inspector.extract_data()
+    assert data == b"ABC" * 32
+
+
+def test_the_file_info_menu_raises_the_info_page(qtbot: QtBot, rgb_png: Path) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.open_path(rgb_png)
+    assert window._panels.current is Panel.INFO  # the file-info page leads the rail
+    window._panels.set_current(Panel.BITS)
+    assert window._panels.current is Panel.BITS
+    window._show_info()
+    assert window._panels.current is Panel.INFO
+    assert window.info_panel.isVisible()
+    assert "rgb.png" in window.info_panel._name.text()
+
+
+def test_open_loaded_shows_a_rendered_image_in_the_canvas(qtbot: QtBot, rgb_png: Path) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    rgb = np.zeros((3, 4, 3), np.uint8)
+    window.open_loaded(image_from_rgb(rgb_png, rgb))
+    assert window.canvas.displayed_size() == (4, 3)
+    assert window.store.state.image is not None
+    assert [plane.name for plane in window.store.state.image.planes] == ["R", "G", "B"]

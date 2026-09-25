@@ -1,6 +1,11 @@
-"""Decimal, hexadecimal, and binary formatting for channel samples."""
+"""Formatting for display: channel samples as numbers, long text as a prefix."""
 
 from pixelsb.domain.models import DisplayFormat
+
+
+def clip(text: str, limit: int) -> str:
+    """``text`` cut to ``limit`` characters, the cut marked with an ellipsis."""
+    return text if len(text) <= limit else f"{text[: limit - 1]}…"
 
 
 def format_sample(value: int, bit_depth: int, fmt: DisplayFormat) -> str:

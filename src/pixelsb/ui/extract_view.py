@@ -6,6 +6,7 @@ picks up an offset: the gutter and the byte ruler are chrome painted outside the
 document.
 """
 
+from functools import partial
 from math import ceil
 from typing import override
 
@@ -21,10 +22,22 @@ from PySide6.QtGui import (
     QPaintEvent,
     QPolygonF,
     QResizeEvent,
+    QTextCharFormat,
+    QTextCursor,
 )
-from PySide6.QtWidgets import QHBoxLayout, QMenu, QPlainTextEdit, QWidget
+from PySide6.QtWidgets import (
+    QHBoxLayout,
+    QLabel,
+    QMenu,
+    QPlainTextEdit,
+    QPushButton,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
 
-from pixelsb.domain.extract import BYTES_PER_ROW, HEX_WIDTH, ExtractRow, decode_row
+from pixelsb.domain.detect import Detection
+from pixelsb.domain.extract import BYTES_PER_ROW, HEX_WIDTH, ExtractRow, decode_rows
 from pixelsb.domain.models import ExtractEncoding
 from pixelsb.ui import text, theme
 
@@ -34,6 +47,8 @@ _PANE_GAP = 10  # between the hex pane and the text pane
 _PANE_SLACK = 2  # keeps a fixed column from clipping its last character
 _DUMP_FONT_SIZE = 11
 _OFFSET_DIGITS = 8  # an eight-digit offset holds any image we can open
+_MAX_CHIPS = 16  # chips past this fold into a "+N" label
+_HIGHLIGHT_ALPHA = 42  # the row highlight tint over the dump's own background
 
 
 class _Pane[HeaderT: QWidget](QPlainTextEdit):
@@ -52,11 +67,6 @@ class _Pane[HeaderT: QWidget](QPlainTextEdit):
         self._header = header_type(self)
         self._header_height = self.measure_header()
         self._header.resize(0, 0)
-
-    @property
-    def header_height(self) -> int:
-        """Height of the top strip the header band occupies."""
-        return self._header_height
 
     def measure_header(self) -> int:
         return ceil(QFontMetricsF(self.font()).height()) + _HEADER_GAP
@@ -256,7 +266,7 @@ class _PaneHeader(QWidget):
 class _HexPane(_Pane[_ColumnHeader]):
     """The hex columns, with the offset gutter and the byte ruler as chrome."""
 
-    def __init__(self, panel: ExtractView) -> None:
+    def __init__(self, panel: QWidget) -> None:
         super().__init__(panel, _ColumnHeader)
         self._rows: tuple[ExtractRow, ...] = ()
         self._gutter_width = self._measure_gutter()
@@ -283,6 +293,44 @@ class _HexPane(_Pane[_ColumnHeader]):
         if 0 <= block_number < len(self._rows):
             return self._rows[block_number].offset_text
         return ""
+
+    def reveal(self, row: int, column: int, length: int) -> None:
+        """Scroll to one dump row and select the bytes the detection covers.
+
+        The hex columns lay a byte out as two digits and one separator, so the
+        anchor arithmetic mirrors that rhythm; two digits is the floor for a
+        one-byte find.
+        """
+        block = self.document().findBlockByNumber(row)
+        if not block.isValid():
+            return
+        start = block.position() + column * 3
+        cursor = self.textCursor()
+        cursor.setPosition(start)
+        cursor.setPosition(start + max(3 * length - 1, 2), QTextCursor.MoveMode.KeepAnchor)
+        self.setTextCursor(cursor)
+        self.centerCursor()
+
+    def set_highlights(self, spans: list[tuple[int, int, int, bool]]) -> None:
+        """Tint the rows' hex columns where detections landed.
+
+        ``(row, column, length, flagged)`` per span, in display coordinates.
+        """
+        document = self.document()
+        selections = []
+        for row, column, length, flagged in spans:
+            block = document.findBlockByNumber(row)
+            if not block.isValid():
+                continue
+            cursor = QTextCursor(document)
+            start = block.position() + column * 3
+            cursor.setPosition(start)
+            cursor.setPosition(start + max(3 * length - 1, 2), QTextCursor.MoveMode.KeepAnchor)
+            selection = QTextEdit.ExtraSelection()
+            selection.cursor = cursor
+            selection.format = highlight_format(flagged)
+            selections.append(selection)
+        self.setExtraSelections(selections)
 
     def header_text(self) -> str:
         """The column ruler, aligned with the hex columns by construction."""
@@ -364,7 +412,7 @@ class _TextPane(_Pane[_PaneHeader]):
     header_clicked = Signal()
     _bottom_inset = 0
 
-    def __init__(self, panel: ExtractView) -> None:
+    def __init__(self, panel: QWidget) -> None:
         super().__init__(panel, _PaneHeader)
         self.setObjectName("textPane")
         # The hex pane carries the scrollbars; this one follows it.
@@ -379,7 +427,7 @@ class _TextPane(_Pane[_PaneHeader]):
             self._set_insets()
 
     def set_rows(self, rows: list[ExtractRow], encoding: ExtractEncoding) -> None:
-        self.setPlainText("\n".join(decode_row(row, encoding) for row in rows))
+        self.setPlainText("\n".join(decode_rows(rows, encoding)))
         self.set_encoding_label(encoding)
         self.sync_chrome()
 
@@ -414,26 +462,45 @@ class _TextPane(_Pane[_PaneHeader]):
 
 
 class ExtractView(QWidget):
-    """Read-only byte dump: hex on the left, one decoded text column on the right."""
+    """Read-only byte dump: what the stream is, one jump row, hex, then text."""
 
     encoding_changed = Signal(str)
 
     def __init__(self) -> None:
         super().__init__()
         self._encoding = ExtractEncoding.ASCII
+        self._rows: tuple[ExtractRow, ...] = ()
+        self._detections: tuple[Detection, ...] = ()
+        self._marks: tuple[Detection, ...] = ()
+        self._findings_key: tuple[str, tuple[Detection, ...]] | None = None
+        self._chips: tuple[QWidget, ...] = ()
         self.hex_pane = _HexPane(self)
         self.text_pane = _TextPane(self)
         for pane in (self.hex_pane, self.text_pane):
             # Set per pane: a font on the container does not survive the
             # stylesheet polish, and a proportional font breaks the columns.
             pane.setFont(dump_font())
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(_PANE_GAP)
+        self._type_label = QLabel()
+        self._type_label.setObjectName("note")
+        self._notice = QWidget()
+        self._notice_layout = QHBoxLayout(self._notice)
+        self._notice_layout.setContentsMargins(0, 0, 0, 4)
+        self._notice_layout.setSpacing(2)
+        self._notice_layout.addWidget(self._type_label)
+        self._notice_layout.addStretch(1)
+        self._notice.setVisible(False)
+        panes = QHBoxLayout()
+        panes.setContentsMargins(0, 0, 0, 0)
+        panes.setSpacing(_PANE_GAP)
         # Every column holds its own width; panel width beyond them stays empty.
-        layout.addWidget(self.hex_pane, 0)
-        layout.addWidget(self.text_pane, 0)
-        layout.addStretch(1)
+        panes.addWidget(self.hex_pane, 0)
+        panes.addWidget(self.text_pane, 0)
+        panes.addStretch(1)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(self._notice)
+        layout.addLayout(panes)
         self.text_pane.header_clicked.connect(self.show_encodings)
         # One document in two views: either scrollbar drags the other, and the
         # text pane takes the hex range so a hidden bar cannot skew them.
@@ -451,14 +518,82 @@ class ExtractView(QWidget):
         )
 
     def set_rows(self, rows: list[ExtractRow], encoding: ExtractEncoding) -> None:
+        self._rows = tuple(rows)
         self.hex_pane.set_rows(rows)
         self.text_pane.set_rows(rows, encoding)
         self.sync_encoding(encoding)
+        self._apply_highlights()
+
+    def set_findings(self, type_note: str, detections: tuple[Detection, ...]) -> None:
+        """The strip above the dump: the stream's type, then one chip per find.
+
+        A search filters the rows underneath, so the strip only rebuilds when
+        the findings themselves moved.
+        """
+        key = (type_note, detections)
+        if key == self._findings_key:
+            return
+        self._findings_key = key
+        self._detections = detections
+        self._type_label.setText(type_note)
+        self._notice.setVisible(bool(type_note) or bool(detections))
+        layout = self._notice_layout
+        for chip in self._chips:
+            layout.removeWidget(chip)
+            chip.deleteLater()
+        self._chips = (*map(self._chip, detections[:_MAX_CHIPS]), *self._overflow(len(detections)))
+        for chip in self._chips:
+            layout.insertWidget(layout.count() - 1, chip)
+        self._apply_highlights()
+
+    def _overflow(self, count: int) -> tuple[QWidget, ...]:
+        """The muted "+N" when the finds outrun the chip row."""
+        if count <= _MAX_CHIPS:
+            return ()
+        label = QLabel(text.more_detections(count - _MAX_CHIPS))
+        label.setObjectName("note")
+        return (label,)
+
+    def _chip(self, detection: Detection) -> QPushButton:
+        chip = QPushButton(detection.chip)
+        chip.setObjectName("linkButton")
+        chip.setToolTip(text.DETECTION_TIP)
+        chip.setCursor(Qt.CursorShape.PointingHandCursor)
+        chip.clicked.connect(lambda _checked=False: self._reveal(detection))
+        return chip
+
+    def _reveal(self, detection: Detection) -> None:
+        span = _row_span(self._rows, detection)
+        if span is not None:
+            self.hex_pane.reveal(*span[:3])
+
+    def set_marks(self, marks: tuple[Detection, ...]) -> None:
+        """Static highlight spans of the dump itself, kept beside the finds."""
+        self._marks = marks
+        self._apply_highlights()
+
+    def _apply_highlights(self) -> None:
+        """Re-tint the dump: the document resets whenever the rows change."""
+        spans = [
+            span
+            for span in map(partial(_row_span, self._rows), (*self._marks, *self._detections))
+            if span is not None
+        ]
+        self.hex_pane.set_highlights(spans)
 
     def sync_encoding(self, encoding: ExtractEncoding) -> None:
         """Follow the state's encoding without asking for it back."""
         self._encoding = encoding
         self.text_pane.set_encoding_label(encoding)
+
+    def content_width(self) -> int:
+        """Pixels both panes need side by side, their gap included.
+
+        The panes hold fixed widths once rows arrive, so this is the width a
+        panel must offer to show the dump without scrolling it sideways —
+        askable before any rows exist, since it follows the fonts alone.
+        """
+        return ceil(self.hex_pane.width_wanted()) + ceil(self.text_pane.width_wanted()) + _PANE_GAP
 
     def choose_encoding(self, encoding: ExtractEncoding) -> None:
         """Ask for an encoding; the state decides and answers through set_rows."""
@@ -479,6 +614,32 @@ class ExtractView(QWidget):
                 lambda _checked=False, encoding=encoding: self.choose_encoding(encoding)
             )
         return menu
+
+
+def _row_span(
+    rows: tuple[ExtractRow, ...],
+    detection: Detection,
+) -> tuple[int, int, int, bool] | None:
+    """Where a detection sits in the rows on screen, filtered rows included.
+
+    ``(row, byte column, length, flagged)`` against the rows as displayed — a
+    find inside a row the search filtered out simply has no span.
+    """
+    for index, row in enumerate(rows):
+        if row.offset is None:
+            continue
+        column = detection.offset - row.offset
+        if 0 <= column < BYTES_PER_ROW:
+            return index, column, min(detection.length, BYTES_PER_ROW - column), detection.flagged
+    return None
+
+
+def highlight_format(flagged: bool) -> QTextCharFormat:
+    color = QColor(theme.WARNING if flagged else theme.ACCENT)
+    color.setAlpha(_HIGHLIGHT_ALPHA)
+    fmt = QTextCharFormat()
+    fmt.setBackground(color)
+    return fmt
 
 
 def dump_font() -> QFont:

@@ -50,6 +50,20 @@ class ScanOrder(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class ViewAdjust:
+    """Post-processing laid on the composed view: invert, grayscale, threshold."""
+
+    invert: bool = False
+    grayscale: bool = False
+    threshold: bool = False
+    level: int = 128
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.level <= 255:
+            raise ValueError("threshold level must be within 0..255")
+
+
+@dataclass(frozen=True, slots=True)
 class BitChoice:
     plane: str
     bit: int
@@ -97,6 +111,7 @@ class LoadedImage:
     planes: tuple[SamplePlane, ...]
     frame_count: int
     frame_index: int
+    frame_delays: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         if self.samples.dtype != np.uint16 or self.samples.ndim != 3:
@@ -116,16 +131,23 @@ class LoadedImage:
             raise ValueError("plane index must match its position")
         if self.frame_count < 1 or not 0 <= self.frame_index < self.frame_count:
             raise ValueError("frame index is outside the image")
+        if self.frame_delays and len(self.frame_delays) != self.frame_count:
+            raise ValueError("frame delays must cover every frame, or none of them")
 
     def plane(self, name: str) -> SamplePlane:
-        for candidate in self.planes:
-            if candidate.name == name:
-                return candidate
-        raise KeyError(name)
+        return plane_named(self.planes, name)
 
     @property
     def any_converted(self) -> bool:
         return any(plane.origin is SampleOrigin.CONVERTED for plane in self.planes)
+
+
+def plane_named(planes: tuple[SamplePlane, ...], name: str) -> SamplePlane:
+    """The plane of that name; ``KeyError`` when the set has none."""
+    try:
+        return next(plane for plane in planes if plane.name == name)
+    except StopIteration:
+        raise KeyError(name) from None
 
 
 def ensure_inside(image: LoadedImage, coord: PixelCoord) -> None:
@@ -163,6 +185,7 @@ class ViewerState:
     value_format: DisplayFormat = DisplayFormat.HEX
     extract_encoding: ExtractEncoding = ExtractEncoding.ASCII
     extract_order: ExtractOrder = ExtractOrder()
+    adjust: ViewAdjust = ViewAdjust()
     zoom: float = 1.0
     only_matched: bool = False
 

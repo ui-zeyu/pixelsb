@@ -7,13 +7,14 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
     QHBoxLayout,
-    QLabel,
     QLineEdit,
     QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
+from pixelsb.domain.classify import Classification, StreamClassifier
+from pixelsb.domain.detect import Detection, detect_patterns
 from pixelsb.domain.extract import (
     ExtractRow,
     applied_order,
@@ -30,11 +31,11 @@ from pixelsb.domain.models import (
     ViewerState,
 )
 from pixelsb.domain.selection import effective_selection
+from pixelsb.io.classify import stream_classifier
 from pixelsb.ui import text, theme
 from pixelsb.ui.bits import BitMatrix
-from pixelsb.ui.controls import Toggle, TogglePair
+from pixelsb.ui.controls import Toggle, TogglePair, hairline, section_title
 from pixelsb.ui.extract_view import ExtractView
-from pixelsb.ui.text import readout_text
 
 _STEPPER_WIDTH = 30  # the arrow buttons stay compact around the grid
 _STEPPER_GAP = 6  # the channel column's gap, reused to indent the plane row
@@ -65,6 +66,7 @@ class Inspector(QWidget):
     channel_order_requested = Signal(object)  # a tuple of channel names
     bit_order_requested = Signal(str)
     scan_requested = Signal(str)
+    save_requested = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -92,6 +94,10 @@ class Inspector(QWidget):
         self._view_key: tuple[object, ...] | None = None
         self._order_key: tuple[object, ...] | None = None
         self._extract_rows: tuple[ExtractRow, ...] = ()
+        self._extract_data = b""
+        self._classification: Classification | None = None
+        self._detections: tuple[Detection, ...] = ()
+        self._classify: StreamClassifier | None = None
         self._order_items: tuple[tuple[str, ...], ...] = ()
         # The three orders the extract stream reads: which channel's bits come
         # first, which end of a byte the first bit lands in, and which pixel
@@ -118,9 +124,9 @@ class Inspector(QWidget):
         layout.addLayout(self._bits_body())
         layout.addLayout(self._plane_row())
         layout.addSpacing(14)
-        layout.addWidget(_hairline())
+        layout.addWidget(hairline())
         layout.addSpacing(14)
-        layout.addWidget(_section_title(text.SECTION_EXTRACT))
+        layout.addWidget(section_title(text.SECTION_EXTRACT))
         layout.addWidget(self._order_row())
         layout.addWidget(self._extract_search)
         layout.addWidget(self._extract_view, 1)
@@ -145,7 +151,7 @@ class Inspector(QWidget):
         """Section title with the presets on the right."""
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
-        header.addWidget(_section_title(text.SECTION_BITS))
+        header.addWidget(section_title(text.SECTION_BITS))
         header.addStretch(1)
         presets = QWidget()
         row = QHBoxLayout(presets)
@@ -229,6 +235,13 @@ class Inspector(QWidget):
         layout.addWidget(self._bit_order)
         layout.addWidget(self._scan)
         layout.addStretch(1)
+        self._save_button = QPushButton(text.EXTRACT_SAVE)
+        self._save_button.setObjectName("ghost")
+        self._save_button.setToolTip(text.EXTRACT_SAVE_TIP)
+        self._save_button.setFixedHeight(theme.CONTROL_HEIGHT)
+        self._save_button.setEnabled(False)
+        self._save_button.clicked.connect(self.save_requested.emit)
+        layout.addWidget(self._save_button)
         return row
 
     def _on_channel_order(self, index: int) -> None:
@@ -282,8 +295,25 @@ class Inspector(QWidget):
                 if image is None
                 else extract_bytes(image, chosen, match, order=state.extract_order)
             )
+            self._extract_data = data
+            self._detections = detect_patterns(data)
+            self._classification = self._classifier()(data) if data else None
             self._extract_rows = tuple(format_extract(data))
+            self._save_button.setEnabled(bool(data))
         self._refresh_extract_view()
+        self._extract_view.set_findings(
+            text.classification_note(self._classification), self._detections
+        )
+
+    def _classifier(self) -> StreamClassifier:
+        """The stream reader, resolved on first use so magika loads only then."""
+        if self._classify is None:
+            self._classify = stream_classifier()
+        return self._classify
+
+    def extract_data(self) -> bytes:
+        """The full extracted stream, untruncated by the dump's display limit."""
+        return self._extract_data
 
     def _refresh_extract_view(self) -> None:
         """Re-render the panes when the rows, the search, or the encoding changed."""
@@ -296,23 +326,7 @@ class Inspector(QWidget):
         rows = filter_extract(list(self._extract_rows), query)
         self._extract_view.set_rows(rows, encoding)
 
-    def detail_text(self) -> str:
-        return readout_text(self._state)
-
     def preferred_width(self) -> int:
         """Panel width that holds both dump panes with a little room to spare."""
         hint = self.minimumSizeHint().width()
         return max(hint + _WIDTH_SLACK, self.minimumWidth())
-
-
-def _section_title(label: str) -> QLabel:
-    title = QLabel(label)
-    title.setObjectName("sectionTitle")
-    return title
-
-
-def _hairline() -> QFrame:
-    line = QFrame()
-    line.setObjectName("hairline")
-    line.setFixedHeight(1)
-    return line

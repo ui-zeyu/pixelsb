@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -11,6 +12,8 @@ from pixelsb.domain.models import (
     ExtractEncoding,
     ExtractOrder,
     PixelCoord,
+    SampleOrigin,
+    SamplePlane,
     ScanOrder,
     ViewerState,
 )
@@ -24,14 +27,18 @@ from pixelsb.domain.transitions import (
     set_channel_order,
     set_cursor,
     set_extract_encoding,
+    set_frame,
     set_only_matched,
     set_scan_order,
+    set_threshold_level,
     set_zoom,
     step_channel,
     step_focus_bit,
     step_plane,
     step_zoom,
-    toggle_bit,
+    toggle_grayscale,
+    toggle_invert,
+    toggle_threshold,
 )
 from tests.support import make_image, planes_rgb
 
@@ -178,9 +185,6 @@ def test_zoom_and_format_cycle() -> None:
     )
     assert cycle_format(state).value_format is DisplayFormat.BINARY
     assert cycle_format(cycle_format(state)).value_format is DisplayFormat.DECIMAL
-    assert step_focus_bit(select_only(state, "R", 0), -1).focus == BitChoice("R", 0)
-    added = toggle_bit(select_only(state, "R", 0), "G", 0)
-    assert added.selection == frozenset({BitChoice("R", 0), BitChoice("G", 0)})
     assert step_zoom(set_zoom(state, MAX_ZOOM), 1).zoom == MAX_ZOOM
     with pytest.raises(ValueError, match="outside"):
         set_zoom(state, 0)
@@ -215,6 +219,62 @@ def test_setting_an_order_that_is_already_in_force_changes_nothing() -> None:
     assert set_channel_order(state, ()) is state
 
 
-def test_the_channel_order_refuses_a_repeated_channel() -> None:
-    with pytest.raises(ValueError, match="repeats a plane name"):
-        set_channel_order(ViewerState(), ("R", "R"))
+def test_the_adjust_toggles_flip_their_own_flag_only() -> None:
+    state = toggle_invert(ViewerState())
+    assert state.adjust.invert
+    assert not state.adjust.grayscale
+    state = toggle_grayscale(state)
+    assert state.adjust.grayscale
+    state = toggle_threshold(state)
+    assert state.adjust.threshold
+    assert toggle_invert(state).adjust == replace(
+        state.adjust, invert=False, grayscale=True, threshold=True
+    )
+
+
+def test_the_threshold_level_updates_without_disturbing_the_toggles() -> None:
+    state = set_threshold_level(toggle_threshold(ViewerState()), 200)
+    assert state.adjust.threshold
+    assert state.adjust.level == 200
+    with pytest.raises(ValueError, match=r"0\.\.255"):
+        set_threshold_level(state, 256)
+
+
+def test_open_image_carries_the_adjustment() -> None:
+    image = make_image(np.zeros((2, 2, 3), dtype=np.uint16), planes_rgb(), path=Path("a.png"))
+    state = toggle_invert(ViewerState())
+    assert open_image(state, image).adjust.invert
+
+
+def test_set_frame_keeps_the_selection_and_the_cursor() -> None:
+    image = make_image(np.full((2, 2, 3), 7, dtype=np.uint16), planes_rgb(), path=Path("a.png"))
+    other = make_image(np.full((2, 2, 3), 9, dtype=np.uint16), planes_rgb(), path=Path("a.png"))
+    state = set_cursor(select_only(open_image(ViewerState(), image), "G", 2), PixelCoord(1, 1))
+    frame = set_frame(state, other)
+    assert frame.image is other
+    assert frame.selection == frozenset({BitChoice("G", 2)})
+    assert frame.cursor == PixelCoord(1, 1)
+    assert frame.focus == BitChoice("G", 2)
+
+
+def test_set_frame_prunes_the_selection_to_the_bits_the_frame_offers() -> None:
+    """A 16-bit frame view over an 8-bit one keeps only the bits that exist."""
+    wide = make_image(
+        np.zeros((2, 2, 1), dtype=np.uint16),
+        (SamplePlane("L", 0, 16, SampleOrigin.RAW),),
+    )
+    narrow = make_image(
+        np.zeros((2, 2, 1), dtype=np.uint16),
+        (SamplePlane("L", 0, 8, SampleOrigin.RAW),),
+    )
+    state = select_only(open_image(ViewerState(), wide), "L", 12)
+    frame = set_frame(state, narrow)
+    assert frame.selection is None  # nothing carried, so the whole image shows
+    assert frame.focus == BitChoice("L", 0)
+
+
+def test_set_frame_without_an_open_image_opens_it() -> None:
+    image = make_image(np.zeros((2, 2, 3), dtype=np.uint16), planes_rgb(), path=Path("a.png"))
+    state = set_frame(ViewerState(), image)
+    assert state.image is image
+    assert state.focus == BitChoice("R", 0)

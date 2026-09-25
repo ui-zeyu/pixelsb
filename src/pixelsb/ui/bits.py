@@ -46,25 +46,24 @@ class BitMatrix(QWidget):
             self._signature = signature
         if not planes:
             return
-        # One map decides everything: a box is its own entry, a row is a channel's
-        # bits, a column is that bit of every channel that has it.
-        checked = {
-            BitChoice(plane.name, bit): chosen is None or BitChoice(plane.name, bit) in chosen
-            for plane in planes
-            for bit in range(plane.bit_depth)
-        }
-        rows = {
-            plane.name: [checked[BitChoice(plane.name, bit)] for bit in range(plane.bit_depth)]
+        # Which bits are on, one row per channel. A box is its own entry, a row
+        # header reads its channel's list, and a column header reads that bit of
+        # every channel wide enough to have it.
+        on = {
+            plane.name: [
+                chosen is None or BitChoice(plane.name, bit) in chosen
+                for bit in range(plane.bit_depth)
+            ]
             for plane in planes
         }
         for choice, box in self._boxes.items():
-            _sync(box, _check_state(checked[choice]))
+            _sync(box, _check_state(on[choice.plane][choice.bit]))
         for name, box in self._row_boxes.items():
-            _sync(box, _group_state(rows[name]))
+            _sync(box, _group_state(on[name]))
         for bit, box in self._col_boxes.items():
             _sync(
                 box,
-                _group_state([rows[plane.name][bit] for plane in planes if bit < plane.bit_depth]),
+                _group_state([on[plane.name][bit] for plane in planes if bit < plane.bit_depth]),
             )
 
     def _rebuild(self, planes: tuple[SamplePlane, ...]) -> None:

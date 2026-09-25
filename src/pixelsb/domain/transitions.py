@@ -12,9 +12,12 @@ from pixelsb.domain.models import (
     ExtractOrder,
     LoadedImage,
     PixelCoord,
+    SamplePlane,
     ScanOrder,
+    ViewAdjust,
     ViewerState,
     ensure_inside,
+    plane_named,
 )
 from pixelsb.domain.selection import (
     all_bits,
@@ -47,9 +50,43 @@ def open_image(
         value_format=state.value_format,
         extract_encoding=state.extract_encoding,
         extract_order=state.extract_order,
+        adjust=state.adjust,
         zoom=chosen,
         only_matched=state.only_matched,
     )
+
+
+def set_frame(state: ViewerState, image: LoadedImage) -> ViewerState:
+    """Show another frame of the open file, keeping what carries over.
+
+    The selection survives pruned to the bits this frame actually offers —
+    GIF frames can decode into shifting modes — and a selection that carries
+    nothing falls back to the whole image, as a fresh open would.
+    """
+    previous = state.image
+    if previous is None:
+        return open_image(state, image)
+    chosen = frozenset(
+        choice
+        for choice in effective_selection(previous, state.selection)
+        if _offers(image, choice)
+    )
+    cursor = state.cursor
+    inside = cursor is not None and 0 <= cursor.x < image.width and 0 <= cursor.y < image.height
+    focus = state.focus if state.focus is not None and _offers(image, state.focus) else None
+    return replace(
+        state,
+        image=image,
+        cursor=cursor if inside else None,
+        selection=stored_selection(image, chosen) if chosen else None,
+        focus=focus or BitChoice(image.planes[0].name, 0),
+    )
+
+
+def _offers(image: LoadedImage, choice: BitChoice) -> bool:
+    """Whether the image has that plane, wide enough for the chosen bit."""
+    plane = next((plane for plane in image.planes if plane.name == choice.plane), None)
+    return plane is not None and choice.bit < plane.bit_depth
 
 
 def set_cursor(state: ViewerState, coord: PixelCoord) -> ViewerState:
@@ -139,10 +176,7 @@ def _set_members(
 
 def _channel_members(image: LoadedImage, name: str) -> frozenset[BitChoice]:
     """Every bit of one plane, validating the name."""
-    try:
-        plane = image.plane(name)
-    except KeyError as exc:
-        raise ValueError(f"unknown plane: {name}") from exc
+    plane = _required_plane(image, name)
     return frozenset(BitChoice(name, bit) for bit in range(plane.bit_depth))
 
 
@@ -247,6 +281,32 @@ def set_scan_order(state: ViewerState, scan: ScanOrder) -> ViewerState:
     return _with_order(state, replace(state.extract_order, scan=scan))
 
 
+def toggle_invert(state: ViewerState) -> ViewerState:
+    """Flip the view's invert post-processing."""
+    return _with_adjust(state, replace(state.adjust, invert=not state.adjust.invert))
+
+
+def toggle_grayscale(state: ViewerState) -> ViewerState:
+    """Flip the view's grayscale post-processing."""
+    return _with_adjust(state, replace(state.adjust, grayscale=not state.adjust.grayscale))
+
+
+def toggle_threshold(state: ViewerState) -> ViewerState:
+    """Flip the view's threshold post-processing."""
+    return _with_adjust(state, replace(state.adjust, threshold=not state.adjust.threshold))
+
+
+def set_threshold_level(state: ViewerState, level: int) -> ViewerState:
+    """The gray value the threshold post-processing splits the channels at."""
+    return _with_adjust(state, replace(state.adjust, level=level))
+
+
+def _with_adjust(state: ViewerState, adjust: ViewAdjust) -> ViewerState:
+    if adjust == state.adjust:
+        return state
+    return replace(state, adjust=adjust)
+
+
 def _with_order(state: ViewerState, order: ExtractOrder) -> ViewerState:
     if order == state.extract_order:
         return state
@@ -274,11 +334,16 @@ def _image(state: ViewerState) -> LoadedImage:
     return state.image
 
 
-def _choice(image: LoadedImage, plane: str, bit: int) -> BitChoice:
+def _required_plane(image: LoadedImage, name: str) -> SamplePlane:
+    """The plane of that name, or the error a transition raises for a bad one."""
     try:
-        sample_plane = image.plane(plane)
+        return plane_named(image.planes, name)
     except KeyError as exc:
-        raise ValueError(f"unknown plane: {plane}") from exc
+        raise ValueError(f"unknown plane: {name}") from exc
+
+
+def _choice(image: LoadedImage, plane: str, bit: int) -> BitChoice:
+    sample_plane = _required_plane(image, plane)
     if not 0 <= bit < sample_plane.bit_depth:
         raise ValueError(f"bit {bit} is outside 0..{sample_plane.bit_depth - 1}")
     return BitChoice(plane, bit)

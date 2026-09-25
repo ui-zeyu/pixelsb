@@ -1,5 +1,7 @@
 """StegSolve-style bit extraction: selected bits packed into bytes."""
 
+import codecs
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from itertools import batched, permutations
 from typing import Literal
@@ -7,6 +9,7 @@ from typing import Literal
 import numpy as np
 from numpy.typing import NDArray
 
+from pixelsb.domain import bytes_text
 from pixelsb.domain.models import (
     BitChoice,
     BitOrder,
@@ -23,6 +26,7 @@ DISPLAY_LINES = 4096
 BYTES_PER_ROW = 16
 HEX_WIDTH = BYTES_PER_ROW * 3 - 1
 ASCII_START = HEX_WIDTH + 2
+_LOOKBACK = 4  # bytes the longest character of a supported encoding can span
 
 # The order every caller gets unless it asks for another one. Shared rather than
 # built per default: it is frozen, so one instance serves every call.
@@ -33,9 +37,6 @@ _PACKBIT_ORDER: dict[BitOrder, Literal["big", "little"]] = {
     BitOrder.LSB: "little",
 }
 _MAX_ORDER_PLANES = 3  # StegSolve's set: every arrangement of three channels
-
-# Byte value -> itself when printable, a dot otherwise, for the ASCII column.
-_DOT_TABLE = bytes(byte if 32 <= byte <= 126 else ord(".") for byte in range(256))
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,11 +161,15 @@ def _bit_column(rows: SampleArray, index: int, bit: int) -> NDArray[np.uint8]:
     return ((rows[:, index] >> np.uint16(bit)) & np.uint16(1)).astype(np.uint8)
 
 
-def format_extract(data: bytes, limit: int = DISPLAY_LINES) -> list[ExtractRow]:
-    """Rows of hex and ASCII; the offset stays out of ``text`` for the gutter."""
+def format_extract(data: bytes, limit: int = DISPLAY_LINES, base: int = 0) -> list[ExtractRow]:
+    """Rows of hex and ASCII; the offset stays out of ``text`` for the gutter.
+
+    ``base`` is the stream position of the first byte, so a dump of one block
+    shows the offsets that byte has inside the file.
+    """
     shown = data[: limit * BYTES_PER_ROW]
     rows = [
-        ExtractRow(index * BYTES_PER_ROW, _row_text(bytes(chunk)), bytes(chunk))
+        ExtractRow(base + index * BYTES_PER_ROW, _row_text(bytes(chunk)), bytes(chunk))
         for index, chunk in enumerate(batched(shown, BYTES_PER_ROW, strict=False))
     ]
     if not rows:
@@ -177,22 +182,72 @@ def format_extract(data: bytes, limit: int = DISPLAY_LINES) -> list[ExtractRow]:
 def decode_row(row: ExtractRow, encoding: ExtractEncoding) -> str:
     """One row's bytes as text: printable characters, a dot for everything else.
 
-    Each row decodes on its own, like a hex editor's text column: a multi-byte
-    character split by the row boundary shows as a replacement there.
+    Each row decodes on its own, which is right for a byte-per-cell encoding and
+    for a row read in isolation: a multi-byte character split by the row
+    boundary shows as a replacement there. ``decode_rows`` is what a whole dump
+    uses, so a boundary does not break a character.
     """
     if not row.data:
         return ""
     if encoding is ExtractEncoding.ASCII:
-        text = row.data.translate(_DOT_TABLE).decode("ascii")
+        text = bytes_text.as_text(row.data)
     else:
         text = row.data.decode(encoding.value, errors="replace")
     return "".join(char if char.isprintable() else "." for char in text)
 
 
+def decode_rows(rows: Sequence[ExtractRow], encoding: ExtractEncoding) -> list[str]:
+    """One text line per row, characters read across the rows' own boundaries.
+
+    A character whose bytes straddle two rows is shown whole, in the row that
+    finishes it, so a comment in the dump reads as written; only a genuinely
+    invalid sequence becomes a replacement. Rows are only treated as neighbours
+    when their offsets really are adjacent, so a search that hides rows cannot
+    glue together bytes that were never next to each other. ASCII needs none of
+    this: one byte is one cell, row or no row.
+    """
+    if encoding is ExtractEncoding.ASCII:
+        return [decode_row(row, encoding) for row in rows]
+    decoder = codecs.getincrementaldecoder(encoding.value)
+    return [
+        _decode_joined(decoder, row, rows[index - 1] if index else None)
+        for index, row in enumerate(rows)
+    ]
+
+
+def _decode_joined(
+    decoder: Callable[..., codecs.IncrementalDecoder],
+    row: ExtractRow,
+    previous: ExtractRow | None,
+) -> str:
+    """One row of a dump: what its bytes add to the text the row above left off."""
+    if not row.data or row.offset is None:
+        return ""
+    incremental = decoder(errors="replace")
+    preceding = _preceding(previous, row)
+    if preceding:
+        # The lookback only finishes characters the row above already showed.
+        incremental.decode(preceding[-_LOOKBACK:])
+    text = incremental.decode(row.data)
+    return "".join(char if char.isprintable() else "." for char in text)
+
+
+def _preceding(previous: ExtractRow | None, row: ExtractRow) -> bytes:
+    """The bytes the row above ends with, when it really is the row above.
+
+    A row with no offset is a note, and rows whose offsets do not touch are not
+    neighbours at all — a search that hides rows is the usual reason.
+    """
+    if previous is None or previous.offset is None or not previous.data:
+        return b""
+    if previous.offset + len(previous.data) != row.offset:
+        return b""
+    return previous.data
+
+
 def _row_text(chunk: bytes) -> str:
     hex_part = chunk.hex(" ")
-    ascii_part = chunk.translate(_DOT_TABLE).decode("ascii")
-    return f"{hex_part:<{HEX_WIDTH}}  {ascii_part}"
+    return f"{hex_part:<{HEX_WIDTH}}  {bytes_text.as_text(chunk)}"
 
 
 def filter_extract(rows: list[ExtractRow], query: str) -> list[ExtractRow]:

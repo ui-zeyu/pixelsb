@@ -11,6 +11,7 @@ from pixelsb.domain.models import (
     RgbArray,
     SampleArray,
     SamplePlane,
+    plane_named,
 )
 from pixelsb.domain.selection import bits_for, effective_selection
 
@@ -132,29 +133,36 @@ def _render(request: RenderRequest) -> RgbArray:
         return np.zeros((request.height, request.width, 3), dtype=np.uint8)
     if len(request.chosen) == 1:
         choice = next(iter(request.chosen))
-        gray = bit_plane(request.samples, _plane(request.planes, choice.plane), choice.bit)
+        gray = bit_plane(request.samples, plane_named(request.planes, choice.plane), choice.bit)
         return np.stack([gray, gray, gray], axis=-1)
     return _compose(request)
 
 
 def _compose(request: RenderRequest) -> RgbArray:
-    """Assemble the channels the selection touches, in plane order."""
+    """Assemble the channels the selection touches, in plane order.
+
+    The first group that carries anything paints the picture: the color triplet
+    (a channel the selection misses stays black), then a gray plane standing in
+    for the whole image, then alpha, which alone reads as gray rather than
+    compositing with itself. Alpha over a painted picture is what the
+    checkerboard shows through instead.
+    """
     scaled = _scaled_planes(request)
-    color = scaled.get("R"), scaled.get("G"), scaled.get("B")
-    # A gray plane stands in for the whole image, as it does on screen.
-    gray = next((value for name, value in scaled.items() if name in _GRAY_SLOTS), None)
     alpha = scaled.get("A")
-    if any(channel is not None for channel in color):
+    colors = [scaled.get(slot) for slot in _COLOR_SLOTS]
+    gray = next((scaled[slot] for slot in _GRAY_SLOTS if slot in scaled), None)
+    if any(channel is not None for channel in colors):
         blank = np.zeros((request.height, request.width), dtype=np.uint8)
-        painted = np.stack([blank if channel is None else channel for channel in color], axis=-1)
+        painted = np.stack([blank if channel is None else channel for channel in colors], axis=-1)
     elif gray is not None:
+        # A gray plane stands in for the whole image, as it does on screen.
         painted = np.stack([gray, gray, gray], axis=-1)
     elif alpha is not None:
         # Alpha alone reads as a gray image rather than compositing with itself.
-        painted = np.stack([alpha, alpha, alpha], axis=-1)
+        return np.stack([alpha, alpha, alpha], axis=-1)
     else:
         return np.zeros((request.height, request.width, 3), dtype=np.uint8)
-    if alpha is None or (gray is None and not any(channel is not None for channel in color)):
+    if alpha is None:
         return painted
     return composite_on_checkerboard(
         np.dstack([painted, alpha]), rows=request.rows, columns=request.columns
@@ -168,13 +176,6 @@ def _scaled_planes(request: RenderRequest) -> dict[str, ChannelArray]:
         for plane in request.planes
         if (bits := bits_for(request.chosen, plane.name))
     }
-
-
-def _plane(planes: tuple[SamplePlane, ...], name: str) -> SamplePlane:
-    for plane in planes:
-        if plane.name == name:
-            return plane
-    raise KeyError(name)
 
 
 def _masked_channel(

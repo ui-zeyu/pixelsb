@@ -68,23 +68,20 @@ def _indicator_pixels(state: Qt.CheckState) -> list[tuple[int, int, int]]:
     ]
 
 
-def test_a_checked_box_is_accent_with_a_light_tick(qapp: QApplication) -> None:
-    theme.apply_theme(qapp)
+def test_a_checked_box_is_accent_with_a_light_tick() -> None:
     pixels = _indicator_pixels(Qt.CheckState.Checked)
     assert pixels.count(_ACCENT) > 100
     # Only the tick is pure white; the widget's own background is not.
     assert pixels.count(_WHITE) > 5
 
 
-def test_a_partial_box_keeps_its_middle_light(qapp: QApplication) -> None:
-    theme.apply_theme(qapp)
+def test_a_partial_box_keeps_its_middle_light() -> None:
     pixels = _indicator_pixels(Qt.CheckState.PartiallyChecked)
     assert 0 < pixels.count(_ACCENT) < 100
     assert pixels.count(_WHITE) > 50
 
 
-def test_a_clear_box_draws_no_accent(qapp: QApplication) -> None:
-    theme.apply_theme(qapp)
+def test_a_clear_box_draws_no_accent() -> None:
     pixels = _indicator_pixels(Qt.CheckState.Unchecked)
     assert _ACCENT not in pixels
     assert pixels.count(_WHITE) > 50

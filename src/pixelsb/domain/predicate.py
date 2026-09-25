@@ -18,7 +18,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from functools import reduce
 from itertools import accumulate, pairwise
-from typing import Any, NamedTuple
+from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
@@ -377,7 +377,8 @@ def _compile_grid(bounds: list[Evaluator]) -> Evaluator:
     return evaluate
 
 
-class _Function(NamedTuple):
+@dataclass(frozen=True, slots=True)
+class _Function:
     """A filter function: what it takes, what it reads itself, and how it compiles."""
 
     params: tuple[str, ...]

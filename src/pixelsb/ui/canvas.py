@@ -24,6 +24,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QGestureEvent, QPinchGesture, QScrollArea, QWidget
 
+from pixelsb.domain.adjust import apply_adjust
 from pixelsb.domain.geometry import GRID_ZOOM, pixel_at
 from pixelsb.domain.labels import (
     region_texts,
@@ -51,9 +52,9 @@ from pixelsb.ui.theme import CANVAS
 
 _BACKGROUND = QColor(CANVAS)
 _CANVAS_RGB: tuple[int, int, int] = (
-    QColor(CANVAS).red(),
-    QColor(CANVAS).green(),
-    QColor(CANVAS).blue(),
+    _BACKGROUND.red(),
+    _BACKGROUND.green(),
+    _BACKGROUND.blue(),
 )
 _DRAG_THRESHOLD = 4
 _EMPTY_TARGET = QSize(320, 240)
@@ -181,7 +182,7 @@ class ImageCanvas(QWidget):
         if span is None:
             return None
         ys, xs = span
-        rendered = render_rgb_at(image, state.selection, ys, xs)
+        rendered = apply_adjust(render_rgb_at(image, state.selection, ys, xs), state.adjust)
         return match_view(rendered, match, ys, xs, _CANVAS_RGB)
 
     def set_state(
@@ -222,7 +223,7 @@ class ImageCanvas(QWidget):
             return _Frame()
         # The image object itself is the identity: id() values get recycled
         # after the previous image is freed, which would hit a stale cache.
-        content = (image, state.selection, state.filter_expr, state.only_matched)
+        content = (image, state.selection, state.filter_expr, state.only_matched, state.adjust)
         labels = (state.value_format, state.selection, state.filter_expr, match is not None)
         frame = self._frame
         if content == frame.content_key:
@@ -264,7 +265,7 @@ class ImageCanvas(QWidget):
             return _Frame(match=match, no_match=True, content_key=content, label_key=labels)
         # A shape-stale match falls back to the plain render rather than fading
         # pixels it does not describe.
-        rgb = render_rgb(image, state.selection)
+        rgb = apply_adjust(render_rgb(image, state.selection), state.adjust)
         if match is not None and match.shape == rgb.shape[:2]:
             fade_out(rgb, match)
         return _Frame(

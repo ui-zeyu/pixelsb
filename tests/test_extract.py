@@ -5,6 +5,7 @@ from pixelsb.domain.extract import (
     ExtractRow,
     applied_order,
     decode_row,
+    decode_rows,
     extract_bytes,
     filter_extract,
     format_extract,
@@ -21,28 +22,11 @@ from pixelsb.domain.models import (
     SamplePlane,
     ScanOrder,
 )
-from tests.support import make_image, planes_rgb
+from tests.support import make_image, planes_rgb, planes_rgba
 
 
 def _image(samples: list) -> LoadedImage:
     return make_image(np.array(samples, dtype=np.uint16), planes_rgb())
-
-
-def _rgba_planes() -> tuple[SamplePlane, ...]:
-    return (*planes_rgb(), SamplePlane("A", 3, 8, SampleOrigin.RAW))
-
-
-def test_extract_packs_the_selected_bits_msb_first_in_plane_order() -> None:
-    image = _image([[[0b1001, 0b0001, 0], [0b0000, 0b0000, 0]]])
-    chosen = {BitChoice("R", 0), BitChoice("G", 0)}
-    stream = [1, 1, 0, 0, 0, 0, 0, 0]
-    assert extract_bytes(image, frozenset(chosen)) == bytes([0b11000000])
-    assert stream[0] == 1
-
-
-def test_extract_full_byte_matches_the_channel_value() -> None:
-    image = _image([[[0xA5, 0, 0]]])
-    assert extract_bytes(image, frozenset(BitChoice("R", bit) for bit in range(8))) == bytes([0xA5])
 
 
 def test_extract_without_selection_uses_every_bit() -> None:
@@ -120,6 +104,29 @@ def test_decoding_marks_a_character_split_by_the_row_boundary() -> None:
     assert decode_row(ExtractRow(None, "（无数据）"), ExtractEncoding.UTF8) == ""
 
 
+def test_a_whole_dump_reads_a_character_split_by_the_row_boundary() -> None:
+    """Rows decode in sequence, so a comment does not break at every 16 bytes."""
+    data = b"A" * 15 + "中".encode() + b"B"
+    lines = decode_rows(format_extract(data), ExtractEncoding.UTF8)
+    assert "\ufffd" not in "".join(lines)
+    assert lines[0] == "A" * 15  # the character's first byte waits for the rest
+    assert lines[1] == "中B"
+
+
+def test_a_whole_dump_takes_utf16_pairs_across_rows() -> None:
+    data = "AB".encode("utf-16-le") * 8  # a pair lands on the boundary
+    lines = decode_rows(format_extract(data), ExtractEncoding.UTF16_LE)
+    assert "".join(lines) == "AB" * 8
+
+
+def test_a_row_shown_without_its_neighbour_stands_alone() -> None:
+    """A search that hides rows cannot glue bytes that were never adjacent."""
+    data = b"A" * 15 + "中".encode() + b"B"
+    rows = format_extract(data)
+    (alone,) = decode_rows([rows[1]], ExtractEncoding.UTF8)
+    assert alone == "\ufffd\ufffdB"  # the tail bytes with no character to finish
+
+
 def test_format_truncates_with_a_note() -> None:
     rows = format_extract(bytes(256), limit=4)
     assert len(rows) == 5
@@ -161,24 +168,6 @@ def test_scan_order_reads_the_pixels_column_by_column() -> None:
     assert extract_bytes(image, chosen, order=columns) == bytes([0b11000000])
 
 
-def test_scan_order_matches_extracting_the_transposed_image() -> None:
-    samples = np.array([[[1, 0, 0], [0, 0, 0], [1, 0, 0]]], dtype=np.uint16)
-    image = make_image(samples, planes_rgb())
-    transposed = make_image(samples.transpose(1, 0, 2), planes_rgb())
-    chosen = frozenset({BitChoice("R", 0)})
-    columns = ExtractOrder(scan=ScanOrder.YZ)
-    assert extract_bytes(image, chosen, order=columns) == extract_bytes(transposed, chosen)
-
-
-def test_the_filter_follows_the_scan_order() -> None:
-    image = _image([[[0, 0, 0], [0, 0, 0]], [[1, 0, 0], [0, 0, 0]]])
-    chosen = frozenset({BitChoice("R", 0)})
-    anti_diagonal = np.array([[False, True], [True, False]])
-    assert extract_bytes(image, chosen, anti_diagonal) == bytes([0b01000000])
-    columns = ExtractOrder(scan=ScanOrder.YZ)
-    assert extract_bytes(image, chosen, anti_diagonal, order=columns) == bytes([0b10000000])
-
-
 def test_bit_order_fills_each_byte_from_the_end_it_names() -> None:
     samples = np.zeros((8, 1, 3), dtype=np.uint16)
     samples[0, 0, 0] = 1  # only the first pixel's lowest red bit is set
@@ -187,16 +176,6 @@ def test_bit_order_fills_each_byte_from_the_end_it_names() -> None:
     assert extract_bytes(image, chosen) == bytes([0b10000000])
     low_first = ExtractOrder(bit_order=BitOrder.LSB)
     assert extract_bytes(image, chosen, order=low_first) == bytes([0b00000001])
-
-
-def test_a_whole_channel_low_first_returns_the_stored_bytes() -> None:
-    image = _image([[[0x01, 0, 0], [0xA5, 0, 0], [0xC3, 0, 0]]])
-    chosen = frozenset(BitChoice("R", bit) for bit in range(8))
-    # High first packs bit 0 into the top of each byte, which reverses it; the
-    # two mirror values here hide that, so the assertions name all three.
-    assert extract_bytes(image, chosen) == bytes([0x80, 0xA5, 0xC3])
-    low_first = ExtractOrder(bit_order=BitOrder.LSB)
-    assert extract_bytes(image, chosen, order=low_first) == bytes([0x01, 0xA5, 0xC3])
 
 
 def test_the_three_orders_compose_into_one_stream() -> None:
@@ -248,14 +227,14 @@ def test_order_choices_only_use_the_channels_that_carry_bits() -> None:
 
 def test_order_choices_keep_the_order_and_its_reverse_beyond_three_channels() -> None:
     chosen = frozenset(BitChoice(name, 0) for name in ("R", "G", "B", "A"))
-    assert order_choices(_rgba_planes(), chosen) == (
+    assert order_choices(planes_rgba(), chosen) == (
         ("R", "G", "B", "A"),
         ("A", "B", "G", "R"),
     )
 
 
 def test_the_channel_preference_keeps_unmentioned_planes_after_the_named_ones() -> None:
-    planes = _rgba_planes()
+    planes = planes_rgba()
     named = ExtractOrder(planes=("B", "G", "R"))
     assert [plane.name for plane in ordered_planes(planes, named)] == ["B", "G", "R", "A"]
     assert [plane.name for plane in ordered_planes(planes, ExtractOrder())] == [

@@ -20,6 +20,7 @@ TEXT = "#1d1f23"
 TEXT_MUTED = "#6b7280"
 TEXT_DISABLED = "#a8adb5"
 ACCENT = "#2f6feb"
+WARNING = "#f59f00"
 DANGER = "#d9534f"
 
 # One height for boxes and inputs, so a row of controls reads as one band.
@@ -62,7 +63,9 @@ QLabel#muted, QLabel#note, QLabel#zoomLabel, QLabel#sectionTitle {{ color: {TEXT
 QLabel#sectionTitle {{ font-size: 11px; font-weight: 600; }}
 QLabel#note {{ font-size: 11px; }}
 QLabel#zoomLabel {{ font-size: 12px; }}
-QLabel#error {{ color: {DANGER}; }}
+QLabel#infoName {{ font-size: 13px; font-weight: 600; }}
+QLabel#infoLine {{ font-size: 12px; }}
+QLabel#warnNote {{ color: {WARNING}; font-size: 12px; }}
 
 QPushButton, QComboBox {{
     background: {SURFACE};
@@ -87,6 +90,9 @@ QPushButton#segmentLeft:checked, QPushButton#segmentRight:checked {{
 }}
 QPushButton#linkButton {{ border: none; background: transparent; color: {ACCENT}; padding: 0 4px; }}
 QPushButton#linkButton:hover {{ background: {HOVER}; }}
+QPushButton#blockName {{ padding: 0 7px; min-height: 15px; }}
+QPushButton#blockName[shown="true"] {{ color: {ACCENT}; font-weight: 600; }}
+QPushButton#blockName[dumped="true"] {{ background: {HOVER}; border-color: {ACCENT}; }}
 QPushButton#ghost {{ border: none; background: transparent; color: {TEXT}; padding: 2px 8px; }}
 QPushButton#ghost:hover {{ background: {HOVER}; }}
 QPushButton#ghost:pressed {{ background: {PRESSED}; }}
@@ -154,11 +160,27 @@ QScrollArea#canvasArea, QScrollArea#canvasArea > QWidget > QWidget {{
     background: {CANVAS};
     border: none;
 }}
-QScrollArea#inspectorArea, QScrollArea#inspectorArea > QWidget > QWidget {{
+QScrollArea#panelArea, QScrollArea#panelArea > QWidget > QWidget {{
     background: {SURFACE};
     border: none;
     border-left: 1px solid {HAIRLINE};
 }}
+QScrollArea#dumpArea, QScrollArea#dumpArea > QWidget > QWidget {{
+    background: {SURFACE};
+    border: none;
+}}
+QFrame#sidePanel {{ background: {SURFACE}; border-right: 1px solid {HAIRLINE}; }}
+QFrame#sideRail {{ background: {SURFACE}; border-left: 1px solid {HAIRLINE}; }}
+QToolButton#railButton {{
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: {TEXT_MUTED};
+    font-size: 15px;
+    padding: 0;
+}}
+QToolButton#railButton:hover {{ background: {HOVER}; color: {TEXT}; }}
+QToolButton#railButton:checked {{ background: {HOVER}; color: {ACCENT}; }}
 QSplitter::handle {{ background: transparent; }}
 QSplitter::handle:horizontal {{ width: 9px; }}
 

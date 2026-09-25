@@ -81,23 +81,19 @@ def test_unchecking_a_bit_from_the_original_materializes_the_selection() -> None
 def test_labels_use_the_cell_bigness_instead_of_tiny_fonts() -> None:
     assert font_pixel_size(20, "FF") == 13
     assert font_pixel_size(128, "1") == 92
+    assert font_pixel_size(63, "R FF\nG FF\nB FF") == 16
     assert zoom_required("1") == 9
     assert zoom_required("FF") == 9
     assert label_fits(9, "1")
     assert not label_fits(8, "1")
     assert label_fits(9, "FF")
     assert not label_fits(8, "FF")
-
-
-def test_channel_lines_stack_so_the_font_stays_big() -> None:
-    rgb_hex = "R FF\nG FF\nB FF"
-    assert zoom_required(rgb_hex) == 21
-    assert font_pixel_size(63, rgb_hex) == 16
-    assert label_fits(21, rgb_hex)
-    assert not label_fits(20, rgb_hex)
-    two_lines = "R1\nG0"
-    assert zoom_required(two_lines) == 15
-    assert label_fits(15, two_lines)
+    # One line per active channel: the stack needs a taller cell, not a smaller font.
+    assert zoom_required("R FF\nG FF\nB FF") == 21
+    assert label_fits(21, "R FF\nG FF\nB FF")
+    assert not label_fits(20, "R FF\nG FF\nB FF")
+    assert zoom_required("R1\nG0") == 15
+    assert label_fits(15, "R1\nG0")
 
 
 def test_region_texts_matches_pixel_text_and_is_clipped() -> None:

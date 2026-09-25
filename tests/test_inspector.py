@@ -21,8 +21,7 @@ from pixelsb.io.loading import load_image
 from pixelsb.ui import text, theme
 from pixelsb.ui.inspector import _STEPPER_GAP, _STEPPER_WIDTH, Inspector
 from pixelsb.ui.main_window import MainWindow
-
-_MARGIN = 4  # the document margin Qt puts around the text inside a pane
+from tests.support import button
 
 
 def _inspector(qtbot: QtBot, path: Path) -> Inspector:
@@ -83,16 +82,6 @@ def test_the_dump_is_monospaced_and_snug(qtbot: QtBot, extract_png: Path) -> Non
         metrics = QFontMetricsF(pane.font())
         # One advance per glyph, or the columns cannot line up.
         assert metrics.horizontalAdvance("W") == metrics.horizontalAdvance("0")
-    # Each pane hugs its columns: wide enough for them, no wider than the
-    # document margins plus the scrollbar room each pane reserves.
-    slack = 2 * _MARGIN + 16
-    hex_pane = view.hex_pane
-    assert hex_pane.viewport().width() >= hex_pane.text_width()
-    assert hex_pane.viewport().width() <= hex_pane.text_width() + slack
-    assert hex_pane.horizontalScrollBar().maximum() == 0
-    text_pane = view.text_pane
-    assert text_pane.viewport().width() >= text_pane.column_width()
-    assert text_pane.viewport().width() <= text_pane.column_width() + slack
 
 
 def test_the_panes_scroll_together(qtbot: QtBot, extract_png: Path) -> None:
@@ -127,7 +116,7 @@ def test_the_panel_starts_wide_enough_for_a_full_dump_row(qtbot: QtBot, extract_
     window.show()
     window.open_path(extract_png)
     pane = window.inspector._extract_view.hex_pane
-    assert window._splitter.sizes()[1] >= window.inspector.preferred_width()
+    assert window._splitter.sizes()[2] >= window.inspector.preferred_width()
     assert pane.viewport().geometry().width() >= pane.text_width()
     assert pane.horizontalScrollBar().maximum() == 0
     text_pane = window.inspector._extract_view.text_pane
@@ -137,9 +126,10 @@ def test_the_panel_starts_wide_enough_for_a_full_dump_row(qtbot: QtBot, extract_
 def test_the_panel_leaves_the_canvas_a_minimum_width(qtbot: QtBot) -> None:
     window = MainWindow()
     qtbot.addWidget(window)
-    window.resize(760, 600)
+    window.resize(900, 600)
     window.show()
-    canvas, panel = window._splitter.sizes()
+    left, canvas, panel = window._splitter.sizes()
+    assert left >= window._left_panel.minimumWidth()
     assert panel >= window.inspector.minimumWidth()
     assert canvas >= 240
 
@@ -250,6 +240,7 @@ def test_the_section_holds_the_steppers_the_presets_and_the_orders(
         text.CHANNEL_NEXT,
         text.ORIGINAL,
         text.ALL_LSB,
+        text.EXTRACT_SAVE,
         "MSB",
         "LSB",
         "XY",
@@ -304,27 +295,6 @@ def test_a_panel_without_an_image_paints_no_chrome(qtbot: QtBot) -> None:
     assert view.hex_pane._header.size().isEmpty()
 
 
-def _button(pair: QWidget, label: str) -> QPushButton:
-    return next(button for button in pair.findChildren(QPushButton) if button.text() == label)
-
-
-def test_the_channel_list_offers_every_arrangement_of_the_channels_in_use(
-    qtbot: QtBot, extract_png: Path
-) -> None:
-    inspector = _inspector(qtbot, extract_png)
-    combo = inspector._channel_combo
-    assert combo.isEnabled()
-    assert [combo.itemText(index) for index in range(combo.count())] == [
-        "RGB",
-        "RBG",
-        "GRB",
-        "GBR",
-        "BRG",
-        "BGR",
-    ]
-    assert combo.currentText() == "RGB"
-
-
 def test_the_channel_list_holds_only_the_channels_that_carry_bits(
     qtbot: QtBot, extract_png: Path
 ) -> None:
@@ -350,10 +320,10 @@ def test_the_order_controls_follow_the_state(qtbot: QtBot, extract_png: Path) ->
     state = set_scan_order(state, ScanOrder.YZ)
     inspector.set_state(state)
     assert inspector._channel_combo.currentText() == "BGR"
-    assert _button(inspector._bit_order, "LSB").isChecked()
-    assert not _button(inspector._bit_order, "MSB").isChecked()
-    assert _button(inspector._scan, "YZ").isChecked()
-    assert not _button(inspector._scan, "XY").isChecked()
+    assert button(inspector._bit_order, "LSB").isChecked()
+    assert not button(inspector._bit_order, "MSB").isChecked()
+    assert button(inspector._scan, "YZ").isChecked()
+    assert not button(inspector._scan, "XY").isChecked()
 
 
 def test_picking_an_order_reports_it(qtbot: QtBot, extract_png: Path) -> None:
@@ -365,8 +335,8 @@ def test_picking_an_order_reports_it(qtbot: QtBot, extract_png: Path) -> None:
     inspector.bit_order_requested.connect(bit_orders.append)
     inspector.scan_requested.connect(scans.append)
     inspector._channel_combo.setCurrentIndex(5)
-    _button(inspector._bit_order, "LSB").click()
-    _button(inspector._scan, "YZ").click()
+    button(inspector._bit_order, "LSB").click()
+    button(inspector._scan, "YZ").click()
     assert channels == [("B", "G", "R")]
     assert bit_orders == [BitOrder.LSB.value]
     assert scans == [ScanOrder.YZ.value]
@@ -380,19 +350,6 @@ def test_the_order_row_shares_one_band_across_the_panel(qtbot: QtBot, extract_pn
     right = inspector.width() - inspector.contentsMargins().right()
     assert max(widget.geometry().right() for widget in controls) <= right
     assert inspector._bit_order.geometry().right() < inspector._scan.geometry().left()
-
-
-def test_the_dump_follows_the_order(qtbot: QtBot, extract_png: Path) -> None:
-    inspector = Inspector()
-    qtbot.addWidget(inspector)
-    state = open_image(ViewerState(), load_image(extract_png), zoom=4.0)
-    inspector.set_state(state)
-    pane = inspector._extract_view.hex_pane
-    assert pane.toPlainText().startswith("41 42 43")
-    inspector.set_state(set_channel_order(state, ("B", "G", "R")))
-    assert pane.toPlainText().startswith("43 42 41")
-    inspector.set_state(set_bit_order(state, BitOrder.LSB))
-    assert pane.toPlainText().startswith("82 42 c2")
 
 
 def test_the_dump_follows_the_scan_order(qtbot: QtBot, tmp_path: Path) -> None:

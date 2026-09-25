@@ -5,7 +5,7 @@ import pytest
 from PIL import Image
 
 from pixelsb.domain.models import SampleOrigin
-from pixelsb.io.loading import ImageLoadError, load_image
+from pixelsb.io.loading import ImageLoadError, load_frame, load_image
 
 
 def test_rgb_and_rgba_keep_raw_channels(tmp_path: Path) -> None:
@@ -98,17 +98,53 @@ def test_cmyk_is_marked_converted(tmp_path: Path) -> None:
 
 
 def test_gif_reports_every_frame_and_decodes_the_first(tmp_path: Path) -> None:
+    _animated_gif(tmp_path)
+    loaded = load_image(tmp_path / "anim.gif")
+    assert loaded.frame_count == 3
+    assert loaded.frame_index == 0
+    assert loaded.frame_delays == (40, 50, 60)
+    assert int(loaded.samples[0, 0, loaded.plane("Index").index]) == 0
+
+
+def test_load_frame_decodes_the_frame_it_is_asked_for(tmp_path: Path) -> None:
+    _animated_gif(tmp_path)
+    second = load_frame(tmp_path / "anim.gif", 1)
+    assert second.frame_index == 1
+    assert second.frame_delays == (40, 50, 60)
+    # PIL hands later GIF frames out in their own mode; what matters is the
+    # pixel: palette color 1 is the red entry.
+    assert second.samples[0, 0].tolist() == [255, 0, 0]
+    first = load_frame(tmp_path / "anim.gif", 0)
+    assert int(first.samples[0, 0, first.planes[0].index]) == 0
+
+
+def test_load_frame_refuses_indexes_outside_the_image(tmp_path: Path) -> None:
+    _animated_gif(tmp_path)
+    with pytest.raises(ImageLoadError):
+        load_frame(tmp_path / "anim.gif", 3)
+    with pytest.raises(ImageLoadError):
+        load_frame(tmp_path / "anim.gif", -1)
+
+
+def test_a_single_frame_image_reports_no_delays(tmp_path: Path) -> None:
+    image = Image.new("RGB", (1, 1))
+    path = tmp_path / "still.png"
+    image.save(path)
+    loaded = load_image(path)
+    assert loaded.frame_delays == ()
+    with pytest.raises(ImageLoadError):
+        load_frame(path, 1)
+
+
+def _animated_gif(tmp_path: Path) -> list[Image.Image]:
     frames = []
     for index in range(3):
         frame = Image.new("P", (1, 1), color=index)
         frame.putpalette([0, 0, 0, 255, 0, 0, 0, 255, 0] + [0] * 759)
         frames.append(frame)
     path = tmp_path / "anim.gif"
-    frames[0].save(path, save_all=True, append_images=frames[1:], duration=40, loop=0)
-    loaded = load_image(path)
-    assert loaded.frame_count == 3
-    assert loaded.frame_index == 0
-    assert int(loaded.samples[0, 0, loaded.plane("Index").index]) == 0
+    frames[0].save(path, save_all=True, append_images=frames[1:], duration=[40, 50, 60], loop=0)
+    return frames
 
 
 def test_missing_and_undecodable_files_raise(tmp_path: Path) -> None:

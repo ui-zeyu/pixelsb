@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSlider,
+    QSpinBox,
     QSplitter,
     QStatusBar,
     QTextEdit,
@@ -43,18 +44,23 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from pixelsb.domain.adjust import apply_adjust
 from pixelsb.domain.geometry import SLIDER_STEPS, initial_zoom, slider_position, slider_zoom
 from pixelsb.domain.models import (
     MAX_ZOOM,
     MIN_ZOOM,
+    BitChoice,
     BitOrder,
     DisplayFormat,
     ExtractEncoding,
+    LoadedImage,
     PixelCoord,
     ScanOrder,
+    ViewAdjust,
     ViewerState,
 )
 from pixelsb.domain.predicate import PredicateError, compile_filter
+from pixelsb.domain.samples import render_rgb
 from pixelsb.domain.selection import effective_selection
 from pixelsb.domain.transitions import (
     cycle_format,
@@ -73,19 +79,27 @@ from pixelsb.domain.transitions import (
     set_extract_encoding,
     set_filter_expr,
     set_format,
+    set_frame,
     set_only_matched,
     set_scan_order,
+    set_threshold_level,
     set_zoom,
     step_channel,
     step_focus_bit,
     step_plane,
     toggle_bit,
+    toggle_grayscale,
+    toggle_invert,
+    toggle_threshold,
 )
-from pixelsb.io.loading import ImageLoadError, load_image
+from pixelsb.io.loading import ImageLoadError, load_frame, load_image
+from pixelsb.io.writing import save_rgb
 from pixelsb.ui import text, theme
 from pixelsb.ui.canvas import CanvasMode, ImageCanvas
+from pixelsb.ui.info import InfoPanel
 from pixelsb.ui.inspector import Inspector
 from pixelsb.ui.painting import lighten_clear_button
+from pixelsb.ui.side_panels import Panel, SidePanels
 from pixelsb.ui.store import Store, Transition
 from pixelsb.ui.text import readout_text, status_info, status_view
 
@@ -94,6 +108,8 @@ type ErrorReporter = Callable[[str], None]
 _FILTER_ERROR_STYLE = f"QLineEdit {{ border: 1px solid {theme.DANGER}; }}"
 _TEXT_INPUTS = (QLineEdit, QAbstractSpinBox, QPlainTextEdit, QTextEdit, QComboBox)
 _CANVAS_MIN_WIDTH = 260
+_LEFT_MIN_WIDTH = 160
+_LEFT_WIDTH = 220
 _NUDGE_STEP = 8  # a shift-arrow moves this many pixels instead of one
 _FORMAT_ITEMS = tuple(
     (fmt.value, label)
@@ -165,6 +181,10 @@ class MainWindow(QMainWindow):
         except ImageLoadError as exc:
             self._reporter(text.open_failed(str(exc)))
             return
+        self.open_loaded(image)
+
+    def open_loaded(self, image: LoadedImage) -> None:
+        """Show an already-decoded image, fitted and from the top left."""
         zoom = self._fit_zoom((image.width, image.height))
         self.apply(partial(open_image, image=image, zoom=zoom))
         self._scroll.horizontalScrollBar().setValue(0)
@@ -210,12 +230,15 @@ class MainWindow(QMainWindow):
         super().showEvent(event)
 
     def _size_panel(self) -> None:
-        """Give the inspector the width its dump needs, once, before any dragging."""
+        """Give the right panel the width its pages' content needs, once."""
         width = self.width()
-        wanted = self.inspector.preferred_width()
-        limit = max(width - self._splitter.handleWidth() - _CANVAS_MIN_WIDTH, 1)
+        handles = 2 * self._splitter.handleWidth()
+        # Both pages hold a two-pane dump; the wider one decides the panel.
+        wanted = max(self.inspector.preferred_width(), self.info_panel.preferred_width())
+        limit = max(width - handles - _LEFT_WIDTH - _CANVAS_MIN_WIDTH, 1)
         panel = min(max(wanted, self.inspector.minimumWidth()), limit)
-        self._splitter.setSizes([max(width - panel, 1), panel])
+        canvas = max(width - panel - _LEFT_WIDTH - handles, 1)
+        self._splitter.setSizes([_LEFT_WIDTH, canvas, panel])
 
     @override
     def closeEvent(self, event: QCloseEvent) -> None:
@@ -237,6 +260,9 @@ class MainWindow(QMainWindow):
         open_action = file_menu.addAction(text.OPEN)
         open_action.setShortcut(QKeySequence.StandardKey.Open)
         open_action.triggered.connect(_drop_checked(self._open_dialog))
+        file_menu.addSeparator()
+        info_action = file_menu.addAction(text.FILE_INFO)
+        info_action.triggered.connect(_drop_checked(self._show_info))
         file_menu.addSeparator()
         quit_action = file_menu.addAction(text.QUIT)
         quit_action.setShortcut(QKeySequence.StandardKey.Quit)
@@ -267,7 +293,17 @@ class MainWindow(QMainWindow):
         layout = QHBoxLayout(row)
         layout.setContentsMargins(14, 10, 14, 10)
         layout.setSpacing(8)
-        for widget in (*self._filter_widgets(), *self._mode_widgets(), *self._zoom_widgets()):
+        self._export_button = self._ghost_button(text.VIEW_EXPORT, 0, self._export_view)
+        self._export_button.setToolTip(text.VIEW_EXPORT_TIP)
+        self._export_button.setFixedHeight(theme.CONTROL_HEIGHT)
+        widgets = (
+            *self._filter_widgets(),
+            *self._mode_widgets(),
+            *self._adjust_widgets(),
+            *self._zoom_widgets(),
+            self._export_button,
+        )
+        for widget in widgets:
             layout.addWidget(widget)
         # The filter box takes whatever width the controls to its right leave.
         layout.setStretch(0, 1)
@@ -318,6 +354,42 @@ class MainWindow(QMainWindow):
         self._mode_group.setExclusive(True)
         self._mode_group.buttonClicked.connect(self._on_mode)
         return self._only_matched, self._mode_move, self._mode_select
+
+    def _adjust_widgets(self) -> tuple[QWidget, ...]:
+        """The view post-processing toggles, and the threshold box when it is on."""
+        self._invert_toggle = self._adjust_button(
+            text.ADJUST_INVERT, text.ADJUST_INVERT_TIP, toggle_invert
+        )
+        self._grayscale_toggle = self._adjust_button(
+            text.ADJUST_GRAYSCALE, text.ADJUST_GRAYSCALE_TIP, toggle_grayscale
+        )
+        self._threshold_toggle = self._adjust_button(
+            text.ADJUST_THRESHOLD, text.ADJUST_THRESHOLD_TIP, toggle_threshold
+        )
+        self._threshold_level = QSpinBox()
+        self._threshold_level.setRange(0, 255)
+        self._threshold_level.setValue(self.store.state.adjust.level)
+        self._threshold_level.setFixedWidth(64)
+        self._threshold_level.setFixedHeight(theme.CONTROL_HEIGHT)
+        self._threshold_level.setToolTip(text.THRESHOLD_LEVEL_TIP)
+        self._threshold_level.setVisible(False)
+        self._threshold_level.valueChanged.connect(self._on_threshold_level)
+        return (
+            self._invert_toggle,
+            self._grayscale_toggle,
+            self._threshold_toggle,
+            self._threshold_level,
+        )
+
+    def _adjust_button(self, label: str, tip: str, transition: Transition) -> QPushButton:
+        """A checkable ghost toggle; the state stays the single source of truth."""
+        button = QPushButton(label)
+        button.setObjectName("ghost")
+        button.setCheckable(True)
+        button.setToolTip(tip)
+        button.setFixedHeight(theme.CONTROL_HEIGHT)
+        button.clicked.connect(_drop_checked(partial(self.apply, transition)))
+        return button
 
     def _zoom_widgets(self) -> tuple[QWidget, ...]:
         """The zoom steppers, the slider, the readout, and the format switch."""
@@ -395,26 +467,42 @@ class MainWindow(QMainWindow):
         self.inspector.channel_order_requested.connect(self._on_channel_order)
         self.inspector.bit_order_requested.connect(self._on_bit_order)
         self.inspector.scan_requested.connect(self._on_scan_order)
-        inspector_scroll = QScrollArea()
-        inspector_scroll.setObjectName("inspectorArea")
-        inspector_scroll.setWidgetResizable(True)
-        inspector_scroll.setWidget(self.inspector)
-        inspector_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.inspector.save_requested.connect(self._save_extract)
+
+        self.info_panel = InfoPanel()
+        self.info_panel.render_requested.connect(self.open_loaded)
+        self._panels = SidePanels()
+        self._panels.add(Panel.INFO, text.PANEL_INFO, text.PANEL_INFO_TIP, self.info_panel)
+        self._panels.add(Panel.BITS, text.PANEL_BITS, text.PANEL_BITS_TIP, self.inspector)
+
+        self._left_panel = QFrame()
+        self._left_panel.setObjectName("sidePanel")
+        self._left_panel.setMinimumWidth(_LEFT_MIN_WIDTH)
 
         splitter = QSplitter()
         self._splitter = splitter
+        splitter.addWidget(self._left_panel)
         splitter.addWidget(self._scroll)
-        splitter.addWidget(inspector_scroll)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 0)
+        splitter.addWidget(self._panels)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setStretchFactor(2, 0)
         splitter.setChildrenCollapsible(False)
         self.setCentralWidget(splitter)
 
     def _build_statusbar(self) -> None:
         self._status_info = QLabel()
         self._status_view = QLabel()
+        self._frame_prev = self._ghost_button(text.FRAME_PREV, 24, partial(self._step_frame, -1))
+        self._frame_prev.setToolTip(text.FRAME_PREV_TIP)
+        self._frame_next = self._ghost_button(text.FRAME_NEXT, 24, partial(self._step_frame, 1))
+        self._frame_next.setToolTip(text.FRAME_NEXT_TIP)
+        self._frame_status = _muted_label()
         status = QStatusBar()
         status.addWidget(self._status_info, 1)
+        status.addPermanentWidget(self._frame_prev)
+        status.addPermanentWidget(self._frame_status)
+        status.addPermanentWidget(self._frame_next)
         status.addPermanentWidget(self._status_view)
         self.setStatusBar(status)
 
@@ -475,6 +563,7 @@ class MainWindow(QMainWindow):
         self._sync_controls(state)
         self.canvas.set_state(state, match.mask)
         self.inspector.set_state(state, match.mask)
+        self.info_panel.set_image(state.image)
         info = status_info(state)
         filtering = bool(state.filter_expr.strip())
         if filtering and match.error is not None:
@@ -566,13 +655,43 @@ class MainWindow(QMainWindow):
             self._filter_edit,
             self._mode_move,
             self._mode_select,
+            self._invert_toggle,
+            self._grayscale_toggle,
+            self._threshold_toggle,
             self._zoom_in,
             self._zoom_out,
             self._zoom_fit,
             self._zoom_reset,
             self._zoom_slider,
+            self._export_button,
         ):
             widget.setEnabled(enabled)
+        for button, on in (
+            (self._invert_toggle, state.adjust.invert),
+            (self._grayscale_toggle, state.adjust.grayscale),
+            (self._threshold_toggle, state.adjust.threshold),
+        ):
+            button.blockSignals(True)
+            button.setChecked(on)
+            button.blockSignals(False)
+        level = self._threshold_level
+        level.blockSignals(True)
+        if level.value() != state.adjust.level:
+            level.setValue(state.adjust.level)
+        level.blockSignals(False)
+        level.setVisible(enabled and state.adjust.threshold)
+        multi = image is not None and image.frame_count > 1
+        self._frame_prev.setEnabled(multi)
+        self._frame_next.setEnabled(multi)
+        self._frame_status.setText(
+            text.frame_status(
+                image.frame_index,
+                image.frame_count,
+                image.frame_delays[image.frame_index] if image.frame_delays else 0,
+            )
+            if multi
+            else ""
+        )
         self._zoom_slider.blockSignals(True)
         self._zoom_slider.setValue(slider_position(state.zoom))
         self._zoom_slider.blockSignals(False)
@@ -621,6 +740,71 @@ class MainWindow(QMainWindow):
 
     def _on_scan_order(self, value: str) -> None:
         self.apply(partial(set_scan_order, scan=ScanOrder(value)))
+
+    def _on_threshold_level(self, value: int) -> None:
+        self.apply(partial(set_threshold_level, level=value))
+
+    def _step_frame(self, delta: int) -> None:
+        """Load and show the neighboring frame, keeping the whole view state."""
+        image = self.store.state.image
+        if image is None:
+            return
+        index = image.frame_index + delta
+        if not 0 <= index < image.frame_count:
+            return
+        try:
+            frame = load_frame(image.path, index)
+        except ImageLoadError as exc:
+            self._reporter(text.open_failed(str(exc)))
+            return
+        self.apply(partial(set_frame, image=frame))
+
+    def _export_view(self) -> None:
+        """Save the composed view, post-processing included, as an image file."""
+        state = self.store.state
+        image = state.image
+        if image is None:
+            return
+        selected, _chosen = QFileDialog.getSaveFileName(
+            self, text.VIEW_EXPORT, f"{image.path.stem}.png", text.ANY_FILE
+        )
+        if selected:
+            self._write_view(Path(selected), image, state.selection, state.adjust)
+
+    def _write_view(
+        self,
+        path: Path,
+        image: LoadedImage,
+        selection: frozenset[BitChoice] | None,
+        adjust: ViewAdjust,
+    ) -> None:
+        try:
+            save_rgb(apply_adjust(render_rgb(image, selection), adjust), path)
+        except (OSError, ValueError) as exc:
+            self._reporter(text.save_failed(str(exc)))
+            return
+        self._status_view.setText(text.saved_to(str(path)))
+
+    def _save_extract(self) -> None:
+        """Write the full extracted stream to a file, display limits aside."""
+        state = self.store.state
+        if state.image is None:
+            return
+        selected, _chosen = QFileDialog.getSaveFileName(
+            self, text.EXTRACT_SAVE, "extract.bin", text.ANY_FILE
+        )
+        if not selected:
+            return
+        try:
+            Path(selected).write_bytes(self.inspector.extract_data())
+        except OSError as exc:
+            self._reporter(text.save_failed(str(exc)))
+            return
+        self._status_view.setText(text.saved_to(selected))
+
+    def _show_info(self) -> None:
+        """The menu item raises the info page of the sidebar."""
+        self._panels.set_current(Panel.INFO)
 
     def _on_hover(self, x: int, y: int) -> None:
         self.apply(partial(set_cursor, coord=PixelCoord(x, y)))

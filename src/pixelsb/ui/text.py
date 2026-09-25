@@ -2,7 +2,10 @@
 
 from decimal import ROUND_HALF_UP, Decimal
 
-from pixelsb.domain.models import BitChoice, ExtractEncoding, SampleOrigin, ViewerState
+from pixelsb.domain.classify import Classification
+from pixelsb.domain.container import Block, BlockRole, ContainerReport, Finding
+from pixelsb.domain.detect import Detection, detect_patterns
+from pixelsb.domain.models import BitChoice, ExtractEncoding, LoadedImage, SampleOrigin, ViewerState
 from pixelsb.domain.readout import build_readout, label_zoom
 
 _TWO_PLACES = Decimal("0.01")
@@ -13,6 +16,11 @@ VIEW_MENU = "视图"
 HELP_MENU = "帮助"
 OPEN = "打开…"
 QUIT = "退出"
+FILE_INFO = "文件信息"
+PANEL_BITS = "▦"
+PANEL_BITS_TIP = "位选择与提取"
+PANEL_INFO = "ⓘ"
+PANEL_INFO_TIP = "文件信息"
 SHORTCUTS = "快捷键"
 ORIGINAL = "原图"
 ALL_LSB = "全部最低位"
@@ -74,10 +82,48 @@ MODE_MOVE = "移动"
 MODE_SELECT = "选区"
 MODE_MOVE_TIP = "拖动画布平移视图"
 MODE_SELECT_TIP = "拖动框选区域；回车把选区填入过滤器，Esc 取消"
+ADJUST_INVERT = "反相"
+ADJUST_GRAYSCALE = "灰度"
+ADJUST_THRESHOLD = "阈值"
+ADJUST_INVERT_TIP = "视图反相：每个通道取 255 − 原值，翻转黑白二维码或负片式隐藏图案"
+ADJUST_GRAYSCALE_TIP = "视图转灰度：按亮度合成通道，弱化颜色干扰、凸显低对比度区域"
+ADJUST_THRESHOLD_TIP = "视图二值化：通道值大于阈值的置白，其余置黑（在灰度之后、反相之前生效）"
+THRESHOLD_LEVEL_TIP = "阈值：0–255，画布按 通道值 > 阈值 二值化"
+VIEW_EXPORT = "导出"
+VIEW_EXPORT_TIP = "把当前位组合画面（含反相、灰度、阈值）存为图像文件"
+EXTRACT_SAVE = "保存"
+EXTRACT_SAVE_TIP = "把整条提取字节流写入文件"
+FRAME_PREV = "◀"
+FRAME_NEXT = "▶"
+FRAME_PREV_TIP = "上一帧"
+FRAME_NEXT_TIP = "下一帧"
+INFO_TITLE = "文件信息"
+SECTION_SCAN = "检查"
+SECTION_EXIF = "EXIF"
+INFO_NO_EXIF = "无 EXIF 信息"
+WARNING_MARK = "⚠"
+BLOCK_RENDER_TIP = "选中把这一块按所属的数据流渲染成像素"
+DUMP_TIP = "点击在下方查看这一块的十六进制转储（含块头与校验）"
+RENDER_FAILED = "无法渲染所选块"
+ANY_FILE = "所有文件 (*)"
+SAVE_FAILED = "无法保存"
+DETECTION_TIP = "点击跳到提取流中的这一段"
 
 
 def open_failed(detail: str) -> str:
     return f"{OPEN_FAILED}：{detail}"
+
+
+def save_failed(detail: str) -> str:
+    return f"{SAVE_FAILED}：{detail}"
+
+
+def saved_to(path: str) -> str:
+    return f"已保存 {path}"
+
+
+def more_detections(count: int) -> str:
+    return f"还有 {count} 处…"
 
 
 def filter_count(passed: int, total: int) -> str:
@@ -166,17 +212,122 @@ def readout_text(state: ViewerState) -> str:
 
 
 def status_info(state: ViewerState) -> str:
-    """Status bar, left: what is open."""
+    """Status bar, left: what is open. The frame cluster owns the frame position."""
     image = state.image
     if image is None:
         return NO_IMAGE
-    planes = ", ".join(
-        f"{plane.name} {plane.bit_depth}bit {ORIGIN_LABEL[plane.origin]}" for plane in image.planes
-    )
     note = f"  {CONVERTED_NOTE}" if image.any_converted else ""
     return (
         f"{image.path.name}  {image.width}×{image.height}  模式 {image.source_mode}  "
-        f"帧 {image.frame_index + 1}/{image.frame_count}  {planes}{note}"
+        f"{planes_text(image)}{note}"
+    )
+
+
+def frame_status(index: int, count: int, delay_ms: int) -> str:
+    """The status-bar frame indicator: the position, plus the frame's own delay."""
+    position = f"帧 {index + 1}/{count}"
+    return f"{position} · {delay_ms}ms" if delay_ms else position
+
+
+def classification_note(classification: Classification | None) -> str:
+    """How the extract panel names the stream, empty when nothing was recognized."""
+    if classification is None:
+        return ""
+    return f"类型 {classification.mime} · {classification.engine}"
+
+
+def finding_lines(report: ContainerReport) -> list[str]:
+    """One line per anomaly the census flagged, for the amber warning block."""
+    return [
+        _FINDING_TEXT[finding.kind].format(offset=finding.offset, length=finding.length)
+        for finding in report.findings
+    ]
+
+
+def payload_lines(findings: tuple[Finding, ...]) -> list[str]:
+    """Signature and flag hits inside the suspicious payloads, offsets relative."""
+    lines: list[str] = []
+    for finding in findings:
+        lines.extend(
+            _hit_text(detection, f"+0x{detection.offset:x}")
+            for detection in detect_patterns(finding.payload)
+        )
+        if finding.decoded:
+            lines.extend(
+                _hit_text(detection, "解压后") for detection in detect_patterns(finding.decoded)
+            )
+    return lines
+
+
+def _hit_text(detection: Detection, where: str) -> str:
+    """One hit line: a flag form gets quoted, a file signature gets named."""
+    if detection.flagged:
+        return f"疑似 flag「{detection.label}」（{where}）"
+    return f"内嵌 {detection.label} 文件签名（{where}）"
+
+
+def block_role_text(block: Block) -> str:
+    """The census's verdict for one block, plus its stream when it has one."""
+    role = "必需" if block.role is BlockRole.REQUIRED else "附属"
+    return f"{role} · 流 {block.group}" if block.group else role
+
+
+def canvas_note(block: Block, count: int) -> str:
+    """Which blocks the canvas is showing: a numbered stream, or one block.
+
+    Opening a file shows its first stream, so the note a fresh page carries is
+    the same sentence clicking that stream's name produces.
+    """
+    if not block.group:
+        return f"画布：{block.label}（按扫描行渲染）"
+    members = f"{block.label} 等 {count} 个块" if count > 1 else block.label
+    return f"画布：流 {block.group}（{members}）"
+
+
+def original_note() -> str:
+    """What the canvas shows when the census found no stream to name."""
+    return "画布：原图"
+
+
+def block_preview(block: Block) -> str:
+    """The block's payload as printable text — a comment reads, pixels do not."""
+    return block.preview
+
+
+def more_blocks(count: int) -> str:
+    return f"… 其余 {count} 个块从略"
+
+
+def dump_caption(block: Block, guessed: str = "") -> str:
+    """The dump's caption: which block, where it sits, how long, and its type."""
+    end = block.offset + block.length
+    guess = f" · 推测 {guessed}" if guessed else ""
+    return f"块转储 · {block.label} · 0x{block.offset:08x} – 0x{end:08x} · {block.length} B{guess}"
+
+
+def render_failed(detail: str) -> str:
+    return f"{RENDER_FAILED}：{detail}"
+
+
+_FINDING_TEXT = {
+    "duplicate-eof": "发现重复的结束标记（CVE-2023-28303 截图残留或手工拼接的痕迹）",
+    "idat-extra": "IDAT 数据流结束之后还有 {length} 字节不会被渲染（起于 0x{offset:x}）",
+    "idat-gap": "IDAT 块不连续：0x{offset:x} 处夹有其他块，其后的数据可能被阅读器忽略",
+    "idat-oversize": "像素数据解压后比图像需要多 {length} 字节，多出的扫描行不会被显示",
+    "stream-truncated": "0x{offset:x} 起的图像数据流不完整",
+}
+
+
+def file_facts(image: LoadedImage) -> str:
+    """The file card's format line: size, mode, frames."""
+    frames = f"帧 {image.frame_count}" if image.frame_count > 1 else "单帧"
+    return f"{image.width}×{image.height} · 模式 {image.source_mode} · {frames}"
+
+
+def planes_text(image: LoadedImage) -> str:
+    """The channel line: each plane's name, depth, and origin."""
+    return ", ".join(
+        f"{plane.name} {plane.bit_depth}bit {ORIGIN_LABEL[plane.origin]}" for plane in image.planes
     )
 
 
