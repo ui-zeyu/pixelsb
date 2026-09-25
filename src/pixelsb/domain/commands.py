@@ -11,7 +11,10 @@ A line names a single operation, and its first word says which kind it is:
 * **区域条件** — anything else: comparisons, arithmetic, coordinates, ``rect`` /
   ``grid``, and the bit fields inside them (``b > r``, ``left < 10``,
   ``B.0 == 1``). The text is handed to :mod:`pixelsb.domain.predicate`, which
-  reads it as its own expression language and decides which pixels it names.
+  reads it as its own expression language and decides which pixels it names. A
+  line whose shape is no condition at all — the tuple a stray comma makes, a
+  list, a call to something that is not a filter function — is refused outright,
+  so a typo never lands as an operation that only reports itself broken.
 
 ``and`` / ``or`` / ``not`` join operands of one kind, the way a typed language
 joins one type: a line that mixes a selection with a region condition is refused,
@@ -37,7 +40,7 @@ from pixelsb.domain.models import (
     XorMask,
     level_ceiling,
 )
-from pixelsb.domain.predicate import _with_bit_attributes
+from pixelsb.domain.predicate import _with_bit_attributes, condition_error
 from pixelsb.domain.selection import all_bits, channel_members, whole
 
 # A verb at the head of a line: the word itself, so a word that merely contains
@@ -68,9 +71,11 @@ def parse(text: str, planes: tuple[SamplePlane, ...]) -> Mask | None:
 
     ``None`` means the line is not finished — mid-word, mid-operator, mid-call —
     so nothing applies and the stack keeps what it had. The distinction is the
-    grammar's: a line the expression syntax reads is a region condition, complete
-    and applied even when it fails later at run time (an unknown field names no
-    pixels); a line the syntax still refuses is a sentence being typed.
+    grammar's: a line the expression syntax reads is a region condition, and the
+    box judges the *line* — a shape no condition can have (a stray comma's tuple,
+    a list, an unknown function) is refused, and the typist's words stay put to
+    be fixed. What the line *names* is the stack's business: a condition about a
+    field this image lacks is complete, and lands as a layer that says so.
     """
     line = text.strip()
     if not line:
@@ -85,7 +90,11 @@ def parse(text: str, planes: tuple[SamplePlane, ...]) -> Mask | None:
     except SyntaxError:
         return None
     part = _combine(tree, planes)
-    return BitsMask(part) if isinstance(part, frozenset) else RegionMask(_expression_text(part))
+    if isinstance(part, frozenset):
+        return BitsMask(part)
+    if (reason := condition_error(part)) is not None:
+        raise CommandError(reason)
+    return RegionMask(_expression_text(part))
 
 
 def text_of(mask: Mask, planes: tuple[SamplePlane, ...]) -> str | None:

@@ -130,6 +130,22 @@ def test_a_bad_region_expression_is_reported_and_keeps_the_image(
     assert window._filter_edit.styleSheet()  # the box says which layer is at fault
 
 
+def test_a_line_that_is_no_condition_keeps_its_words_and_stacks_nothing(
+    qtbot: QtBot, rgb_png: Path
+) -> None:
+    """A stray comma is a tuple, never an operation: the box says so and keeps the line."""
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.open_path(rgb_png)
+    edit = window._filter_edit
+    edit.setText("b>r and b, 0")
+    window._commit_filter()
+    assert masks(window.store.state) == ()
+    assert edit.text() == "b>r and b, 0"  # left as typed, never rewritten into a tuple
+    assert "逗号" in window._status_info.text()
+    assert edit.styleSheet()  # the box reddens like any refused line
+
+
 def test_filter_box_typing_and_focus_flow(qtbot: QtBot, rgb_png: Path) -> None:
     window = MainWindow()
     qtbot.addWidget(window)

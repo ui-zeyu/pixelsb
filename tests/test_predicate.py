@@ -327,8 +327,10 @@ def test_errors_name_the_problem() -> None:
         compile_filter("foo == 1", planes_rgb())
     with pytest.raises(PredicateError, match="不支持的函数"):
         compile_filter("len(R) > 0", planes_rgb())
-    with pytest.raises(PredicateError, match="不支持的表达式元素"):
+    with pytest.raises(PredicateError, match="列表"):
         compile_filter("[R] == 1", planes_rgb())
+    with pytest.raises(PredicateError, match="逗号"):
+        compile_filter("R, B", planes_rgb())
 
 
 def test_field_names_hold_one_field_per_name() -> None:

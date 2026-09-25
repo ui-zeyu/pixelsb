@@ -73,6 +73,25 @@ def test_a_region_condition_is_read_as_its_own_language() -> None:
     )
     assert commands.parse("B.0 == 1", _PLANES) == RegionMask("B.0 == 1")  # a bit field in a test
     assert commands.parse("x > 5", _PLANES) == RegionMask("x > 5")  # an unknown field, later
+    assert commands.parse("R.12 == 1", _PLANES) == RegionMask("R.12 == 1")  # a bit, later
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        ("b>r and b, 0", "逗号"),  # a comma is Python's tuple, not a condition
+        ("b.0, b.1", "逗号"),
+        ("[1, 2]", "列表"),
+        ("R[0]", "不支持的表达式元素"),
+        ("lambda: 1", "不支持的表达式元素"),
+        ("foo(1)", "不支持的函数"),
+        ("rect(0, 0)", "4 个参数"),
+    ],
+)
+def test_a_line_that_is_no_condition_at_all_is_refused(text: str, message: str) -> None:
+    """The box judges the line; whether the image can supply a field is the stack's."""
+    with pytest.raises(commands.CommandError, match=message):
+        commands.parse(text, _PLANES)
 
 
 @pytest.mark.parametrize(

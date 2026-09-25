@@ -53,6 +53,9 @@ _BIT_MARK = "_"
 _BIT_TOKEN = re.compile(r"\.\d+\Z")
 # A literal outside this range cannot mean anything a field could hold.
 _INT_MIN, _INT_MAX = -(2**63), 2**63 - 1
+# A shape check stands every name in for a channel this wide, so no bit a line
+# asks for is out of the stand-in's range (see :func:`condition_error`).
+_SHAPE_BITS = 64
 
 
 class PredicateError(Exception):
@@ -186,6 +189,31 @@ def compile_filter(expression: str, planes: tuple[SamplePlane, ...]) -> Filter:
     )
 
 
+def condition_error(node: ast.expr) -> str | None:
+    """Why a line cannot be read as one condition, or ``None`` when it can.
+
+    The compiler's own dispatch is the judge, run over a field table that stands
+    every name the line mentions in for a wide channel of its own. Whether *this
+    image* has that field is the stack's business: a condition about a plane the
+    picture lacks is still a layer that says so. What is left for the judge to
+    refuse is the shape of the line itself — a tuple from a stray comma, a list,
+    a subscript, a call to something that is not a filter function — which no
+    image could turn into a condition, so the box refuses the line and keeps it
+    for fixing instead of stacking an operation that can only report itself
+    broken.
+    """
+    names = {
+        name.id.lower(): Field(name.id, _SHAPE_BITS)
+        for name in ast.walk(node)
+        if isinstance(name, ast.Name)
+    }
+    try:
+        _compile_node(node, names)
+    except PredicateError as exc:
+        return str(exc)
+    return None
+
+
 def _compile_node(node: ast.expr, names: dict[str, Field]) -> Evaluator:
     match node:
         case ast.Constant(value=int() | float() as value):
@@ -225,6 +253,13 @@ def _compile_node(node: ast.expr, names: dict[str, Field]) -> Evaluator:
             return function.compile(bounds)
         case ast.Call():
             raise PredicateError(f"不支持的函数调用（可用：{_RECT}(x0, y0, x1, y1) 等）")
+        case ast.Tuple():
+            raise PredicateError(
+                "一行只写一个条件：逗号会被读成一组值（如 b, 0），"
+                "位选择之间用 or 连接，条件之间用 and 或 or"
+            )
+        case ast.List() | ast.Set() | ast.Dict():
+            raise PredicateError("一行只写一个条件：列表、集合、字典都不是条件")
         case _:
             raise PredicateError(f"不支持的表达式元素：{type(node).__name__}")
 
