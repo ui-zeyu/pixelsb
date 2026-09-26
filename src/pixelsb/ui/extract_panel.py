@@ -31,6 +31,7 @@ from pixelsb.domain.models import (
     ScanOrder,
     ViewerState,
 )
+from pixelsb.domain.selection import grid_planes
 from pixelsb.domain.transitions import bits_shadowed, current_bits
 from pixelsb.io.classify import stream_classifier
 from pixelsb.ui import text, theme
@@ -132,7 +133,7 @@ class ExtractPanel(QWidget):
         # a shadowing mask above may be the one packing. Before an image is open
         # there is no raster and nothing to pack, so the two agree.
         packed = chosen if raster is None else raster.selection
-        self._bits_editor.set_layer(planes, chosen)
+        self._bits_editor.set_layer(grid_planes(state.image.planes) if state.image else (), chosen)
         self._bits_editor.set_shadowed(bits_shadowed(state.layers, bits_layer))
         self._sync_order_controls(planes, packed)
         self._sync_extract(state, raster)

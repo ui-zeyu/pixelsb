@@ -1,5 +1,8 @@
 """The file-info page of the sidebar: the file, the container census, the EXIF."""
 
+import os
+import struct
+import tempfile
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -10,7 +13,9 @@ from PySide6.QtGui import QShowEvent
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
+    QHBoxLayout,
     QLabel,
+    QLayout,
     QLineEdit,
     QPushButton,
     QRadioButton,
@@ -21,18 +26,19 @@ from PySide6.QtWidgets import (
 )
 
 from pixelsb.domain.classify import StreamClassifier
-from pixelsb.domain.container import Block, BlockRole, ContainerReport, render_blocks
+from pixelsb.domain.container import Block, BlockRole, ContainerReport, SizeHint, render_blocks
 from pixelsb.domain.detect import Detection, detect_patterns
 from pixelsb.domain.extract import BYTES_PER_ROW, filter_extract, format_extract
-from pixelsb.domain.models import ExtractEncoding, LoadedImage
+from pixelsb.domain.models import ExtractEncoding, FrameGeometry, LoadedImage
 from pixelsb.io.classify import stream_classifier
 from pixelsb.io.inspect import exif_entries, inspect_container
-from pixelsb.io.loading import image_from_pixels
+from pixelsb.io.loading import frame_geometries, image_from_pixels, openable_repairs
 from pixelsb.ui import text, theme
 from pixelsb.ui.controls import drain, hairline, section_title
 from pixelsb.ui.extract_view import ExtractView, dump_font
 
 _MAX_BLOCKS = 64  # the census list stops here; huge files still scan in full
+_MAX_FRAMES = 400  # the frame table stops here; a long animation scrolls the page
 _CHUNK_HEADER = 8  # length plus type: the bytes in front of a chunk's payload
 _DUMP_MARGINS = 88  # the rail, the page's margins, and a little slack around the dump
 _DUMP_MAX_BYTES = 512  # the dump frame grows for this much data, then scrolls
@@ -54,6 +60,7 @@ class InfoPanel(QWidget):
     """
 
     render_requested = Signal(object)  # a LoadedImage rendered from blocks
+    open_requested = Signal(object)  # a repaired file's Path, for the window to open
 
     def __init__(self) -> None:
         super().__init__()
@@ -74,6 +81,11 @@ class InfoPanel(QWidget):
         self._planes = _note()
         self._warn = _note(name="warnNote")
         self._hits = _note()
+        self._sizes_note = _note(name="warnNote")
+        self._sizes_row = QHBoxLayout()
+        self._sizes_row.setSpacing(6)
+        self._sizes_host = QWidget()
+        self._sizes_host.setLayout(self._sizes_row)
         self._blocks_layout = QGridLayout()
         self._blocks_layout.setHorizontalSpacing(12)
         self._blocks_layout.setVerticalSpacing(3)
@@ -119,16 +131,26 @@ class InfoPanel(QWidget):
                 section_title(text.SECTION_SCAN),
                 self._warn,
                 self._hits,
+                self._sizes_note,
+                self._sizes_host,
                 blocks_host,
                 self._canvas_note,
             )
         )
+        self._frames_layout = QGridLayout()
+        self._frames_layout.setHorizontalSpacing(12)
+        self._frames_layout.setVerticalSpacing(4)
+        self._frames_card = _card(
+            section_title(text.SECTION_FRAMES), _layout_host(self._frames_layout)
+        )
+        self._frames_card.setVisible(False)
+        rows.addWidget(self._frames_card)
         # The dump sits outside the card: it is the extract view itself, and the
         # card frame would spend width the panel's own dump does not.
         rows.addWidget(self._dump_search)
         rows.addWidget(self._dump)
         self._exif_layout = QVBoxLayout()
-        rows.addWidget(_card(section_title(text.SECTION_EXIF), _exif_host(self._exif_layout)))
+        rows.addWidget(_card(section_title(text.SECTION_EXIF), _layout_host(self._exif_layout)))
         rows.addStretch(1)
         layout.addWidget(self._form, 1)
         self._form.setVisible(False)
@@ -167,6 +189,7 @@ class InfoPanel(QWidget):
         except OSError:
             self._file_data = b""
         self._render_census(inspect_container(image.path))
+        self._show_frames()
         self._show_exif(exif_entries(image.path))
 
     def _render_census(self, report: ContainerReport) -> None:
@@ -192,6 +215,53 @@ class InfoPanel(QWidget):
         )
         self._show_blocks()
         self._show_dump()
+        self._show_sizes()
+
+    def _show_sizes(self) -> None:
+        """The doctored-IHDR row: geometries a real decode accepts, best aspect first.
+
+        The census's byte-count candidates are necessary, never sufficient, so
+        each one is proved by an actual Pillow decode before it earns a button;
+        the ones that decode are what the row offers.
+        """
+        drain(self._sizes_row)
+        image = self._image
+        hints: tuple[SizeHint, ...] = ()
+        if image is not None:
+            hints = openable_repairs(image.path)
+        visible = bool(hints)
+        self._sizes_note.setVisible(visible)
+        self._sizes_host.setVisible(visible)
+        if not visible:
+            return
+        self._sizes_note.setText(text.SIZE_HINT_NOTE)
+        for hint in hints:
+            button = QPushButton(text.size_hint_label(hint))
+            button.setObjectName("ghost")
+            button.setToolTip(text.SIZE_OPEN_TIP)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.clicked.connect(lambda _checked=False, hint=hint: self._open_repaired(hint))
+            self._sizes_row.addWidget(button)
+        self._sizes_row.addStretch(1)
+
+    def _open_repaired(self, hint: SizeHint) -> None:
+        """Write a copy with the IHDR's width and height rewritten, and open it."""
+        report = self._report
+        if report is None or report.header is None or not self._file_data:
+            return
+        header = next(block for block in report.blocks if block.label == "IHDR")
+        at = header.payload_at
+        patched = (
+            self._file_data[:at]
+            + struct.pack(">II", hint.width, hint.height)
+            + self._file_data[at + 8 :]
+        )
+        handle, name = tempfile.mkstemp(
+            prefix=f"pixelsb-{hint.width}x{hint.height}-", suffix=".png"
+        )
+        with os.fdopen(handle, "wb") as file:
+            file.write(patched)
+        self.open_requested.emit(Path(name))
 
     def preferred_width(self) -> int:
         """Panel width that shows the block dump without scrolling it sideways."""
@@ -362,6 +432,30 @@ class InfoPanel(QWidget):
         classification = self._classify(payload)
         return classification.label if classification else ""
 
+    def _show_frames(self) -> None:
+        """The animation card: each frame's own rectangle and delay, GIF only.
+
+        A frame placed somewhere other than the canvas's corner is the tell this
+        table exists for, so its place is spelled out even when it is 0,0.
+        """
+        image = self._image
+        geometries: tuple[FrameGeometry, ...] = ()
+        if image is not None:
+            geometries = frame_geometries(image.path)
+        self._frames_card.setVisible(bool(geometries))
+        if not geometries:
+            return
+        drain(self._frames_layout)
+        for column, header in enumerate(text.FRAME_HEADERS):
+            self._frames_layout.addWidget(_note(header), 0, column)
+        shown = geometries[:_MAX_FRAMES]
+        for row, geometry in enumerate(shown, start=1):
+            for column, cell in enumerate(text.frame_row(geometry)):
+                self._frames_layout.addWidget(_note(cell), row, column)
+        hidden = len(geometries) - len(shown)
+        if hidden > 0:
+            self._frames_layout.addWidget(_note(text.more_frames(hidden)), len(shown) + 1, 0)
+
     def _show_exif(self, entries: tuple[tuple[str, str], ...]) -> None:
         drain(self._exif_layout)
         if not entries:
@@ -378,8 +472,8 @@ class InfoPanel(QWidget):
         self._exif_layout.addLayout(table)
 
 
-def _exif_host(layout: QVBoxLayout) -> QWidget:
-    """The EXIF card's inner widget: a host the table is drained into."""
+def _layout_host(layout: QLayout) -> QWidget:
+    """A card's inner widget: a host a table layout is drained into."""
     host = QWidget()
     host.setLayout(layout)
     return host

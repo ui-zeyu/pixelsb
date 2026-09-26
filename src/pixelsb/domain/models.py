@@ -18,6 +18,10 @@ MAX_ZOOM = 128.0
 # The widest level a value mask can name, whatever the image's planes are; the
 # useful ceiling for one image is the widest of its own planes (level_ceiling).
 MAX_LEVEL = 0xFFFF
+# The cat map's parameter bounds: a brute force finds large a and b, but past
+# int32 they stop fitting the arithmetic any canvas would run them in.
+ARNOLD_TIMES_MAX = 4096
+ARNOLD_PARAM_LIMIT = 0x7FFF_FFFF
 # The color trio a picture is composed from, in the order the channels carry it.
 COLOR_SLOTS = ("R", "G", "B")
 
@@ -230,7 +234,52 @@ class CropMask:
     """The canvas folded onto the pixels that survived: only they are drawn."""
 
 
-type Mask = BitsMask | RegionMask | InvertMask | GrayscaleMask | ThresholdMask | XorMask | CropMask
+@dataclass(frozen=True, slots=True)
+class FftMask:
+    """Every channel the selection carries, replaced by its log-magnitude spectrum.
+
+    A view of the frequency domain rather than a reversible edit: the bright
+    points away from the center are the periodic patterns a frequency-domain
+    watermark leaves, and the value masks read them as ordinary pixels. The
+    bits mask below this one decides which channels take part: uncheck a
+    channel there and its samples keep their stored values.
+    """
+
+
+@dataclass(frozen=True, slots=True)
+class ArnoldMask:
+    """The pixels rearranged by the inverse cat map, ``times`` times over.
+
+    This is the recovery direction: a picture scrambled by the forward map with
+    parameters ``(a, b)`` is read again by the same parameters here, because the
+    inverse of ``[[1, b], [a, ab+1]]`` is exactly ``[[ab+1, -b], [-a, 1]]``. It
+    needs the full square canvas: after the mix a cell's pixels come from one
+    row *and* one column at once, so the raster's own coordinate bookkeeping
+    cannot follow them, and coordinates start over from the transformed picture.
+    """
+
+    times: int = 1
+    a: int = 1
+    b: int = 1
+
+    def __post_init__(self) -> None:
+        if not 1 <= self.times <= ARNOLD_TIMES_MAX:
+            raise ValueError(f"cat map times must be within 1..{ARNOLD_TIMES_MAX}")
+        if abs(self.a) > ARNOLD_PARAM_LIMIT or abs(self.b) > ARNOLD_PARAM_LIMIT:
+            raise ValueError(f"cat map parameters must be within ±{ARNOLD_PARAM_LIMIT}")
+
+
+type Mask = (
+    BitsMask
+    | RegionMask
+    | InvertMask
+    | GrayscaleMask
+    | ThresholdMask
+    | XorMask
+    | CropMask
+    | FftMask
+    | ArnoldMask
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -365,6 +414,22 @@ class ExtractOrder:
     def __post_init__(self) -> None:
         if len(set(self.planes)) != len(self.planes):
             raise ValueError("channel order repeats a plane name")
+
+
+@dataclass(frozen=True, slots=True)
+class FrameGeometry:
+    """One animated frame's own rectangle on the canvas, and its delay.
+
+    A GIF places each frame at an offset and at its own size, which is where a
+    flag can hide; a full-canvas frame is the ordinary case.
+    """
+
+    index: int
+    width: int
+    height: int
+    x: int
+    y: int
+    delay: int
 
 
 @dataclass(frozen=True, slots=True, eq=False)

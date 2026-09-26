@@ -56,10 +56,12 @@ from pixelsb.domain.models import (
     ViewerState,
 )
 from pixelsb.domain.samples import render_export
+from pixelsb.domain.scan import ScanCandidate
 from pixelsb.domain.stack import resolve
 from pixelsb.domain.transitions import (
     add_layer,
     add_mask_text,
+    apply_arnold,
     bits_position,
     clear_layers,
     cycle_format,
@@ -69,6 +71,7 @@ from pixelsb.domain.transitions import (
     open_image,
     remove_layer,
     select_all_bits,
+    select_choices,
     select_lsb,
     select_lsb_at,
     select_lsbs,
@@ -93,12 +96,14 @@ from pixelsb.domain.transitions import (
 from pixelsb.io.loading import ImageLoadError, load_frame, load_image
 from pixelsb.io.writing import save_image
 from pixelsb.ui import text, theme
+from pixelsb.ui.arnold import ArnoldPanel
 from pixelsb.ui.canvas import CanvasMode, ImageCanvas
 from pixelsb.ui.controls import RETURN_KEYS
 from pixelsb.ui.extract_panel import ExtractPanel
 from pixelsb.ui.info import InfoPanel
 from pixelsb.ui.layers import LayerPanel
 from pixelsb.ui.painting import lighten_clear_button
+from pixelsb.ui.scan_panel import ScanPanel
 from pixelsb.ui.side_panels import Panel, SidePanels
 from pixelsb.ui.store import Store, Transition
 from pixelsb.ui.text import readout_text, status_info, status_view
@@ -183,29 +188,20 @@ class MainWindow(QMainWindow):
 
     @override
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        keypress = event.type() == QEvent.Type.KeyPress and isinstance(event, QKeyEvent)
+        if keypress and watched is self._filter_edit:
+            # Both commits are taken here rather than in returnPressed: the box
+            # reports a plain Enter either way, and the shift (or the Esc) is
+            # what says to stack the line, or take it back, instead of writing
+            # over the operation in hand.
+            if event.key() in RETURN_KEYS and event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                self._commit_filter(new=True)
+                return True
+            if event.key() == Qt.Key.Key_Escape:
+                self._clear_filter()
+                return True
         if (
-            event.type() == QEvent.Type.KeyPress
-            and isinstance(event, QKeyEvent)
-            and watched is self._filter_edit
-            and event.key() in RETURN_KEYS
-            and event.modifiers() & Qt.KeyboardModifier.ShiftModifier
-        ):
-            # Taken here rather than in returnPressed: the box reports a plain
-            # Enter, and the shift is what says to stack the line instead of
-            # writing over the operation in hand.
-            self._commit_filter(new=True)
-            return True
-        if (
-            event.type() == QEvent.Type.KeyPress
-            and isinstance(event, QKeyEvent)
-            and watched is self._filter_edit
-            and event.key() == Qt.Key.Key_Escape
-        ):
-            self._clear_filter()
-            return True
-        if (
-            event.type() == QEvent.Type.KeyPress
-            and isinstance(event, QKeyEvent)
+            keypress
             and not isinstance(watched, _TEXT_INPUTS)
             and self._should_handle_keys()
             and self._handle_key(event)
@@ -246,6 +242,8 @@ class MainWindow(QMainWindow):
         application = _application()
         if application is not None:
             application.removeEventFilter(self)
+        self.scan_panel.shutdown()
+        self.arnold_panel.shutdown()
         super().closeEvent(event)
 
     @override
@@ -436,11 +434,18 @@ class MainWindow(QMainWindow):
 
         self.info_panel = InfoPanel()
         self.info_panel.render_requested.connect(self.open_loaded)
+        self.info_panel.open_requested.connect(self.open_path)
+        self.scan_panel = ScanPanel()
+        self.scan_panel.apply_requested.connect(self._on_scan_applied)
+        self.arnold_panel = ArnoldPanel()
+        self.arnold_panel.picked.connect(self._on_arnold_picked)
         self._panels = SidePanels()
         self._panels.add(Panel.INFO, text.PANEL_INFO, text.PANEL_INFO_TIP, self.info_panel)
         self._panels.add(
             Panel.EXTRACT, text.PANEL_EXTRACT, text.PANEL_EXTRACT_TIP, self.extract_panel
         )
+        self._panels.add(Panel.SCAN, text.PANEL_SCAN, text.PANEL_SCAN_TIP, self.scan_panel)
+        self._panels.add(Panel.ARNOLD, text.PANEL_ARNOLD, text.PANEL_ARNOLD_TIP, self.arnold_panel)
 
         left = QScrollArea()
         left.setObjectName("layerArea")
@@ -735,6 +740,24 @@ class MainWindow(QMainWindow):
         self._zoom_slider.blockSignals(True)
         self._zoom_slider.setValue(slider_position(state.zoom))
         self._zoom_slider.blockSignals(False)
+        self.scan_panel.set_image(image)
+        raster = self._raster
+        self.arnold_panel.set_source(
+            None if raster is None else raster.samples,
+            () if raster is None else raster.planes,
+        )
+
+    # --- the scan page and the cat-map gallery ------------------------------
+
+    def _on_scan_applied(self, candidate: ScanCandidate) -> None:
+        """A scan row: its recipe into the stack, its read order into the extract panel."""
+        self.apply(partial(select_choices, choices=candidate.selection))
+        self.apply(partial(set_channel_order, names=candidate.order.planes))
+        self.apply(partial(set_bit_order, bit_order=candidate.order.bit_order))
+        self.apply(partial(set_scan_order, scan=candidate.order.scan))
+
+    def _on_arnold_picked(self, times: int, a: int, b: int) -> None:
+        self.apply(partial(apply_arnold, times=times, a=a, b=b))
 
     # --- the layer panel ---------------------------------------------------
 

@@ -1,5 +1,8 @@
 """Decode image files into read-only sample planes."""
 
+import io
+import struct
+import zlib
 from collections.abc import Callable
 from pathlib import Path
 
@@ -7,7 +10,8 @@ import numpy as np
 from numpy.typing import NDArray
 from PIL import Image
 
-from pixelsb.domain.models import LoadedImage, SampleArray, SampleOrigin, SamplePlane
+from pixelsb.domain.container import SizeHint, scan_container
+from pixelsb.domain.models import FrameGeometry, LoadedImage, SampleArray, SampleOrigin, SamplePlane
 
 type Decoded = tuple[SampleArray, tuple[SamplePlane, ...]]
 type Decoder = Callable[[Image.Image], Decoded]
@@ -26,7 +30,11 @@ def load_frame(path: Path, index: int) -> LoadedImage:
     """Load one frame of a (possibly multi-frame) image.
 
     Samples are native-endian uint16. Palette indexes stay separate from the
-    colors they look up, and 16-bit values keep their numeric samples.
+    colors they look up, and 16-bit values keep their numeric samples. A PNG
+    whose declared size does not fit its own data — the doctored-IHDR trick —
+    is retried under the geometries its byte count implies, closest to the
+    declared aspect first; the file on disk stays exactly as it was, and the
+    file-info page tells the whole story.
     """
     file_path = Path(path).expanduser()
     if not file_path.is_file():
@@ -43,7 +51,83 @@ def load_frame(path: Path, index: int) -> LoadedImage:
     except ImageLoadError:
         raise
     except Exception as exc:
+        repaired = _repaired_png(file_path, index)
+        if repaired is not None:
+            return repaired
         raise ImageLoadError(str(exc)) from exc
+
+
+def _repaired_png(path: Path, index: int) -> LoadedImage | None:
+    """The image a doctored IHDR was hiding, read under its own geometry.
+
+    The census's size hints are tried in their aspect order; the first one PIL
+    accepts wins, and a file whose data fits nothing comes back as failure, as
+    it always did. The bytes on disk are never touched.
+    """
+    try:
+        report = scan_container(path.read_bytes())
+    except OSError:
+        return None
+    if report.header is None:
+        return None
+    header_at = next((block.payload_at for block in report.blocks if block.label == "IHDR"), None)
+    if header_at is None:
+        return None
+    data = path.read_bytes()
+    for hint in report.sizes:
+        patched = _patched_ihdr(data, header_at, hint)
+        try:
+            with Image.open(io.BytesIO(patched)) as image:
+                if index and index >= max(int(getattr(image, "n_frames", 1) or 1), 1):
+                    continue
+                image.seek(index)
+                image.load()
+                return _decode(path, image, index, ())
+        except Exception:
+            continue
+    return None
+
+
+def openable_repairs(path: Path) -> tuple[SizeHint, ...]:
+    """The census's size hints that Pillow can actually decode, best first.
+
+    A byte count that matches a candidate geometry is necessary, never
+    sufficient: rows can carry filter bytes no renderer accepts, so every hint
+    is proved by a real decode before it earns a button.
+    """
+    try:
+        report = scan_container(Path(path).read_bytes())
+    except OSError:
+        return ()
+    if report.header is None or not report.sizes:
+        return ()
+    header_at = next((block.payload_at for block in report.blocks if block.label == "IHDR"), None)
+    if header_at is None:
+        return ()
+    data = Path(path).read_bytes()
+    good: list[SizeHint] = []
+    for hint in report.sizes:
+        try:
+            with Image.open(io.BytesIO(_patched_ihdr(data, header_at, hint))) as image:
+                image.load()
+        except Exception:
+            continue
+        good.append(hint)
+    return tuple(good)
+
+
+def _patched_ihdr(data: bytes, header_at: int, hint: SizeHint) -> bytes:
+    """The file's bytes with the IHDR's width and height replaced, CRC and all.
+
+    A patched chunk with the old checksum would be thrown out by the very
+    decoder this is meant to convince, so the CRC is recomputed over the chunk
+    type and the patched payload.
+    """
+    patched = bytearray(data)
+    patched[header_at : header_at + 8] = struct.pack(">II", hint.width, hint.height)
+    crc = zlib.crc32(bytes(patched[header_at - 4 : header_at + 13])) & 0xFFFFFFFF
+    patched[header_at + 13 : header_at + 17] = struct.pack(">I", crc)
+    return bytes(patched)
 
 
 def image_from_pixels(path: Path, pixels: NDArray[np.uint8]) -> LoadedImage:
@@ -67,6 +151,38 @@ def image_from_pixels(path: Path, pixels: NDArray[np.uint8]) -> LoadedImage:
         frame_count=1,
         frame_index=0,
     )
+
+
+def frame_geometries(path: Path) -> tuple[FrameGeometry, ...]:
+    """Each animated frame's own rectangle and delay, for the file-info table.
+
+    Only the formats that place frames on a canvas — GIF — have a rectangle to
+    give; anything else comes back empty. A seek reads the frame's header, not
+    its pixels, so the whole table costs far less than decoding the animation.
+    """
+    try:
+        with Image.open(Path(path).expanduser()) as image:
+            count = max(int(getattr(image, "n_frames", 1) or 1), 1)
+            frames: list[FrameGeometry] = []
+            for index in range(count):
+                image.seek(index)
+                extent = getattr(image, "dispose_extent", None)
+                if extent is None:
+                    return ()  # frames are full pictures here: no offset to report
+                x0, y0, x1, y1 = extent
+                frames.append(
+                    FrameGeometry(
+                        index,
+                        x1 - x0,
+                        y1 - y0,
+                        x0,
+                        y0,
+                        int(image.info.get("duration", 0) or 0),
+                    )
+                )
+            return tuple(frames)
+    except OSError, ValueError, EOFError, SyntaxError, KeyError:
+        return ()  # a file this broken has no frame table to show
 
 
 def _frame_delays(image: Image.Image) -> tuple[int, ...]:

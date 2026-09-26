@@ -7,6 +7,7 @@ from pixelsb.domain import commands
 from pixelsb.domain.models import (
     MAX_ZOOM,
     MIN_ZOOM,
+    ArnoldMask,
     BitChoice,
     BitOrder,
     BitsMask,
@@ -28,6 +29,7 @@ from pixelsb.domain.selection import (
     all_bits,
     channel_members,
     column_members,
+    grid_planes,
     lsb_bits,
     plane_ladder,
 )
@@ -137,7 +139,7 @@ def set_mask_text(state: ViewerState, text: str, *, layer: int | None = None) ->
     if not text.strip():
         bound = filter_position(state.layers, planes, layer)
         return state if bound is None else remove_layer(state, bound)
-    mask = commands.parse(text, planes)
+    mask = _mask_from_text(state, text)
     if mask is None:  # not finished: the box keeps the line, the stack keeps its layers
         return state
     position = filter_position(state.layers, planes, layer)
@@ -154,8 +156,50 @@ def add_mask_text(state: ViewerState, text: str) -> ViewerState:
     another operation first. A line still being typed, and an empty one, add
     nothing — there is no operation in them to stack.
     """
-    mask = commands.parse(text, _image(state).planes)
+    mask = _mask_from_text(state, text)
     return state if mask is None else _appended(state, mask)
+
+
+def _mask_from_text(state: ViewerState, text: str) -> Mask | None:
+    """The mask the line names, or ``None`` while it names none yet.
+
+    A mask this image cannot carry — the cat map wants a square — is refused
+    here rather than landed as a layer that could only report itself broken.
+    """
+    mask = commands.parse(text, _image(state).planes)
+    if mask is None:
+        return None
+    if isinstance(mask, ArnoldMask) and (image := _image(state)).width != image.height:
+        raise commands.CommandError(f"猫脸变换要方图：这张是 {image.width}×{image.height}")
+    return mask
+
+
+def apply_arnold(state: ViewerState, times: int, a: int, b: int) -> ViewerState:
+    """The brute gallery's landing: rewrite the cat-map layer it last wrote.
+
+    One layer carries the search's current answer, so clicking through
+    candidates never stacks a tower of half-tried transforms; with no cat-map
+    layer in the stack, the pick becomes a new one on top.
+    """
+    position = _topmost(state.layers, ArnoldMask)
+    mask = ArnoldMask(times, a, b)
+    return _remasked(state, position, mask) if position is not None else _appended(state, mask)
+
+
+def select_choices(
+    state: ViewerState,
+    choices: frozenset[BitChoice],
+) -> ViewerState:
+    """Show exactly these bits, the way the scan page and the grid both land.
+
+    The targeted bits mask is rewritten whole — the sweep's answer replaces
+    whatever it showed — and lands on the same mask the grid edits: the layer in
+    hand when it carries bits, else the topmost one, else a fresh one on top.
+    """
+    if not choices:
+        return state
+    focus = min(choices, key=lambda choice: (-choice.bit, choice.plane))
+    return replace(_edit_bits(state, None, lambda _current: frozenset(choices)), focus=focus)
 
 
 def _appended(state: ViewerState, mask: Mask) -> ViewerState:
@@ -240,7 +284,7 @@ def step_plane(state: ViewerState, delta: int, *, layer: int | None = None) -> V
     image = state.image
     if image is None or delta == 0:
         return state
-    ladder = plane_ladder(image.planes)
+    ladder = plane_ladder(grid_planes(image.planes))
     choice = _single_bit(state, layer)
     # A mask carried over from another image can show a bit this one has no plane
     # for; that is no single bit of *this* image, so the step enters at the end the
@@ -257,7 +301,7 @@ def step_channel(state: ViewerState, delta: int, *, layer: int | None = None) ->
     image = state.image
     if image is None or delta == 0:
         return state
-    names = [plane.name for plane in image.planes]
+    names = [plane.name for plane in grid_planes(image.planes)]
     current = current_bits(state, layer)
     # A view that is not already one whole channel starts just off the ladder,
     # so the first step lands on the channel the arrow points at.
@@ -282,11 +326,14 @@ def select_lsb(state: ViewerState, name: str, *, layer: int | None = None) -> Vi
 
 
 def select_lsb_at(state: ViewerState, position: int, *, layer: int | None = None) -> ViewerState:
-    """Show the lowest bit of the plane sitting at ``position``."""
+    """Show the lowest bit of the plane sitting at ``position`` in the grid order."""
     image = state.image
-    if image is None or not 0 <= position < len(image.planes):
+    if image is None:
         return state
-    return select_only(state, image.planes[position].name, 0, layer=layer)
+    shown = grid_planes(image.planes)
+    if not 0 <= position < len(shown):
+        return state
+    return select_only(state, shown[position].name, 0, layer=layer)
 
 
 def _edit_bits(
@@ -308,6 +355,14 @@ def _edit_bits(
     return _remasked(state, position, BitsMask(update(current)))
 
 
+def _topmost(layers: tuple[Layer, ...], kind: type[Mask]) -> int | None:
+    """The topmost layer whose mask is of that kind, or ``None`` when there is none."""
+    return next(
+        (index for index in reversed(range(len(layers))) if isinstance(layers[index].mask, kind)),
+        None,
+    )
+
+
 def bits_position(layers: tuple[Layer, ...], layer: int | None = None) -> int | None:
     """Where the bits mask an edit targets sits: the named one, the topmost, or neither.
 
@@ -319,14 +374,7 @@ def bits_position(layers: tuple[Layer, ...], layer: int | None = None) -> int | 
     named = None if layer is None or not 0 <= layer < len(layers) else layers[layer].mask
     if isinstance(named, BitsMask):
         return layer
-    return next(
-        (
-            position
-            for position in reversed(range(len(layers)))
-            if isinstance(layers[position].mask, BitsMask)
-        ),
-        None,
-    )
+    return _topmost(layers, BitsMask)
 
 
 def _bits_at(

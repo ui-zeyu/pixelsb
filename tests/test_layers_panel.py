@@ -254,7 +254,7 @@ def test_the_add_menu_offers_only_the_parameterless_masks(qtbot: QtBot) -> None:
     panel._fill_menu()
     labels = [action.text() for action in menu.actions()]
     assert labels == [text.mask_info(mask).label for mask in text.mask_menu()]
-    assert set(labels) == {"反相", "灰度", "裁剪"}
+    assert set(labels) == {"反相", "灰度", "裁剪", "频谱"}
     added: list[Mask] = []
     panel.add_requested.connect(added.append)
     menu.actions()[0].trigger()

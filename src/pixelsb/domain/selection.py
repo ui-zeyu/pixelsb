@@ -35,6 +35,17 @@ def plane_ladder(planes: tuple[SamplePlane, ...]) -> tuple[BitChoice, ...]:
     )
 
 
+def grid_planes(planes: tuple[SamplePlane, ...]) -> tuple[SamplePlane, ...]:
+    """The channels the bit grid shows, in its row order: alpha first, then the rest.
+
+    The palette index channel stays out of the grid — the stored numbers are one
+    plane too many for picking display bits, and its bits remain reachable
+    through the command line (``index.0``) and the sweep.
+    """
+    shown = [plane for plane in planes if plane.name != "Index"]
+    return tuple(sorted(shown, key=lambda plane: plane.name != "A"))
+
+
 def bits_for(selection: frozenset[BitChoice], plane: str) -> tuple[int, ...]:
     return tuple(sorted(choice.bit for choice in selection if choice.plane == plane))
 

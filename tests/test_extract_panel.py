@@ -438,3 +438,17 @@ def test_a_kept_channel_order_the_list_cannot_offer_leads_the_list(
     panel.channel_order_requested.connect(requested.append)
     combo.setCurrentIndex(1)
     assert requested == [("R", "G", "B", "A")]
+
+
+def test_the_grid_rows_are_alpha_first_without_the_index(qtbot: QtBot, tmp_path: Path) -> None:
+    """A palette image's grid reads A, R, G, B — the stored index stays out."""
+    rng = np.random.default_rng(2)
+    indexes = (rng.random((6, 6)) * 8).astype(np.uint8)
+    image = Image.fromarray(indexes, mode="P")
+    image.putpalette([16, 32, 48] * 256)
+    path = tmp_path / "palette.png"
+    image.save(path)
+    panel = _panel(qtbot, path)
+    matrix = panel._bits_editor._matrix
+    assert list(matrix._row_boxes) == ["A", "R", "G", "B"]
+    assert "Index" not in matrix._row_boxes

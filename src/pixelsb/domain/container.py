@@ -10,6 +10,7 @@ block, whatever it turns out to be. The census also keeps what a renderer would
 need to show the blocks' bytes as pixels: the PNG header and palette.
 """
 
+import math
 import struct
 import zlib
 from collections.abc import Sequence
@@ -26,6 +27,7 @@ from pixelsb.domain.models import RgbaArray, RgbArray
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 _JPEG_SIGNATURE = b"\xff\xd8"
 _CHANNELS = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}
+_SIZE_HINTS = 6  # candidate geometries shown for a doctored IHDR, at most
 
 
 class BlockRole(StrEnum):
@@ -105,11 +107,22 @@ class Finding:
 
 
 @dataclass(frozen=True, slots=True)
+class SizeHint:
+    """A (width, height) the pixel data on hand would fill exactly."""
+
+    width: int
+    height: int
+
+
+@dataclass(frozen=True, slots=True)
 class ContainerReport:
     """The census of one container: every block, and everything suspicious.
 
     For PNG the ``header`` and ``palette`` are kept so the blocks' bytes can be
-    rendered as pixels without touching the file again.
+    rendered as pixels without touching the file again. ``sizes`` names the
+    geometries the first stream's data would fill exactly, when that is not the
+    declared one — a doctored IHDR is the usual reason, and one of them is what
+    the picture was made with.
     """
 
     kind: str
@@ -117,6 +130,7 @@ class ContainerReport:
     findings: tuple[Finding, ...] = ()
     header: PngHeader | None = None
     palette: bytes = b""
+    sizes: tuple[SizeHint, ...] = ()
 
 
 def scan_container(data: bytes) -> ContainerReport:
@@ -146,7 +160,7 @@ def _scan_png(data: bytes) -> ContainerReport:
                 total,
                 role,
                 body,
-                _preview(body),
+                bytes_text.preview(body),
                 payload_at=pos + 8,
             )
         )
@@ -160,7 +174,7 @@ def _scan_png(data: bytes) -> ContainerReport:
         pos += total
         if label == "IEND":
             break  # the real structure ends here; everything after is residual
-    findings, stream_starts = _png_idat_findings(blocks, header)
+    findings, stream_starts, first_stream = _png_idat_findings(blocks, header)
     grouped = _group_idats(blocks, stream_starts)
     if pos < len(data):
         residual = data[pos:]
@@ -172,11 +186,18 @@ def _scan_png(data: bytes) -> ContainerReport:
                 len(residual),
                 BlockRole.ANCILLARY,
                 residual,
-                _preview(residual),
+                bytes_text.preview(residual),
                 payload_at=pos,
             )
         )
-    return ContainerReport("png", tuple(grouped), tuple(findings), header, palette)
+    return ContainerReport(
+        "png",
+        tuple(grouped),
+        tuple(findings),
+        header,
+        palette,
+        _size_candidates(header, first_stream),
+    )
 
 
 def _png_role(label: str) -> BlockRole:
@@ -184,26 +205,22 @@ def _png_role(label: str) -> BlockRole:
     return BlockRole.REQUIRED if label[:1].isupper() else BlockRole.ANCILLARY
 
 
-def _preview(body: bytes, limit: int = 32) -> str:
-    """The block's bytes as printable text; unprintable ones become dots."""
-    return bytes_text.preview(body, limit)
-
-
 def _png_idat_findings(
     blocks: list[Block],
     header: PngHeader | None,
-) -> tuple[list[Finding], list[int]]:
+) -> tuple[list[Finding], list[int], int]:
     """The IDAT audit: every stream found, whole, contiguous, just big enough.
 
     Tolerant readers render only the first stream and silently drop the rest —
     which is exactly where fake IDATs hide — so each stream beyond the first
     is reported where it starts, and its start doubles as a group number for
-    the census. Stream start offsets come back for that grouping.
+    the census. Stream start offsets come back for that grouping, and the first
+    stream's decompressed size for the geometry candidates.
     """
     findings: list[Finding] = []
     idat_blocks = [block for block in blocks if block.label == "IDAT"]
     if not idat_blocks:
-        return findings, []
+        return findings, [], 0
     positions = [index for index, block in enumerate(blocks) if block.label == "IDAT"]
     if any(later - earlier != 1 for earlier, later in pairwise(positions)):
         findings.append(Finding("idat-gap", blocks[positions[1]].offset))
@@ -236,7 +253,54 @@ def _png_idat_findings(
         if real != expected:
             surplus = streams[0][2][expected:] if real > expected else b""
             findings.append(Finding("idat-oversize", streams[0][1], abs(real - expected), surplus))
-    return findings, [start for start, _end, _out in streams]
+    return findings, [start for start, _end, _out in streams], len(streams[0][2]) if streams else 0
+
+
+def _size_candidates(header: PngHeader | None, actual: int) -> tuple[SizeHint, ...]:
+    """The geometries the stream's own byte count fills exactly, closest aspect first.
+
+    Only a *mismatch* gets candidates: when the declared pair already fits the
+    data there is nothing to repair, and a divisor walk of any byte count can
+    always spell out alternative (wrong) geometries. A doctored IHDR is the
+    classic reason for a mismatch — the data is another picture's — so the walk
+    asks one question per divisor: does this stride, with this many rows, use
+    the data up? The declared pair is the first candidate to drop out; what is
+    left is worth a try.
+    """
+    if header is None or header.interlace != 0 or actual <= 0:
+        return ()
+    expected = header.pixel_budget()
+    if expected is None or actual == expected:
+        return ()
+    unit = header.bit_depth * _CHANNELS.get(header.color_type, 0)
+    if unit <= 0:
+        return ()
+    declared = (header.width, header.height)
+    found: list[SizeHint] = []
+    for stride in _divisors(actual):
+        height = actual // stride
+        width = (stride - 1) * 8 // unit
+        if width < 1 or (width * unit + 7) // 8 != stride - 1:
+            continue
+        if (width, height) != declared:
+            found.append(SizeHint(width, height))
+    truth = math.log(declared[0] / declared[1])
+    found.sort(key=lambda hint: abs(math.log(hint.width / hint.height) - truth))
+    return tuple(found[:_SIZE_HINTS])
+
+
+def _divisors(number: int) -> list[int]:
+    """Every divisor of ``number``, smallest first; a number has few of them."""
+    small: list[int] = []
+    large: list[int] = []
+    cursor = 1
+    while cursor * cursor <= number:
+        if number % cursor == 0:
+            small.append(cursor)
+            if cursor * cursor != number:
+                large.append(number // cursor)
+        cursor += 1
+    return small + large[::-1]
 
 
 def _group_idats(blocks: list[Block], stream_starts: list[int]) -> list[Block]:
@@ -469,7 +533,15 @@ def _scan_jpeg(data: bytes) -> ContainerReport:
             continue
         payload = data[pos + 4 : pos + 2 + length]
         blocks.append(
-            Block(pos, label, 2 + length, role, payload, _preview(payload), payload_at=pos + 4)
+            Block(
+                pos,
+                label,
+                2 + length,
+                role,
+                payload,
+                bytes_text.preview(payload),
+                payload_at=pos + 4,
+            )
         )
         pos += 2 + length
     if pos < len(data):
@@ -481,7 +553,7 @@ def _scan_jpeg(data: bytes) -> ContainerReport:
                 len(residual),
                 BlockRole.ANCILLARY,
                 residual,
-                _preview(residual),
+                bytes_text.preview(residual),
                 payload_at=pos,
             )
         )

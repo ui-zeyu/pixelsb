@@ -6,12 +6,13 @@ import pytest
 from PIL import Image
 from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtGui import QNativeGestureEvent, QPointingDevice
-from PySide6.QtWidgets import QToolButton
+from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QPushButton, QToolButton
 from pytestqt.qtbot import QtBot
 
 from pixelsb.domain import geometry
 from pixelsb.domain.extract import format_extract
 from pixelsb.domain.models import (
+    ArnoldMask,
     BitChoice,
     BitOrder,
     BitsMask,
@@ -21,6 +22,8 @@ from pixelsb.domain.models import (
     InvertMask,
     PixelCoord,
     RegionMask,
+    SampleOrigin,
+    SamplePlane,
     ScanOrder,
     ThresholdMask,
     XorMask,
@@ -35,6 +38,7 @@ from pixelsb.domain.transitions import (
 )
 from pixelsb.io.loading import image_from_pixels
 from pixelsb.ui import painting, text, theme
+from pixelsb.ui.arnold import _as_rgb
 from pixelsb.ui.main_window import MainWindow
 from pixelsb.ui.side_panels import Panel
 from pixelsb.ui.text import readout_text
@@ -1095,3 +1099,132 @@ def test_open_again_keeps_the_stack_and_prunes_nothing(qtbot: QtBot, rgb_png: Pa
     window.layers_panel.add_requested.emit(BitsMask(frozenset({BitChoice("R", 3)})))
     window.open_path(rgb_png)
     assert masks(window.store.state) == (BitsMask(frozenset({BitChoice("R", 3)})),)
+
+
+def test_the_scan_page_applies_a_candidate_to_the_stack(qtbot: QtBot, rgb_png: Path) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.open_path(rgb_png)
+    window._panels.set_current(Panel.SCAN)
+    panel = window.scan_panel
+    assert panel._total > 0
+    panel._on_start()
+    qtbot.waitUntil(lambda: panel._worker is None, timeout=10000)
+    assert panel._tree.topLevelItemCount() == panel._total
+    row = panel._tree.topLevelItem(0)
+    assert row is not None
+    panel._on_clicked(row, 0)
+    state = window.store.state
+    assert state.layers
+    assert isinstance(state.layers[-1].mask, BitsMask)
+    assert state.extract_order == row.data(0, Qt.ItemDataRole.UserRole).order
+
+
+def test_the_info_page_offers_size_repairs_for_a_doctored_ihdr(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    path = tmp_path / "doctored.png"
+    Image.fromarray(np.zeros((1, 5, 3), dtype=np.uint8)).save(path)
+    data = bytearray(path.read_bytes())
+    at = data.find(b"IHDR") + 4
+    data[at : at + 8] = (10).to_bytes(4, "big") + (10).to_bytes(4, "big")
+    path.write_bytes(bytes(data))
+    window.open_path(path)
+    window.info_panel._render()
+    image = window.store.state.image
+    assert image is not None
+    assert image.height == 4  # loaded under the best-aspect repaired geometry
+    buttons = _buttons(window.info_panel._sizes_row)
+    assert [button.text() for button in buttons] == ["1×4", "5×1"]  # 10:10 aspect first
+    opened: list[Path] = []
+    window.info_panel.open_requested.connect(opened.append)
+    buttons[-1].click()
+    assert len(opened) == 1
+    final = window.store.state.image
+    assert final is not None
+    assert (final.width, final.height) == (5, 1)
+
+
+def test_the_info_page_lists_gif_frame_geometries(qtbot: QtBot, tmp_path: Path) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    base = Image.new("P", (8, 8), 0)
+    base.putpalette([0, 0, 0, 255, 255, 255, 255, 0, 0] + [0] * 759)
+    moved = base.copy()
+    moved.putpixel((3, 3), 1)
+    path = tmp_path / "moved.gif"
+    base.save(path, save_all=True, append_images=[moved], duration=[50, 70], loop=0)
+    window.open_path(path)
+    window.info_panel._render()
+    assert window.info_panel._frames_card.isVisibleTo(window.info_panel)
+    assert _cells(window.info_panel._frames_layout)[4:] == [
+        "1",
+        "8×8",
+        "+0+0",
+        "50 ms",
+        "2",
+        "1×1",
+        "+3+3",
+        "70 ms",
+    ]
+
+
+def test_the_arnold_gallery_picks_a_layer(qtbot: QtBot, rgb_png: Path) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.open_path(rgb_png)  # 2x2: square, so the page accepts it
+    window._panels.set_current(Panel.ARNOLD)
+    panel = window.arnold_panel
+    assert panel._go.isEnabled()
+    panel._ranges[0][1].setValue(1)
+    panel._ranges[1][1].setValue(1)
+    panel._ranges[2][1].setValue(1)
+    panel._on_start()
+    qtbot.waitUntil(lambda: panel._worker is None, timeout=10000)
+    assert panel._grid.count() == 1
+    panel.picked.emit(2, 1, 3)
+    assert window.store.state.layers[-1].mask == ArnoldMask(2, 1, 3)
+    panel.picked.emit(1, 1, 1)
+    assert [layer.mask for layer in window.store.state.layers] == [ArnoldMask(1, 1, 1)]
+
+
+def _buttons(row: QHBoxLayout) -> list[QPushButton]:
+    """The widgets of a horizontal row that are buttons, in order."""
+    found = []
+    for index in range(row.count()):
+        item = row.itemAt(index)
+        widget = None if item is None else item.widget()
+        if isinstance(widget, QPushButton):
+            found.append(widget)
+    return found
+
+
+def _cells(layout: QGridLayout) -> list[str]:
+    """The texts of a grid table's labels, reading across then down."""
+    texts = []
+    for index in range(layout.count()):
+        item = layout.itemAt(index)
+        widget = None if item is None else item.widget()
+        if isinstance(widget, QLabel):
+            texts.append(widget.text())
+    return texts
+
+
+def test_gallery_thumbnails_read_gray_as_gray() -> None:
+    """A gray-and-alpha picture must not let the alpha channel pose as green."""
+    planes = (
+        SamplePlane("L", 0, 8, SampleOrigin.RAW),
+        SamplePlane("A", 1, 8, SampleOrigin.RAW),
+    )
+    samples = np.zeros((2, 2, 2), dtype=np.uint16)
+    samples[..., 0] = 40
+    rgb = _as_rgb(samples, planes)
+    assert (
+        rgb[..., 0].tolist() == rgb[..., 1].tolist() == rgb[..., 2].tolist() == [[40, 40], [40, 40]]
+    )

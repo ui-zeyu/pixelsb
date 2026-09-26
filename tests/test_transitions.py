@@ -6,6 +6,7 @@ import pytest
 from pixelsb.domain import commands
 from pixelsb.domain.models import (
     MAX_ZOOM,
+    ArnoldMask,
     BitChoice,
     BitOrder,
     BitsMask,
@@ -28,6 +29,7 @@ from pixelsb.domain.selection import all_bits
 from pixelsb.domain.transitions import (
     add_layer,
     add_mask_text,
+    apply_arnold,
     bits_position,
     clear_layers,
     cycle_format,
@@ -37,7 +39,9 @@ from pixelsb.domain.transitions import (
     open_image,
     remove_layer,
     select_all_bits,
+    select_choices,
     select_lsb,
+    select_lsb_at,
     select_lsbs,
     select_only,
     set_bit_order,
@@ -469,3 +473,79 @@ def test_set_frame_without_an_open_image_opens_it() -> None:
     state = set_frame(ViewerState(), _image())
     assert state.image is not None
     assert state.focus == BitChoice("R", 0)
+
+
+def test_select_choices_lands_on_the_bits_layer_the_grid_edits() -> None:
+    state = _open()
+    chosen = frozenset({BitChoice("R", 0), BitChoice("B", 0)})
+    moved = select_choices(state, chosen)
+    assert moved.layers[-1].mask == BitsMask(chosen)
+    assert moved.focus == BitChoice("B", 0)
+
+
+def test_select_choices_replaces_what_the_topmost_bits_mask_showed() -> None:
+    state = add_layer(_open(), BitsMask(frozenset({BitChoice("G", 3)})))
+    moved = select_choices(state, frozenset({BitChoice("R", 1)}))
+    assert [layer.mask for layer in moved.layers] == [BitsMask(frozenset({BitChoice("R", 1)}))]
+
+
+def test_the_cat_gallery_rewrites_its_own_layer() -> None:
+    state = apply_arnold(_open(), 2, 1, 3)
+    assert state.layers[-1].mask == ArnoldMask(2, 1, 3)
+    moved = apply_arnold(state, 5, 1, 2)
+    assert [layer.mask for layer in moved.layers] == [ArnoldMask(5, 1, 2)]
+
+
+def test_an_arnold_line_on_a_nonsquare_image_is_refused_before_landing() -> None:
+    image = LoadedImage(
+        path=Path("wide.png"),
+        source_mode="RGB",
+        width=4,
+        height=2,
+        samples=np.zeros((2, 4, 3), dtype=np.uint16),
+        planes=planes_rgb(),
+        frame_count=1,
+        frame_index=0,
+    )
+    state = ViewerState(image=image)
+    with pytest.raises(commands.CommandError, match="方图"):
+        set_mask_text(state, text="arnold 1 1 1")
+    with pytest.raises(commands.CommandError, match="方图"):
+        add_mask_text(state, text="arnold 1 1 1")
+
+
+def test_stepping_follows_the_grid_order_alpha_first_index_out() -> None:
+    planes = (
+        SamplePlane("Index", 0, 8, SampleOrigin.RAW),
+        SamplePlane("R", 1, 8, SampleOrigin.RAW),
+        SamplePlane("G", 2, 8, SampleOrigin.RAW),
+        SamplePlane("B", 3, 8, SampleOrigin.RAW),
+        SamplePlane("A", 4, 8, SampleOrigin.RAW),
+    )
+    image = make_image(np.zeros((1, 1, 5), dtype=np.uint16), planes, path=Path("p.png"))
+    state = open_image(ViewerState(), image)
+    # The grid's first row is alpha, so the first step lands on A7, not Index7.
+    assert bits_of(step_plane(state, 1)) == frozenset({BitChoice("A", 7)})
+    # Whole channels walk the grid's rows: A → R → G → B → back to A, each
+    # step taking every bit of the channel it lands on.
+    all_channels = {
+        name: frozenset({BitChoice(name, bit) for bit in range(8)}) for name in ("A", "R", "G", "B")
+    }
+    walked = state
+    for expected in ("A", "R", "G", "B", "A"):
+        walked = step_channel(walked, 1)
+        assert bits_of(walked) == all_channels[expected]
+    assert "Index" not in {choice.plane for choice in bits_of(walked)}
+
+
+def test_digit_positions_follow_the_grid_order() -> None:
+    planes = (
+        SamplePlane("Index", 0, 8, SampleOrigin.RAW),
+        SamplePlane("R", 1, 8, SampleOrigin.RAW),
+        SamplePlane("A", 2, 8, SampleOrigin.RAW),
+    )
+    image = make_image(np.zeros((1, 1, 3), dtype=np.uint16), planes, path=Path("p.png"))
+    state = open_image(ViewerState(), image)
+    assert bits_of(select_lsb_at(state, 0)) == frozenset({BitChoice("A", 0)})
+    assert bits_of(select_lsb_at(state, 1)) == frozenset({BitChoice("R", 0)})
+    assert select_lsb_at(state, 2) is state  # no third row: the position is out of range

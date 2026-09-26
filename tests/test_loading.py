@@ -5,7 +5,13 @@ import pytest
 from PIL import Image
 
 from pixelsb.domain.models import SampleOrigin
-from pixelsb.io.loading import ImageLoadError, image_from_pixels, load_frame, load_image
+from pixelsb.io.loading import (
+    ImageLoadError,
+    frame_geometries,
+    image_from_pixels,
+    load_frame,
+    load_image,
+)
 
 
 def test_image_from_pixels_keeps_a_fourth_channel() -> None:
@@ -189,3 +195,48 @@ def test_missing_and_undecodable_files_raise(tmp_path: Path) -> None:
     notes.write_text("hello", encoding="utf-8")
     with pytest.raises(ImageLoadError):
         load_image(notes)
+
+
+def test_frame_geometries_read_offset_frames(tmp_path: Path) -> None:
+    """A GIF places each frame on the canvas: the table gives its rectangle and delay."""
+    base = Image.new("P", (8, 8), 0)
+    base.putpalette([0, 0, 0, 255, 255, 255, 255, 0, 0] + [0] * 759)
+    moved = base.copy()
+    for x in range(2, 5):
+        for y in range(2, 5):
+            moved.putpixel((x, y), 1)
+    path = tmp_path / "moved.gif"
+    base.save(path, save_all=True, append_images=[moved], duration=[50, 70], loop=0)
+    geometries = frame_geometries(path)
+    assert [(g.width, g.height, g.x, g.y) for g in geometries] == [(8, 8, 0, 0), (3, 3, 2, 2)]
+    assert [g.delay for g in geometries] == [50, 70]
+
+
+def test_frame_geometries_of_a_still_image_is_empty(tmp_path: Path) -> None:
+    path = tmp_path / "still.png"
+    Image.new("RGB", (4, 4)).save(path)
+    assert frame_geometries(path) == ()
+
+
+def test_a_doctored_ihdr_opens_under_the_geometry_its_data_fills(tmp_path: Path) -> None:
+    """Declared 10x10, data for 5x1: the loader repairs in memory, the file stays put."""
+    path = tmp_path / "doctored.png"
+    pixels = np.zeros((1, 5, 3), dtype=np.uint8)
+    pixels[0, :, 0] = np.arange(5, dtype=np.uint8) * 40
+    Image.fromarray(pixels).save(path)
+    data = bytearray(path.read_bytes())
+    at = data.find(b"IHDR") + 4
+    data[at : at + 8] = (10).to_bytes(4, "big") + (10).to_bytes(4, "big")
+    path.write_bytes(bytes(data))
+    image = load_image(path)
+    assert (image.width, image.height) == (5, 1)
+    assert path.read_bytes() == bytes(data)  # the file on disk is exactly as it was
+
+
+def test_a_small_declared_size_still_loads_as_declared(tmp_path: Path) -> None:
+    """Extra data behind a small IHDR loads as declared; the census tells the rest."""
+    path = tmp_path / "small.png"
+    pixels = np.zeros((1, 5, 3), dtype=np.uint8)
+    Image.fromarray(pixels).save(path)
+    image = load_image(path)
+    assert (image.width, image.height) == (5, 1)

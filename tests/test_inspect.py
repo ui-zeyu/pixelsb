@@ -1,5 +1,6 @@
 """The container census: block lists, planted data, and the EXIF tables."""
 
+import io
 import struct
 import zlib
 from pathlib import Path
@@ -10,7 +11,7 @@ from PIL import Image
 from PIL.ExifTags import IFD
 from PIL.TiffImagePlugin import IFDRational
 
-from pixelsb.domain.container import BlockRole, PngHeader, render_blocks, scan_container
+from pixelsb.domain.container import BlockRole, PngHeader, SizeHint, render_blocks, scan_container
 from pixelsb.io.inspect import exif_entries, inspect_container
 from tests.support import chunk as _chunk
 
@@ -386,3 +387,51 @@ def test_exif_entries_tolerate_a_container_without_exif(tmp_path: Path) -> None:
     path = tmp_path / "case.png"
     Image.new("RGB", (1, 1)).save(path)
     assert exif_entries(path) == ()
+
+
+def test_a_doctored_ihdr_offers_the_geometries_the_data_fills() -> None:
+    """The data is another picture's: the census names every size it would fill."""
+    scanlines = _scanlines(b"\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f")
+    report = scan_container(
+        _png(
+            _chunk(b"IHDR", struct.pack(">IIBBBBB", 10, 10, 8, 2, 0, 0, 0)),
+            _chunk(b"IDAT", zlib.compress(scanlines)),
+            _chunk(b"IEND", b""),
+        )
+    )
+    assert report.findings[0].kind == "idat-oversize"
+    assert SizeHint(5, 1) in report.sizes  # the data's true shape
+    assert (10, 10) not in [(hint.width, hint.height) for hint in report.sizes]
+
+
+def test_a_clean_file_names_no_alternative_sizes() -> None:
+    report = scan_container(
+        _png(
+            _chunk(b"IHDR", _IHDR),
+            _chunk(b"IDAT", zlib.compress(_scanlines(b"\xff"))),
+            _chunk(b"IEND", b""),
+        )
+    )
+    assert report.sizes == ()
+
+
+def test_an_interlaced_file_gets_no_size_hints() -> None:
+    report = scan_container(
+        _png(
+            _chunk(b"IHDR", struct.pack(">IIBBBBB", 10, 10, 8, 2, 0, 0, 1)),
+            _chunk(b"IDAT", zlib.compress(_scanlines(b"\xff"))),
+            _chunk(b"IEND", b""),
+        )
+    )
+    assert report.sizes == ()
+
+
+def test_a_photo_sized_png_names_no_alternative_sizes() -> None:
+    """A plain photo fits its declared size, and no divisor walk may say otherwise."""
+    rng = np.random.default_rng(11)
+    pixels = (rng.random((200, 320, 3)) * 255).astype(np.uint8)
+    buffer = io.BytesIO()
+    Image.fromarray(pixels).save(buffer, format="PNG")
+    report = scan_container(buffer.getvalue())
+    assert report.sizes == ()
+    assert report.findings == ()

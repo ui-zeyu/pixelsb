@@ -28,9 +28,13 @@ from functools import reduce
 from typing import assert_never
 
 from pixelsb.domain.models import (
+    ARNOLD_PARAM_LIMIT,
+    ARNOLD_TIMES_MAX,
+    ArnoldMask,
     BitChoice,
     BitsMask,
     CropMask,
+    FftMask,
     GrayscaleMask,
     InvertMask,
     Mask,
@@ -45,21 +49,22 @@ from pixelsb.domain.selection import all_bits, channel_members, whole
 
 # A verb at the head of a line: the word itself, so a word that merely contains
 # one — or follows a dot — is left to the expression grammar.
-_VERB = re.compile(r"(?i)(?P<verb>thr|xor|inv|gray|crop)(?![\w.])")
+_VERB = re.compile(r"(?i)(?P<verb>thr|xor|inv|gray|crop|fft|arnold)(?![\w.])")
 _CONNECTIVES = frozenset({"and", "or", "not"})
 
 _VALUE_MASKS: dict[str, type[ThresholdMask] | type[XorMask]] = {
     "thr": ThresholdMask,
     "xor": XorMask,
 }
-_BARE_MASKS: dict[str, type[InvertMask] | type[GrayscaleMask] | type[CropMask]] = {
+_BARE_MASKS: dict[str, type[InvertMask] | type[GrayscaleMask] | type[CropMask] | type[FftMask]] = {
     "inv": InvertMask,
     "gray": GrayscaleMask,
     "crop": CropMask,
+    "fft": FftMask,
 }
 
 _ONE_OPERATION = "一行只写一个操作：位选择（b、b.0、all）和区域条件不能组合在一起，请分成两行"
-_VERB_APART = "操作命令要单独一行：thr、xor、inv、gray、crop 不能和别的内容组合"
+_VERB_APART = "操作命令要单独一行：thr、xor、inv、gray、crop、fft、arnold 不能和别的内容组合"
 
 
 class CommandError(ValueError):
@@ -121,6 +126,10 @@ def text_of(mask: Mask, planes: tuple[SamplePlane, ...]) -> str | None:
             return f"thr {level}"
         case XorMask(value=value):
             return f"xor 0x{value:02X}"
+        case FftMask():
+            return "fft"
+        case ArnoldMask(times=times, a=a, b=b):
+            return f"arnold {times} {a} {b}"
         case _ as unknown:
             assert_never(unknown)
 
@@ -131,11 +140,24 @@ def _verb_line(line: str, ceiling: int) -> Mask | None:
     if match is None:
         return None
     words = line[match.end() :].split()
-    argument = words.pop(0) if words and words[0].lower() not in _CONNECTIVES else None
-    mask = _verb_mask(match["verb"].lower(), argument, ceiling)
-    if words:  # the verb and its argument are the whole line
+    verb = match["verb"].lower()
+    taken = _parameter_words(verb, words)
+    argument = " ".join(words[:taken]) if taken else None
+    mask = _verb_mask(verb, argument, ceiling)
+    if words[taken:]:  # the verb and its parameters are the whole line
         raise CommandError(_VERB_APART)
     return mask
+
+
+def _parameter_words(verb: str, words: list[str]) -> int:
+    """How many words this verb reads as its parameters: three, one, or none.
+
+    A connective in the first word's place is a line trying to combine, so no
+    parameter is taken and the leftover words refuse the line below.
+    """
+    if not words or words[0].lower() in _CONNECTIVES:
+        return 0
+    return 3 if verb == "arnold" else 1
 
 
 def _combine(node: ast.expr, planes: tuple[SamplePlane, ...]) -> ast.expr | frozenset[BitChoice]:
@@ -230,7 +252,47 @@ def _verb_mask(verb: str, argument: str | None, ceiling: int) -> Mask:
         if argument is not None:
             raise CommandError(f"{verb} 不需要参数（收到：{argument}）")
         return kind()
+    if verb == "arnold":
+        return _arnold_mask(argument)
     raise CommandError(f"看不懂的命令：{verb}")  # the verb pattern only lets these through
+
+
+def _arnold_mask(argument: str | None) -> ArnoldMask:
+    """The cat map's line: three integers, times first.
+
+    The operation is the recovery direction, so the same ``(a, b)`` a challenge's
+    encoder used is what goes here; the refusals spell the shape out so a
+    half-typed line says what it is missing.
+    """
+    if argument is None:
+        raise CommandError("arnold 需要三个整数：arnold 1 2 3（次数 a b）")
+    words = argument.split()
+    if len(words) != 3:
+        raise CommandError(f"arnold 需要三个整数：arnold 1 2 3（收到 {len(words)} 个）")
+    times, a, b = (_signed(word) for word in words)
+    if not 1 <= times <= ARNOLD_TIMES_MAX:
+        raise CommandError(f"次数要在 1..{ARNOLD_TIMES_MAX}：arnold {argument}")
+    if abs(a) > ARNOLD_PARAM_LIMIT or abs(b) > ARNOLD_PARAM_LIMIT:
+        raise CommandError(f"a、b 要在 ±{ARNOLD_PARAM_LIMIT} 内：arnold {argument}")
+    return ArnoldMask(times, a, b)
+
+
+def _integer(word: str, complaint: str) -> int:
+    """An integer with an optional sign: decimal, or hexadecimal with a ``0x``.
+
+    ``complaint`` is the error a malformed word raises — the verbs word theirs
+    differently for thresholds and cat-map parameters.
+    """
+    digits = word.lstrip("+-")
+    try:
+        value = int(digits, 16) if digits.lower().startswith("0x") else int(digits, 10)
+    except ValueError:
+        raise CommandError(complaint) from None
+    return -value if word.startswith("-") else value
+
+
+def _signed(word: str) -> int:
+    return _integer(word, f"整数看不懂：{word}（十进制 3，或十六进制 0x1F）")
 
 
 def _level(argument: str, ceiling: int) -> int:
@@ -240,10 +302,7 @@ def _level(argument: str, ceiling: int) -> int:
     channel of *this* image would mean a mask that does nothing: it is refused
     rather than quietly left dark.
     """
-    try:
-        value = int(argument, 16) if argument.lower().startswith("0x") else int(argument, 10)
-    except ValueError:
-        raise CommandError(f"数值看不懂：{argument}（十进制 128，或十六进制 0x80）") from None
+    value = _integer(argument, f"数值看不懂：{argument}（十进制 128，或十六进制 0x80）")
     if not 0 <= value <= ceiling:
         raise CommandError(f"数值超出这张图的 0..{ceiling}：{argument}")
     return value

@@ -24,6 +24,8 @@ class Panel(StrEnum):
 
     EXTRACT = "extract"
     INFO = "info"
+    SCAN = "scan"
+    ARNOLD = "arnold"
 
 
 class SidePanels(QWidget):

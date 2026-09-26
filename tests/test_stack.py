@@ -4,9 +4,11 @@ import numpy as np
 import pytest
 
 from pixelsb.domain.models import (
+    ArnoldMask,
     BitChoice,
     BitsMask,
     CropMask,
+    FftMask,
     GrayscaleMask,
     InvertMask,
     Layer,
@@ -18,8 +20,8 @@ from pixelsb.domain.models import (
     XorMask,
     level_ceiling,
 )
-from pixelsb.domain.selection import all_bits, lsb_bits
-from pixelsb.domain.stack import match_span, resolve
+from pixelsb.domain.selection import all_bits, channel_members, lsb_bits
+from pixelsb.domain.stack import arnold_image, arnold_indices, match_span, resolve
 from tests.support import layers, make_image, planes_rgb, planes_rgba, raster
 
 
@@ -228,3 +230,104 @@ def test_the_stack_starts_from_every_lowest_bit_when_it_is_asked_to() -> None:
     assert resolve(image, stack).selection == frozenset(
         {BitChoice("R", 0), BitChoice("G", 0), BitChoice("B", 0)}
     )
+
+
+def _encode(samples: np.ndarray, times: int, a: int, b: int) -> np.ndarray:
+    """The forward cat map, the way a challenge would have scrambled the picture."""
+    size = samples.shape[0]
+    columns = np.arange(size, dtype=np.int64)[None, :]
+    rows = np.arange(size, dtype=np.int64)[:, None]
+    out = samples
+    for _ in range(times):
+        new_x = (columns + b * rows) % size
+        new_y = (a * columns + (a * b + 1) * rows) % size
+        moved = np.empty_like(out)
+        moved[new_y, new_x] = out
+        out = moved
+    return out
+
+
+def test_the_cat_map_moves_pixels_and_undoes_the_forward_scramble() -> None:
+    """The operation is the recovery direction: same parameters as the encoder undo it."""
+    samples = np.arange(75, dtype=np.uint16).reshape(5, 5, 3)
+    scrambled = _encode(samples, 2, 1, 3)
+    assert sorted(scrambled.ravel().tolist()) == sorted(samples.ravel().tolist())
+    assert np.array_equal(arnold_image(scrambled, 2, 1, 3), samples)
+
+
+def test_the_cat_maps_grids_name_every_cell_exactly_once() -> None:
+    source_y, source_x = arnold_indices(6, 3, 2, 1)
+    landed = {(int(y), int(x)) for y, x in zip(source_y.ravel(), source_x.ravel(), strict=True)}
+    assert len(landed) == 36
+
+
+def test_the_cat_maps_grids_match_composing_the_map_step_by_step() -> None:
+    """Repeated squaring raises the map's matrix; the answer is the one composed."""
+    rng = np.random.default_rng(7)
+    for _case in range(8):
+        size = int(rng.integers(2, 12))
+        times = int(rng.integers(1, 40))
+        a, b = int(rng.integers(-100, 100)), int(rng.integers(-100, 100))
+        columns = np.arange(size, dtype=np.int64)[None, :]
+        rows = np.arange(size, dtype=np.int64)[:, None]
+        # The recovery map [[ab+1, -b], [-a, 1]], applied one step at a time.
+        x, y = (a * b + 1) * columns - b * rows, -a * columns + rows
+        x, y = x % size, y % size
+        for _step in range(times - 1):
+            x, y = ((a * b + 1) * x - b * y) % size, (-a * x + y) % size
+        source_y, source_x = arnold_indices(size, times, a, b)
+        assert np.array_equal(source_x, x)
+        assert np.array_equal(source_y, y)
+
+
+def test_the_cat_map_mask_needs_the_whole_square() -> None:
+    image = _image(np.zeros((3, 3, 3), dtype=np.uint16).tolist())
+    assert resolve(image, (Layer(ArnoldMask(1, 1, 1)),)).failures == ()
+    tall = _image(np.zeros((4, 3, 3), dtype=np.uint16).tolist())
+    (failure,) = resolve(tall, (Layer(ArnoldMask(1, 1, 1)),)).failures
+    assert "方图" in failure.message
+    stack = (Layer(RegionMask("left < 2")), Layer(CropMask()), Layer(ArnoldMask(1, 1, 1)))
+    (failure,) = resolve(image, stack).failures
+    assert "完整画幅" in failure.message
+
+
+def test_the_cat_map_carries_the_live_mask_with_the_pixels() -> None:
+    image = _image([[[255, 0, 0], [0, 0, 0], [0, 0, 0]], [[0, 0, 0], [0, 0, 0], [0, 0, 0]]])  # 2x2
+    stack = (Layer(RegionMask("left == 0 and top == 0")), Layer(ArnoldMask(1, 1, 1)))
+    kept = resolve(image, stack)
+    assert kept.live is not None
+    assert kept.live.sum() == 1  # the same pixel, wherever the map put it
+
+
+def test_the_spectrum_of_a_constant_channel_sits_at_the_center() -> None:
+    image = _image([[[9, 9, 9]] * 4] * 4)  # 4x4, flat
+    shown = raster(image, FftMask())
+    assert int(shown.samples[2, 2, 0]) == 255  # fftshift puts DC in the middle
+    assert int(shown.samples[0, 0, 0]) < 10  # a flat picture has nothing else to say
+
+
+def test_the_spectrum_of_an_impulse_is_flat() -> None:
+    flat = [[[0, 0, 0]] * 4 for _ in range(4)]
+    flat[1][2] = [200, 200, 200]
+    shown = raster(_image(flat), FftMask())
+    assert shown.samples[:, :, 0].min() == shown.samples[:, :, 0].max()
+
+
+def test_the_spectrum_takes_the_channels_the_selection_carries() -> None:
+    image = _image([[[9, 9, 9, 40]] * 4 for _ in range(4)], planes_rgba())
+    keep = all_bits(image.planes) - channel_members(image.planes, "A")
+    shown = raster(image, BitsMask(keep), FftMask())
+    assert shown.samples[0, 0, 3] == 40  # alpha had no bit selected: it keeps its value
+    assert int(shown.samples[2, 2, 0]) == 255  # the colors still take their spectrum
+
+
+def test_a_spectrum_over_no_selection_changes_nothing() -> None:
+    image = _image([[[9, 9, 9]] * 4 for _ in range(4)])
+    shown = raster(image, BitsMask(frozenset()), FftMask())
+    assert shown.samples[2, 2, 0] == 9  # nothing takes part, so nothing is transformed
+
+
+def test_with_every_bit_selected_alpha_takes_a_spectrum_too() -> None:
+    image = _image([[[9, 9, 9, 40]] * 4 for _ in range(4)], planes_rgba())
+    shown = raster(image, FftMask())
+    assert int(shown.samples[2, 2, 3]) == 255  # the default selection carries alpha

@@ -19,20 +19,27 @@ def inspect_container(path: Path) -> ContainerReport:
 
 
 def exif_entries(path: Path) -> tuple[tuple[str, str], ...]:
-    """The container's EXIF tags, base IFD plus the EXIF and GPS sub-IFDs."""
-    with Image.open(path) as image:
-        exif = image.getexif()
-        base = ((tag, value) for tag, value in exif.items() if tag not in _IFD_POINTERS)
-        groups = (
-            (base, TAGS),
-            (exif.get_ifd(IFD.Exif).items(), TAGS),
-            (exif.get_ifd(IFD.GPSInfo).items(), GPSTAGS),
-        )
-        return tuple(
-            (table.get(tag, str(tag)), _exif_text(value))
-            for items, table in groups
-            for tag, value in items
-        )
+    """The container's EXIF tags, base IFD plus the EXIF and GPS sub-IFDs.
+
+    A file too broken for PIL to open still gets its page, so an unreadable
+    container reads as no EXIF rather than an error.
+    """
+    try:
+        with Image.open(path) as image:
+            exif = image.getexif()
+            base = ((tag, value) for tag, value in exif.items() if tag not in _IFD_POINTERS)
+            groups = (
+                (base, TAGS),
+                (exif.get_ifd(IFD.Exif).items(), TAGS),
+                (exif.get_ifd(IFD.GPSInfo).items(), GPSTAGS),
+            )
+            return tuple(
+                (table.get(tag, str(tag)), _exif_text(value))
+                for items, table in groups
+                for tag, value in items
+            )
+    except Exception:
+        return ()
 
 
 def _exif_text(value: object) -> str:

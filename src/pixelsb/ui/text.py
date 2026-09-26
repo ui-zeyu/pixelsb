@@ -5,13 +5,17 @@ from decimal import ROUND_HALF_UP, Decimal
 
 from pixelsb.domain import commands
 from pixelsb.domain.classify import Classification
-from pixelsb.domain.container import Block, BlockRole, ContainerReport, Finding
+from pixelsb.domain.container import Block, BlockRole, ContainerReport, Finding, SizeHint
 from pixelsb.domain.detect import Detection, detect_patterns
 from pixelsb.domain.models import (
+    ArnoldMask,
     BitChoice,
     BitsMask,
     CropMask,
     ExtractEncoding,
+    ExtractOrder,
+    FftMask,
+    FrameGeometry,
     GrayscaleMask,
     InvertMask,
     LoadedImage,
@@ -25,6 +29,7 @@ from pixelsb.domain.models import (
     XorMask,
 )
 from pixelsb.domain.readout import build_readout, label_zoom
+from pixelsb.domain.scan import ScanHit
 from pixelsb.domain.selection import whole
 
 _TWO_PLACES = Decimal("0.01")
@@ -40,6 +45,10 @@ PANEL_EXTRACT = "▦"
 PANEL_EXTRACT_TIP = "提取"
 PANEL_INFO = "ⓘ"
 PANEL_INFO_TIP = "文件信息"
+PANEL_SCAN = "⌕"
+PANEL_SCAN_TIP = "扫描"
+PANEL_ARNOLD = "猫"
+PANEL_ARNOLD_TIP = "猫脸变换爆破"
 SHORTCUTS = "快捷键"
 ORIGINAL = "原图"
 ALL_LSB = "全部最低位"
@@ -109,9 +118,7 @@ MODE_MOVE = "移动"
 MODE_SELECT = "选区"
 MODE_MOVE_TIP = "拖动画布平移视图"
 MODE_SELECT_TIP = "拖动框选区域；回车把选区加为区域操作，Esc 取消"
-THRESHOLD_LABEL = "阈值"
 THRESHOLD_LEVEL_TIP = "阈值：0 到该图通道满值（8 位即 255），每个通道按 值 > 阈值 压成满值或 0"
-XOR_LABEL = "异或"
 XOR_VALUE_TIP = "异或值：把每个通道与这个常数按位异或，置位的位被翻转（16 位通道可填到 0xFFFF）"
 VIEW_EXPORT = "导出"
 VIEW_EXPORT_TIP = "把当前的位选择与值域操作的结果存为图像文件；区域操作的淡化是观看用的，不写进文件"
@@ -123,8 +130,12 @@ FRAME_PREV_TIP = "上一帧"
 FRAME_NEXT_TIP = "下一帧"
 INFO_TITLE = "文件信息"
 SECTION_SCAN = "检查"
+SECTION_FRAMES = "帧"
 SECTION_EXIF = "EXIF"
 INFO_NO_EXIF = "无 EXIF 信息"
+FRAME_HEADERS = ("帧", "尺寸", "偏移", "延时")
+SIZE_HINT_NOTE = "像素数据量与声明的宽高不符，这些宽高能正好放下这份数据，点击修补 IHDR 并打开："
+SIZE_OPEN_TIP = "按这个宽高改写 IHDR，写出一个修补后的文件并打开它"
 WARNING_MARK = "⚠"
 BLOCK_RENDER_TIP = "选中把这一块按所属的数据流渲染成像素"
 DUMP_TIP = "点击在下方查看这一块的十六进制转储（含块头与校验）"
@@ -279,6 +290,16 @@ MASK_THRESHOLD_TIP = (
     "放在灰度之上就是黑白二值化。"
 )
 MASK_XOR_TIP = "异或：每个通道与常数按位异或，翻转常数置位的那些位；16 位通道填到 0xFFFF。"
+MASK_FFT_TIP = (
+    "频谱：位选择勾到的每个通道换成它的对数幅度谱（直流居中，双重对数拉伸），"
+    "不想动的通道（如 A、Index）在 fft 下面的位选择里取消勾选即可。"
+    "中心亮团是整幅图的平均亮度，自然图像的能量向中心聚集；"
+    "离中心的对称亮点是周期性图案，频域盲水印的入口；阈值和裁剪可以照常接在后面。"
+)
+MASK_ARNOLD_TIP = (
+    "猫脸变换：按猫映射的逆变换重排像素（恢复方向），arnold 次数 a b——"
+    "出题方用正向变换加密时，同名参数即可还原。要方图，且作用在完整画幅上。"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -297,6 +318,8 @@ MASK_INFO: dict[type[Mask], MaskInfo] = {
     GrayscaleMask: MaskInfo("灰度", MASK_GRAYSCALE_TIP),
     ThresholdMask: MaskInfo("阈值", MASK_THRESHOLD_TIP),
     XorMask: MaskInfo("异或", MASK_XOR_TIP),
+    FftMask: MaskInfo("频谱", MASK_FFT_TIP),
+    ArnoldMask: MaskInfo("猫脸变换", MASK_ARNOLD_TIP),
 }
 
 
@@ -309,10 +332,10 @@ def mask_menu() -> tuple[Mask, ...]:
     """The masks the panel's add button offers: the ones that take no argument.
 
     A mask with a parameter of its own — the bits, the region expression, the
-    threshold, the xor — is written in the filter box instead, where the command
-    line carries the parameter the button cannot.
+    threshold, the xor, the cat map — is written in the filter box instead, where
+    the command line carries the parameter the button cannot.
     """
-    return (InvertMask(), GrayscaleMask(), CropMask())
+    return (InvertMask(), GrayscaleMask(), CropMask(), FftMask())
 
 
 def mask_detail(mask: Mask, planes: tuple[SamplePlane, ...]) -> str:
@@ -442,6 +465,24 @@ def more_blocks(count: int) -> str:
     return f"… 其余 {count} 个块从略"
 
 
+def size_hint_label(hint: SizeHint) -> str:
+    return f"{hint.width}×{hint.height}"
+
+
+def frame_row(geometry: FrameGeometry) -> tuple[str, str, str, str]:
+    """One GIF frame's table line: position in the animation, place on the canvas."""
+    return (
+        str(geometry.index + 1),
+        f"{geometry.width}×{geometry.height}",
+        f"+{geometry.x}+{geometry.y}",
+        f"{geometry.delay} ms",
+    )
+
+
+def more_frames(count: int) -> str:
+    return f"… 其余 {count} 帧从略"
+
+
 def dump_caption(block: Block, guessed: str = "") -> str:
     """The dump's caption: which block, where it sits, how long, and its type."""
     end = block.offset + block.length
@@ -484,3 +525,79 @@ def status_view(state: ViewerState, raster: Raster | None) -> str:
     if needed is not None and state.zoom < needed:
         return f"光标 {location}  放到 {needed}× 显示数值"
     return f"光标 {location}"
+
+
+# --- the scan page and the cat-map gallery ----------------------------------
+
+SECTION_SWEEP = "扫描"
+SWEEP_START = "开始扫描"
+SWEEP_STOP = "停止"
+SWEEP_NOTE = (
+    "按原图的字节扫描（不含配方），每个候选是一次提取，命中的排在前排；"
+    "点击一条就把它的位选择与提取顺序写进配方。"
+)
+SWEEP_COLUMNS = ("命令", "顺序", "预览", "结果")
+SWEEP_NOTHING = "—"
+
+
+def sweep_candidates(total: int) -> str:
+    return f"{total} 个候选，点击「开始扫描」" if total else "这张图没有可扫描的候选"
+
+
+def sweep_progress(done: int, total: int) -> str:
+    return f"扫描中 {done}/{total}"
+
+
+def sweep_done(flagged: int, total: int) -> str:
+    return f"完成：{flagged} 条带 flag / {total}，其余按类型猜测排在后面"
+
+
+def sweep_order(order: ExtractOrder) -> str:
+    """The candidate's read order: bit end first, then which axis runs fastest."""
+    return f"{order.bit_order.value.upper()} · {order.scan.value.upper()}"
+
+
+def sweep_result(hit: ScanHit) -> str:
+    """The stream's verdict: its type and up to two distinct flags, or a dash."""
+    parts = [hit.label] if hit.label else []
+    flags = list(dict.fromkeys(hit.flags))
+    parts.extend(flags[:2])
+    if len(flags) > 2:
+        parts.append(f"另有 {len(flags) - 2} 个")
+    return " · ".join(parts) if parts else SWEEP_NOTHING
+
+
+ARNOLD_SOURCE = "对当前画面的像素做爆破；候选是变换后的缩略图，点击就写成一条「猫脸变换」操作。"
+ARNOLD_NEEDS_SQUARE = "猫脸变换要方图：当前画面是 {width}×{height}。"
+ARNOLD_TIMES = "次数"
+ARNOLD_A = "a"
+ARNOLD_B = "b"
+ARNOLD_START = "开始"
+ARNOLD_STOP = "停止"
+ARNOLD_CANCELLED = "已停止，共 {count} 个候选"
+
+
+def arnold_source(width: int, height: int, channels: int) -> str:
+    """The gallery's source line: what pixels the search is running on."""
+    return f"当前画面 {width}×{height} · {channels} 通道"
+
+
+def arnold_not_square(width: int, height: int) -> str:
+    return ARNOLD_NEEDS_SQUARE.format(width=width, height=height)
+
+
+def arnold_pick_tip(times: int, a: int, b: int, score: float) -> str:
+    """The thumbnail's tooltip: the command it writes, and the heuristic's say."""
+    return f"arnold {times} {a} {b}\n平滑度 {score:.2f}（越大越像正常图片）"
+
+
+def arnold_caption(times: int, a: int, b: int) -> str:
+    return f"{times} {a} {b}"
+
+
+def arnold_progress(done: int, total: int) -> str:
+    return f"尝试中 {done}/{total}"
+
+
+def arnold_cancelled(count: int) -> str:
+    return ARNOLD_CANCELLED.format(count=count)

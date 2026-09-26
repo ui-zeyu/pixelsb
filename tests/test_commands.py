@@ -4,9 +4,11 @@ import pytest
 
 from pixelsb.domain import commands
 from pixelsb.domain.models import (
+    ArnoldMask,
     BitChoice,
     BitsMask,
     CropMask,
+    FftMask,
     GrayscaleMask,
     InvertMask,
     Mask,
@@ -183,6 +185,8 @@ def test_a_level_past_the_widest_channel_of_this_image_is_refused() -> None:
         ThresholdMask(200),
         XorMask(0x0F),
         CropMask(),
+        FftMask(),
+        ArnoldMask(2, 1, 3),
     ],
 )
 def test_a_mask_reads_back_as_the_command_that_means_it(mask: Mask) -> None:
@@ -224,3 +228,27 @@ def test_a_narrow_plane_takes_the_bits_it_has() -> None:
     alpha = BitsMask(frozenset({BitChoice("A", 0)}))
     assert commands.parse("a", planes) == alpha
     assert commands.text_of(alpha, planes) == "a"  # the one bit is the channel whole
+
+
+def test_the_cat_maps_line_takes_three_integers() -> None:
+    assert commands.parse("arnold 3 -1 2", _PLANES) == ArnoldMask(3, -1, 2)
+    assert commands.parse("arnold 2 0x2 3", _PLANES) == ArnoldMask(2, 2, 3)
+    assert commands.parse("ARNOLD 1 1 1", _PLANES) == ArnoldMask(1, 1, 1)  # the head word only
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        ("arnold", "需要三个整数"),
+        ("arnold 1 2", "收到 2 个"),
+        ("arnold 1 2 3 4", "单独一行"),
+        ("arnold 0 1 2", "次数要在 1..4096"),
+        ("arnold 4097 1 2", "次数要在 1..4096"),
+        ("arnold 1 x 2", "整数看不懂"),
+        ("arnold 1 0x100000000 2", "±2147483647"),
+        ("fft 3", "不需要参数"),
+    ],
+)
+def test_a_broken_verb_line_says_what_is_wrong(text: str, message: str) -> None:
+    with pytest.raises(commands.CommandError, match=message):
+        commands.parse(text, _PLANES)
