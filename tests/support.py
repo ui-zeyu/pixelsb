@@ -10,7 +10,6 @@ from PySide6.QtWidgets import QPushButton, QWidget
 
 from pixelsb.domain.models import (
     BitChoice,
-    BitsMask,
     Layer,
     LoadedImage,
     Mask,
@@ -19,8 +18,8 @@ from pixelsb.domain.models import (
     SamplePlane,
     ViewerState,
 )
-from pixelsb.domain.selection import all_bits
 from pixelsb.domain.stack import resolve
+from pixelsb.domain.transitions import current_bits
 
 
 def planes_rgb() -> tuple[SamplePlane, ...]:
@@ -91,12 +90,8 @@ def mask_of[Kind: Mask](state: ViewerState, kind: type[Kind]) -> Kind:
 
 
 def bits_of(state: ViewerState) -> frozenset[BitChoice]:
-    """The bits the canvas shows: the topmost bits mask, or the whole image."""
-    for layer in reversed(state.layers):
-        if isinstance(layer.mask, BitsMask):
-            return layer.mask.selection
-    assert state.image is not None
-    return all_bits(state.image.planes)
+    """The bits the canvas shows: the topmost projection's, or the whole image."""
+    return current_bits(state)
 
 
 def chunk(label: bytes, payload: bytes) -> bytes:

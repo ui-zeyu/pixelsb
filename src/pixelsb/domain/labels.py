@@ -3,8 +3,6 @@
 import math
 from functools import cache
 
-import numpy as np
-
 from pixelsb.domain.formatting import format_sample
 from pixelsb.domain.models import (
     MIN_ZOOM,
@@ -12,7 +10,6 @@ from pixelsb.domain.models import (
     Raster,
     SampleArray,
 )
-from pixelsb.domain.selection import bits_for, mask_of
 
 LABEL_PAD = 2
 FONT_FILL = 0.72
@@ -73,22 +70,12 @@ def region_texts(
 
 def _texts(raster: Raster, fmt: DisplayFormat, region: SampleArray) -> list[str]:
     """Rendered labels for one gathered block of pixels, row-major."""
-    if not raster.selection:
-        return [""] * (region.shape[0] * region.shape[1])
-    active = [plane for plane in raster.planes if bits_for(raster.selection, plane.name)]
     joined: list[str] | None = None
-    for plane in active:
-        bits = bits_for(raster.selection, plane.name)
+    for plane in raster.planes:
         channel = region[:, :, plane.index]
-        if len(bits) == 1:
-            shown = (channel >> np.uint16(bits[0])) & np.uint16(1)
-            depth = 1
-        else:
-            shown = channel & np.uint16(mask_of(bits))
-            depth = max(bits) + 1
-        table = _format_table(depth, fmt)
-        strings = list(map(table.__getitem__, shown.ravel().tolist()))
-        if len(active) > 1:
+        table = _format_table(plane.bit_depth, fmt)
+        strings = [table[value] for value in channel.ravel().tolist()]
+        if len(raster.planes) > 1:
             name = plane.name + ":"
             strings = [name + text for text in strings]
         joined = (
@@ -107,20 +94,11 @@ def _format_table(depth: int, fmt: DisplayFormat) -> tuple[str, ...]:
 
 
 def widest_text(raster: Raster, fmt: DisplayFormat) -> str:
-    """The longest label the selection can produce, used to fit the font."""
-    if not raster.selection:
-        return ""
-    active = [plane for plane in raster.planes if bits_for(raster.selection, plane.name)]
-    parts: list[str] = []
-    for plane in active:
-        shown, depth = _largest_value(bits_for(raster.selection, plane.name))
-        rendered = format_sample(shown, depth, fmt)
-        parts.append(rendered if len(active) == 1 else f"{plane.name}:{rendered}")
+    """The longest label the raster can produce, used to fit the font."""
+    parts = [
+        format_sample(plane.maximum, plane.bit_depth, fmt)
+        if len(raster.planes) == 1
+        else f"{plane.name}:{format_sample(plane.maximum, plane.bit_depth, fmt)}"
+        for plane in raster.planes
+    ]
     return "\n".join(parts)
-
-
-def _largest_value(bits: tuple[int, ...]) -> tuple[int, int]:
-    """The largest number the selected bits can show, and how many bits it spans."""
-    if len(bits) == 1:
-        return 1, 1
-    return mask_of(bits), max(bits) + 1

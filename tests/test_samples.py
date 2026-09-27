@@ -1,54 +1,22 @@
 import numpy as np
-import pytest
 
 from pixelsb.domain.models import (
     BitChoice,
     BitsMask,
     CropMask,
     InvertMask,
-    Raster,
     RegionMask,
-    SampleOrigin,
-    SamplePlane,
 )
 from pixelsb.domain.samples import (
-    bit_plane,
     composite_on_checkerboard,
     render_export,
     render_raster,
-    viewed_channel,
-    viewed_samples,
 )
 from tests.support import make_image, planes_rgb, planes_rgba, raster
 
 
-def _plane() -> SamplePlane:
-    return SamplePlane("L", 0, 8, SampleOrigin.RAW)
-
-
-def _selection(*choices: tuple[str, int]) -> frozenset[BitChoice]:
-    return frozenset(BitChoice(plane, bit) for plane, bit in choices)
-
-
-def test_bit_plane_treats_bit_zero_as_the_lsb() -> None:
-    samples = np.array(
-        [
-            [[0b00000001], [0b10000000]],
-            [[0b00000000], [0b11111111]],
-        ],
-        dtype=np.uint16,
-    )
-    plane = _plane()
-    low = bit_plane(samples, plane, 0)
-    high = bit_plane(samples, plane, 7)
-    assert low.tolist() == [[255, 0], [0, 255]]
-    assert high.tolist() == [[0, 255], [0, 255]]
-
-
-def test_bit_plane_rejects_a_bit_outside_the_plane() -> None:
-    samples = np.zeros((1, 1, 1), dtype=np.uint16)
-    with pytest.raises(ValueError, match=r"outside 0\.\.7"):
-        bit_plane(samples, _plane(), 8)
+def _selection(*choices: tuple[str, int]) -> BitsMask:
+    return BitsMask(frozenset(BitChoice(plane, bit) for plane, bit in choices))
 
 
 def test_checkerboard_composite_uses_integer_alpha() -> None:
@@ -74,16 +42,17 @@ def test_the_original_render_uses_the_channel_samples() -> None:
     assert render_raster(raster(image))[0, 0].tolist() == [1, 2, 3]
 
 
-def test_one_selected_bit_renders_as_a_bitmap() -> None:
+def test_a_projected_single_bit_renders_as_a_bitmap() -> None:
+    """One plane alone reads as gray: the bit plane the projection made."""
     image = make_image(np.array([[[0b00000001, 0, 0]]], dtype=np.uint16), planes_rgb())
-    bitmap = render_raster(raster(image, BitsMask(_selection(("R", 0)))))
+    bitmap = render_raster(raster(image, _selection(("R", 0))))
     assert bitmap[0, 0].tolist() == [255, 255, 255]
 
 
-def test_several_selected_bits_keep_their_original_weights() -> None:
-    image = make_image(np.array([[[0b00001001, 0, 0]]], dtype=np.uint16), planes_rgb())
-    weighted = render_raster(raster(image, BitsMask(_selection(("R", 0), ("R", 3)))))
-    assert weighted[0, 0].tolist() == [255, 0, 0]
+def test_a_projected_pair_of_bits_keeps_their_relative_weights() -> None:
+    image = make_image(np.array([[[0b00000010, 0, 0]]], dtype=np.uint16), planes_rgb())
+    weighted = render_raster(raster(image, _selection(("R", 0), ("R", 1))))
+    assert weighted[0, 0].tolist() == [170, 170, 170]  # 2 of 0..3, scaled to a byte
 
 
 def test_what_a_mask_left_shows_through_the_render() -> None:
@@ -127,40 +96,6 @@ def test_export_without_alpha_is_the_plain_picture() -> None:
     plain = render_export(raster(image))
     assert plain.shape == (1, 1, 3)
     assert plain[0, 0].tolist() == [1, 2, 3]
-    # A selection that leaves the alpha channel out keeps three channels too.
-    colors = BitsMask(_selection(("R", 7), ("G", 7), ("B", 7)))
+    # A projection that names the colors keeps three channels and no alpha.
+    colors = _selection(("R", 7), ("G", 7), ("B", 7))
     assert render_export(raster(image, colors)).shape == (1, 1, 3)
-
-
-def test_viewed_channel_keeps_the_carried_bits_and_zeroes_the_rest() -> None:
-    samples = np.zeros((1, 2, 3), dtype=np.uint16)
-    samples[..., 0] = 0b1010
-    raster_built = Raster(samples=samples, planes=planes_rgb(), selection=_selection(("R", 1)))
-    channel, top = viewed_channel(raster_built, raster_built.planes[0])
-    assert channel.tolist() == [[2, 2]]  # 0b1010 & 0b10: bit 1 alone
-    assert top == 2  # the range ends at the mask, not the plane's maximum
-
-
-def test_viewed_channel_keeps_a_plane_the_selection_misses() -> None:
-    samples = np.zeros((1, 2, 3), dtype=np.uint16)
-    samples[..., 1] = 7
-    raster_built = Raster(samples=samples, planes=planes_rgb(), selection=_selection(("R", 0)))
-    channel, top = viewed_channel(raster_built, raster_built.planes[1])
-    assert channel.tolist() == [[7, 7]]  # untouched planes keep their stored values
-    assert top == 255
-
-
-def test_viewed_samples_shares_the_array_until_a_plane_needs_masking() -> None:
-    samples = np.zeros((1, 2, 3), dtype=np.uint16)
-    samples[..., 0] = 3
-    samples[..., 1] = 1
-    plain = Raster(samples=samples, planes=planes_rgb(), selection=frozenset())
-    viewed, tops = viewed_samples(plain)
-    assert viewed is plain.samples  # nothing restricted: no copy at all
-    assert tops == (255, 255, 255)
-    restricted = Raster(samples=samples, planes=planes_rgb(), selection=_selection(("G", 0)))
-    viewed, tops = viewed_samples(restricted)
-    assert viewed is not restricted.samples
-    assert tops == (255, 1, 255)
-    assert viewed[..., 1].tolist() == [[1, 1]]
-    assert viewed[..., 0].tolist() == [[3, 3]]  # the untouched plane rides along unchanged

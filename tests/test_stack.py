@@ -20,7 +20,7 @@ from pixelsb.domain.models import (
     XorMask,
     level_ceiling,
 )
-from pixelsb.domain.selection import all_bits, channel_members, lsb_bits
+from pixelsb.domain.selection import channel_members
 from pixelsb.domain.stack import arnold_image, arnold_indices, match_span, resolve
 from tests.support import layers, make_image, planes_rgb, planes_rgba, raster
 
@@ -33,7 +33,7 @@ def test_the_base_raster_is_the_image_itself() -> None:
     image = _image([[[10, 20, 30]]])
     base = resolve(image, ())
     assert base.samples is image.samples
-    assert base.selection == all_bits(image.planes)
+    assert base.planes == image.planes
     assert base.live is None
     assert not base.cropped
     assert base.failures == ()
@@ -46,10 +46,74 @@ def test_a_disabled_mask_leaves_the_pixels_alone() -> None:
     assert resolve(image, layers(InvertMask())).samples[0, 0].tolist() == [245, 235, 225]
 
 
-def test_a_bits_mask_replaces_the_selection_and_drops_what_is_gone() -> None:
+def test_a_projection_packs_the_chosen_bits_and_shrinks_the_depth() -> None:
+    image = _image([[[0b0000_0101, 0, 0]]])
+    one = raster(image, BitsMask(frozenset({BitChoice("R", 0)})))
+    assert one.samples[0, 0, 0] == 1
+    assert one.planes[0].bit_depth == 1  # a one-bit projection is a one-bit channel
+    two = raster(image, BitsMask(frozenset({BitChoice("R", 2), BitChoice("R", 0)})))
+    assert two.samples[0, 0, 0] == 0b11  # bits 0 and 2 packed onto the low end
+    assert two.planes[0].bit_depth == 2
+
+
+def test_a_projection_keeps_only_the_channels_it_names() -> None:
     image = _image([[[1, 2, 3]]])
-    stack = layers(BitsMask(frozenset({BitChoice("R", 0), BitChoice("R", 9), BitChoice("X", 0)})))
-    assert resolve(image, stack).selection == frozenset({BitChoice("R", 0)})
+    shown = raster(image, BitsMask(frozenset({BitChoice("B", 0)})))
+    assert tuple(plane.name for plane in shown.planes) == ("B",)
+    assert shown.samples.shape == (1, 1, 1)
+
+
+def test_an_operation_above_a_projection_reads_the_projected_picture() -> None:
+    """The pipeline rule: every mask takes the one below it as its input."""
+    image = _image([[[0b101, 0, 0], [0b001, 0, 0]]])
+    pushed = raster(image, BitsMask(frozenset({BitChoice("R", 0)})), ThresholdMask(level=0))
+    assert pushed.samples[:, :, 0].tolist() == [[1, 1]]  # the 1-bit plane's own maximum
+    assert pushed.planes[0].bit_depth == 1
+
+
+def test_a_region_above_a_projection_filters_on_the_packed_values() -> None:
+    image = _image([[[0b100, 0, 0], [0b101, 0, 0]]])
+    kept = raster(
+        image,
+        BitsMask(frozenset({BitChoice("R", 2), BitChoice("R", 0)})),
+        RegionMask("R == 2"),
+    ).live
+    assert kept is not None
+    assert kept.tolist() == [[True, False]]  # packed values 2 and 3
+
+
+def test_a_predicate_above_a_projection_sees_the_shrunken_depth() -> None:
+    image = _image([[[0b101, 0, 0]]])
+    broken = raster(image, BitsMask(frozenset({BitChoice("R", 0)})), RegionMask("R.3 == 1"))
+    (failure,) = broken.failures
+    assert "只有 1 位" in failure.message
+    assert broken.live is None
+
+
+def test_a_projection_naming_a_channel_this_image_lacks_fails_the_layer() -> None:
+    image = _image([[[1, 2, 3]]])
+    broken = raster(image, BitsMask(frozenset({BitChoice("R", 0), BitChoice("X", 0)})))
+    (failure,) = broken.failures
+    assert "位选择的通道这张图没有" in failure.message
+    assert broken.samples[0, 0].tolist() == [1, 2, 3]  # the refused layer leaves the pixels
+
+
+def test_a_projection_of_no_bits_fails_the_layer() -> None:
+    image = _image([[[1, 2, 3]]])
+    broken = raster(image, BitsMask(frozenset()))
+    (failure,) = broken.failures
+    assert "位选择是空的" in failure.message
+
+
+def test_a_projection_over_a_projection_projects_the_packed_picture() -> None:
+    image = _image([[[0b110, 0, 0]]])
+    shown = raster(
+        image,
+        BitsMask(channel_members(image.planes, "R")),  # the whole channel, unchanged
+        BitsMask(frozenset({BitChoice("R", 0)})),  # bit 0 of it
+    )
+    assert shown.samples[0, 0, 0] == 0
+    assert shown.planes[0].bit_depth == 1
 
 
 def test_a_region_mask_marks_the_pixels_it_keeps() -> None:
@@ -218,20 +282,6 @@ def test_a_threshold_splits_a_sixteen_bit_plane_at_its_own_scale() -> None:
     assert level_ceiling(()) == 255
 
 
-def test_a_bits_mask_naming_a_plane_the_image_lacks_selects_nothing() -> None:
-    image = _image([[[1, 0, 0]]])
-    stack = layers(BitsMask(frozenset({BitChoice("A", 0)})))
-    assert resolve(image, stack).selection == frozenset()
-
-
-def test_the_stack_starts_from_every_lowest_bit_when_it_is_asked_to() -> None:
-    image = _image([[[1, 2, 3]]])
-    stack = (Layer(BitsMask(lsb_bits(image.planes))),)
-    assert resolve(image, stack).selection == frozenset(
-        {BitChoice("R", 0), BitChoice("G", 0), BitChoice("B", 0)}
-    )
-
-
 def _encode(samples: np.ndarray, times: int, a: int, b: int) -> np.ndarray:
     """The forward cat map as the common arnold_encode scripts write it.
 
@@ -304,15 +354,30 @@ def test_the_cat_maps_grids_match_composing_the_map_step_by_step() -> None:
         assert np.array_equal(source_column, column)
 
 
-def test_the_cat_map_mask_needs_the_whole_square() -> None:
+def test_the_cat_map_needs_a_square_block_of_samples() -> None:
     image = _image(np.zeros((3, 3, 3), dtype=np.uint16).tolist())
-    assert resolve(image, (Layer(ArnoldMask(1, 1, 1)),)).failures == ()
+    plain = resolve(image, (Layer(ArnoldMask(1, 1, 1)),))
+    assert plain.failures == ()
+    assert plain.rows is None
+    assert plain.columns is None
+    assert np.array_equal(plain.samples, arnold_image(image.samples, 1, 1, 1))
     tall = _image(np.zeros((4, 3, 3), dtype=np.uint16).tolist())
     (failure,) = resolve(tall, (Layer(ArnoldMask(1, 1, 1)),)).failures
     assert "方图" in failure.message
+    # A crop that left a square is still a whole block of cells to mix.
+    cropped = resolve(image, layers(RegionMask("left < 2 and top < 2"), CropMask()))
+    mapped = resolve(
+        image,
+        layers(RegionMask("left < 2 and top < 2"), CropMask(), ArnoldMask(1, 1, 1)),
+    )
+    assert mapped.failures == ()
+    assert mapped.rows is None
+    assert mapped.columns is None
+    assert np.array_equal(mapped.samples, arnold_image(cropped.samples, 1, 1, 1))
+    # A crop that left a rectangle is not.
     stack = (Layer(RegionMask("left < 2")), Layer(CropMask()), Layer(ArnoldMask(1, 1, 1)))
     (failure,) = resolve(image, stack).failures
-    assert "完整画幅" in failure.message
+    assert "方图" in failure.message
 
 
 def test_the_cat_map_carries_the_live_mask_with_the_pixels() -> None:
@@ -337,21 +402,36 @@ def test_the_spectrum_of_an_impulse_is_flat() -> None:
     assert shown.samples[:, :, 0].min() == shown.samples[:, :, 0].max()
 
 
-def test_the_spectrum_takes_the_channels_the_selection_carries() -> None:
+def test_the_spectrum_takes_the_channels_it_names() -> None:
     image = _image([[[9, 9, 9, 40]] * 4 for _ in range(4)], planes_rgba())
-    keep = all_bits(image.planes) - channel_members(image.planes, "A")
-    shown = raster(image, BitsMask(keep), FftMask())
-    assert shown.samples[0, 0, 3] == 40  # alpha had no bit selected: it keeps its value
-    assert int(shown.samples[2, 2, 0]) == 255  # the colors still take their spectrum
+    shown = raster(image, FftMask(("R", "G", "B")))
+    assert shown.samples[0, 0, 3] == 40  # alpha was not named: it keeps its value
+    assert int(shown.samples[2, 2, 0]) == 255  # the colors take their spectrum
 
 
-def test_a_spectrum_over_no_selection_changes_nothing() -> None:
+def test_a_spectrum_naming_alpha_does_alpha_too() -> None:
+    image = _image([[[9, 9, 9, 40]] * 4 for _ in range(4)], planes_rgba())
+    shown = raster(image, FftMask(("A",)))
+    assert int(shown.samples[2, 2, 3]) == 255  # alpha takes its spectrum
+    assert shown.samples[2, 2, 0] == 9  # the unnamed colors keep their values
+
+
+def test_a_spectrum_naming_no_channel_changes_nothing() -> None:
     image = _image([[[9, 9, 9]] * 4 for _ in range(4)])
-    shown = raster(image, BitsMask(frozenset()), FftMask())
+    shown = raster(image, FftMask(()))
     assert shown.samples[2, 2, 0] == 9  # nothing takes part, so nothing is transformed
 
 
-def test_with_every_bit_selected_alpha_takes_a_spectrum_too() -> None:
+def test_a_spectrum_naming_a_channel_the_image_lacks_fails_the_layer() -> None:
+    image = _image([[[9, 9, 9]] * 4 for _ in range(4)])
+    broken = raster(image, FftMask(("R", "X")))
+    (failure,) = broken.failures
+    assert "频谱的通道这张图没有" in failure.message
+    assert broken.samples[2, 2, 0] == 9  # the refused layer leaves the pixels alone
+
+
+def test_the_spectrum_by_default_leaves_alpha_alone() -> None:
     image = _image([[[9, 9, 9, 40]] * 4 for _ in range(4)], planes_rgba())
     shown = raster(image, FftMask())
-    assert int(shown.samples[2, 2, 3]) == 255  # the default selection carries alpha
+    assert int(shown.samples[2, 2, 0]) == 255  # the colors take their spectrum
+    assert shown.samples[0, 0, 3] == 40  # alpha does not: its spectrum is a dark picture

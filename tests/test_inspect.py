@@ -178,6 +178,35 @@ def test_each_fake_idat_stream_gets_its_own_group() -> None:
     assert extra[1].decoded == b"second fake flag{three_streams}"
 
 
+def test_a_fake_stream_carries_size_candidates_of_its_own() -> None:
+    """The smuggled picture's geometry rides on its finding: five rows of three."""
+    fake = zlib.compress(_scanlines(*([b"\xaa\xbb\xcc"] * 5)))
+    report = scan_container(
+        _png(
+            _chunk(b"IHDR", _IHDR),
+            _chunk(b"IDAT", zlib.compress(_scanlines(b"\xff"))),
+            _chunk(b"IDAT", fake),
+            _chunk(b"IEND", b""),
+        )
+    )
+    (extra,) = [finding for finding in report.findings if finding.kind == "idat-extra"]
+    assert SizeHint(3, 5) in extra.sizes
+
+
+def test_a_fake_stream_that_fits_the_declared_size_asks_for_nothing() -> None:
+    fake = zlib.compress(_scanlines(b"\xff"))  # two bytes: the 1x1 header's own budget
+    report = scan_container(
+        _png(
+            _chunk(b"IHDR", _IHDR),
+            _chunk(b"IDAT", zlib.compress(_scanlines(b"\xff"))),
+            _chunk(b"IDAT", fake),
+            _chunk(b"IEND", b""),
+        )
+    )
+    (extra,) = [finding for finding in report.findings if finding.kind == "idat-extra"]
+    assert extra.sizes == ()
+
+
 def test_surplus_pixels_inside_one_stream_are_reported() -> None:
     stream = zlib.compress(_scanlines(b"\xff") + b"\x00\xaa" * 5)  # five rows too many
     report = scan_container(

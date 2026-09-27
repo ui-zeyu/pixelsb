@@ -7,8 +7,8 @@ import numpy as np
 import pytest
 
 from pixelsb.domain import histogram
-from pixelsb.domain.models import BitChoice, Raster
-from tests.support import planes_rgb
+from pixelsb.domain.models import BitChoice, BitsMask, Raster
+from tests.support import make_image, planes_rgb, raster
 
 
 def counts_of(values: np.ndarray | Sequence[int]) -> np.ndarray:
@@ -19,46 +19,57 @@ def counts_of(values: np.ndarray | Sequence[int]) -> np.ndarray:
 def test_the_census_counts_every_cell_of_its_plane() -> None:
     samples = np.zeros((2, 3, 3), dtype=np.uint16)
     samples[:, :, 1] = 7
-    raster_built = Raster(samples=samples, planes=planes_rgb(), selection=frozenset())
-    counts, top = histogram.plane_counts(raster_built, raster_built.planes[1])
+    everything = Raster(samples=samples, planes=planes_rgb())
+    counts, top = histogram.plane_counts(everything, everything.planes[1])
     assert counts.size == 256
     assert counts.sum() == 6
     assert counts[7] == 6
     assert top == 255
 
 
-def test_the_census_keeps_only_the_bits_the_selection_carries() -> None:
-    """A restricted plane counts masked values: bit 0 alone, the rest read as zero."""
+def test_a_projection_shrinks_the_census_with_the_plane() -> None:
+    """A projection's packing is in the samples, so one census serves chart and test."""
     samples = np.zeros((2, 3, 3), dtype=np.uint16)
     samples[:, :, 1] = np.array([1, 2, 3, 0, 1, 3]).reshape(2, 3)
-    raster_built = Raster(
-        samples=samples,
-        planes=planes_rgb(),
-        selection=frozenset({BitChoice("G", 0)}),
+    board = raster(
+        make_image(samples, planes_rgb()),
+        BitsMask(frozenset({BitChoice("G", 0)})),
     )
-    counts, top = histogram.plane_counts(raster_built, raster_built.planes[1])
-    assert top == 1
+    counts, top = histogram.plane_counts(board, board.planes[0])
+    assert (counts.size, top) == (2, 1)  # a one-bit plane counts two values
     assert counts.tolist() == [2, 4]
-    assert histogram.shown_bits(raster_built, raster_built.planes[1]) == (0,)
-    assert histogram.shown_bits(raster_built, raster_built.planes[0]) == tuple(range(8))
+    assert histogram.shown_bits(board.planes[0]) == (0,)
 
 
-def test_the_census_spans_the_mask_and_the_pair_test_stays_on_stored_values() -> None:
-    """One carried bit at position 4: the chart counts 0 and 16, the test reads 0..255."""
+def test_a_projection_packs_scattered_bits_down_and_the_pair_test_reads_them() -> None:
     samples = np.zeros((2, 3, 3), dtype=np.uint16)
     samples[:, :, 0] = np.array([0, 16, 1, 17, 0, 16]).reshape(2, 3)
+    board = raster(
+        make_image(samples, planes_rgb()),
+        BitsMask(frozenset({BitChoice("R", 4), BitChoice("R", 3)})),
+    )
+    counts, top = histogram.plane_counts(board, board.planes[0])
+    assert top == 3  # the projection packs bits 3 and 4 down: the values are 0..3
+    assert counts.tolist() == [3, 0, 3, 0]
+    verdict = histogram.pair_chi_square(counts, 0)
+    assert verdict is not None
+    statistic, degrees = verdict
+    assert statistic == pytest.approx(3.0)  # the packed pairs (0, 1) and (2, 3)
+    assert degrees == 1
+
+
+def test_the_census_counts_only_the_pixels_the_region_kept() -> None:
+    """A region decides the population: the bytes about to be extracted."""
+    samples = np.zeros((2, 2, 3), dtype=np.uint16)
+    samples[0, 0, 0] = 200
     raster_built = Raster(
         samples=samples,
         planes=planes_rgb(),
-        selection=frozenset({BitChoice("R", 4)}),
+        live=np.array([[True, False], [False, False]]),
     )
-    counts, top = histogram.plane_counts(raster_built, raster_built.planes[0])
-    assert top == 16
-    assert counts.tolist() == [3] + [0] * 15 + [3]
-    stored = histogram.stored_counts(raster_built, raster_built.planes[0])
-    assert stored.size == 256
-    verdict = histogram.pair_chi_square(stored, 4)
-    assert verdict == (0.0, 1)  # pairs (0,16) and (1,17) both in balance
+    counts, _top = histogram.plane_counts(raster_built, raster_built.planes[0])
+    assert counts[200] == 1
+    assert counts.sum() == 1  # the dimmed pixels are not in the population
 
 
 def test_the_pair_test_joins_each_value_with_its_bit_partner() -> None:

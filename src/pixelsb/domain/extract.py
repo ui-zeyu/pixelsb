@@ -1,4 +1,4 @@
-"""StegSolve-style bit extraction: selected bits packed into bytes."""
+"""StegSolve-style bit extraction: the raster's bits packed into bytes."""
 
 import codecs
 from collections.abc import Callable, Sequence
@@ -20,7 +20,7 @@ from pixelsb.domain.models import (
     SamplePlane,
     ScanOrder,
 )
-from pixelsb.domain.selection import bits_for
+from pixelsb.domain.selection import all_bits, bits_for
 
 DISPLAY_LINES = 4096
 BYTES_PER_ROW = 16
@@ -65,12 +65,14 @@ def extract_bytes(raster: Raster, order: ExtractOrder = DEFAULT_ORDER) -> bytes:
     """Pack the raster's bits into bytes, in the requested order.
 
     The stream walks the pixels the masks left standing in ``order.scan``, each
-    pixel's channels in ``order.planes``, and each channel's selected bits from
-    low to high; every eight bits become a byte, the first of them the high or
-    low end of it. Pixels the region masks dropped are skipped, and the ones that
-    survive keep their bit order and are re-packed densely.
+    pixel's channels in ``order.planes``, and each channel's bits from low to
+    high; every eight bits become a byte, the first of them the high or low end
+    of it. The raster carries exactly the bits there are to read — a projection
+    narrowed them in the stack — so the stream packs what the canvas shows.
+    Pixels the region masks dropped are skipped, and the ones that survive keep
+    their bit order and are re-packed densely.
     """
-    return StreamSource(raster).stream(raster.selection, order)
+    return StreamSource(raster).stream(None, order)
 
 
 class StreamSource:
@@ -93,18 +95,23 @@ class StreamSource:
 
     def stream(
         self,
-        selection: frozenset[BitChoice],
+        bits: frozenset[BitChoice] | None = None,
         order: ExtractOrder = DEFAULT_ORDER,
     ) -> bytes:
-        """The bytes ``selection`` packs here, read in ``order``."""
-        if not selection:
+        """The bytes ``bits`` pack here, read in ``order``; ``None`` packs every bit.
+
+        The sweep passes its own candidate selections; the extract panel takes
+        the default, which is every bit the planes carry.
+        """
+        chosen = all_bits(self._planes) if bits is None else bits
+        if not chosen:
             return b""
         scan = order.scan
         rows = self._pixel_rows(scan)
         columns = [
             self._bit_column(rows, scan, plane.index, bit)
             for plane in ordered_planes(self._planes, order)
-            for bit in bits_for(selection, plane.name)
+            for bit in bits_for(chosen, plane.name)
         ]
         if not columns:
             return b""
@@ -153,25 +160,19 @@ def ordered_planes(
 
 def applied_order(
     planes: tuple[SamplePlane, ...],
-    chosen: frozenset[BitChoice],
     order: ExtractOrder,
 ) -> tuple[str, ...]:
-    """The channel order in effect: the planes carrying bits, as the stream reads them."""
-    return tuple(
-        plane.name for plane in ordered_planes(planes, order) if bits_for(chosen, plane.name)
-    )
+    """The channel order in effect: the raster's planes as the stream reads them."""
+    return tuple(plane.name for plane in ordered_planes(planes, order))
 
 
-def order_choices(
-    planes: tuple[SamplePlane, ...],
-    chosen: frozenset[BitChoice],
-) -> tuple[tuple[str, ...], ...]:
+def order_choices(planes: tuple[SamplePlane, ...]) -> tuple[tuple[str, ...], ...]:
     """The channel orders worth offering: the arrangements of the planes in use.
 
     Three channels or fewer come in every arrangement, which is StegSolve's set;
     beyond that the order itself and its reverse keep the list readable.
     """
-    used = tuple(plane.name for plane in planes if bits_for(chosen, plane.name))
+    used = tuple(plane.name for plane in planes)
     if not used:
         return ()
     if len(used) > _MAX_ORDER_PLANES:

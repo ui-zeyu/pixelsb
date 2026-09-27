@@ -30,13 +30,12 @@ from pixelsb.domain.models import (
 )
 from pixelsb.domain.readout import build_readout, label_zoom
 from pixelsb.domain.scan import ScanHit
-from pixelsb.domain.selection import whole
+from pixelsb.domain.transitions import projection_bits
 
 _TWO_PLACES = Decimal("0.01")
 
 APP_NAME = "pixelsb"
 FILE_MENU = "文件"
-VIEW_MENU = "视图"
 HELP_MENU = "帮助"
 OPEN = "打开…"
 QUIT = "退出"
@@ -100,25 +99,27 @@ COMMAND_HELP = """\
   inv               每个通道按满值取反
   gray              三个颜色通道换成亮度
   crop              画布收缩到命中像素的范围
-  fft               位选择勾到的通道换成对数幅度谱
-  arnold 次数 a b   猫映射逆变换重排像素（与常见脚本同名同序），要方图
+  fft               颜色与灰度通道换成对数幅度谱；fft r g 只做点名的通道
+  arnold 次数 a b   猫映射逆变换重排像素（与常见脚本同名同序），要方的样本矩形
 
-位选择（整行只有通道与位）
+位选择（整行只有通道与位；它是一道投影操作）
   b      整条通道        b.0    只看这一位       all    全部位
   or / and / not   并、交、补，如 r or g.0、all and not r
+  投影把勾中的位压进各通道的低位端，通道位深随之收缩；没点名的通道退出画面，
+  上面的操作读到的就是投影后的图——位平面上也能再做 fft、阈值、猫脸。
 
 区域条件（其余文本）
   left top right bottom     像素占据 [left, right) × [top, bottom)
-  通道名                    原始值；加 .bits 是勾选位的值，加位号（R.3）是那一位
+  通道名                    当前值；加位号（R.3）是那一位
   rect(x0, y0, x1, y1)      矩形，参数可具名 left= top= right= bottom=
   grid(x, y, step_x, step_y)    从起点按步长取点
   比较、算术、and / or / not 照常组合，如 b > r and b > g
 
 写法
   数值：十进制 128，或 0x 十六进制；不能超过这张图最宽通道的满值（8 位 255、16 位 65535）
-  位选择和区域条件不能写在一行：分成两行，操作之间的组合由配方栈负责
+  位选择和区域条件不能写在一行：位选择是投影操作，区域条件是筛选操作
   命令写在框正在编辑的那一条上；框没有绑定操作时加到栈顶
-  位网格与快捷键只写位选择那一层，不会改写别类操作
+  位网格与快捷键改的是栈顶的投影层，永远不改动配方里的其他操作
 
 按键
   ⌘F 聚焦命令框    回车应用    Shift+回车在栈顶再叠一条
@@ -133,8 +134,6 @@ MODE_MOVE = "移动"
 MODE_SELECT = "选区"
 MODE_MOVE_TIP = "拖动画布平移视图"
 MODE_SELECT_TIP = "拖动框选；回车加为区域操作，Esc 取消"
-THRESHOLD_LEVEL_TIP = "每个通道按 值 > 阈值 压成满值或 0"
-XOR_VALUE_TIP = "每个通道与这个常数按位异或"
 VIEW_EXPORT = "导出"
 VIEW_EXPORT_TIP = "当前画面存为图像文件（区域淡化只用于显示）"
 EXTRACT_SAVE = "保存"
@@ -151,6 +150,7 @@ INFO_NO_EXIF = "无 EXIF 信息"
 FRAME_HEADERS = ("帧", "尺寸", "偏移", "延时")
 SIZE_HINT_NOTE = "声明的宽高放不下这些像素，可修补为："
 SIZE_OPEN_TIP = "按此宽高改写 IHDR 并打开修补后的文件"
+STREAM_SIZE_TIP = "按此宽高在内存里重渲这条流"
 WARNING_MARK = "⚠"
 BLOCK_RENDER_TIP = "把这一块所在的流渲染到画布"
 DUMP_TIP = "查看这一块的十六进制转储"
@@ -278,16 +278,15 @@ LAYER_ALL_BITS = "全部位"
 LAYER_NONE = "未选择"
 EMPTY_EXPRESSION = "（空表达式，不过滤）"
 
-MASK_BITS_TIP = "勾选画面与提取流用哪些位"
-MASK_BITS_SHADOWED = "上面还有开着的「位选择」操作：当前画面与提取用的是最上面那一条。"
 MASK_REGION_TIP = "按表达式筛掉像素，没通过的淡化且不进提取流"
 MASK_CROP_TIP = "把画布收缩到命中像素的范围"
 MASK_INVERT_TIP = "每个通道按满值取反"
 MASK_GRAYSCALE_TIP = "三个颜色通道换成像素亮度"
 MASK_THRESHOLD_TIP = "每个通道按 值 > 阈值 压成满值或 0"
 MASK_XOR_TIP = "每个通道与常数按位异或"
-MASK_FFT_TIP = "勾到的每个通道换成对数幅度谱（直流居中）"
-MASK_ARNOLD_TIP = "猫映射逆变换重排像素；arnold 次数 a b，要方图"
+MASK_FFT_TIP = "点名的通道换成对数幅度谱（直流居中）；fft r g 只做这两条通道"
+MASK_ARNOLD_TIP = "猫映射逆变换重排像素；arnold 次数 a b，要方的样本矩形"
+MASK_BITS_TIP = "投影：勾中的位压进各通道低位端，位深随之收缩，没点名的通道退出画面"
 
 
 @dataclass(frozen=True, slots=True)
@@ -299,7 +298,6 @@ class MaskInfo:
 
 
 MASK_INFO: dict[type[Mask], MaskInfo] = {
-    BitsMask: MaskInfo("位选择", MASK_BITS_TIP),
     RegionMask: MaskInfo("区域", MASK_REGION_TIP),
     CropMask: MaskInfo("裁剪", MASK_CROP_TIP),
     InvertMask: MaskInfo("反相", MASK_INVERT_TIP),
@@ -308,6 +306,7 @@ MASK_INFO: dict[type[Mask], MaskInfo] = {
     XorMask: MaskInfo("异或", MASK_XOR_TIP),
     FftMask: MaskInfo("频谱", MASK_FFT_TIP),
     ArnoldMask: MaskInfo("猫脸变换", MASK_ARNOLD_TIP),
+    BitsMask: MaskInfo("位选择", MASK_BITS_TIP),
 }
 
 
@@ -332,29 +331,24 @@ def mask_detail(mask: Mask, planes: tuple[SamplePlane, ...]) -> str:
         case RegionMask(expression=expression):
             return expression.strip() or EMPTY_EXPRESSION
         case BitsMask(selection=selection):
-            if whole(planes, selection):
-                return bits_text(planes, selection)
-            return commands.text_of(mask, planes) or bits_text(planes, selection)
+            return commands.bits_text(planes, selection) or EMPTY_EXPRESSION
         case _:
-            return commands.text_of(mask, planes) or ""
+            return commands.text_of(mask, planes)
 
 
-def bits_text(planes: tuple[SamplePlane, ...], selection: frozenset[BitChoice]) -> str:
-    """The two words for the selections no command spells: every bit, or none."""
-    return LAYER_ALL_BITS if whole(planes, selection) else LAYER_NONE
+def layer_text(bits: frozenset[BitChoice] | None, planes: tuple[SamplePlane, ...]) -> str:
+    """Which bits the projection shows: every bit, none, or the list by name.
 
-
-def layer_text(bits: tuple[BitChoice, ...] | None) -> str:
-    """Which bits drive the canvas: every bit, none, or the list by name.
-
-    Every bit is ``全部位`` rather than the base layer's own name: value masks can
-    leave the selection whole while the numbers behind it are not the file's.
+    No projection is ``全部位`` rather than the base layer's own name: value
+    masks can sit on the stack while the pixels behind them stay the file's.
     """
     if bits is None:
         return LAYER_ALL_BITS
     if not bits:
         return LAYER_NONE
-    return " ".join(f"{choice.plane}{choice.bit}" for choice in bits)
+    rank = {plane.name: order for order, plane in enumerate(planes)}
+    ordered = sorted(bits, key=lambda choice: (rank.get(choice.plane, len(rank)), -choice.bit))
+    return " ".join(f"{choice.plane}{choice.bit}" for choice in ordered)
 
 
 def readout_text(state: ViewerState, raster: Raster | None) -> str:
@@ -367,7 +361,7 @@ def readout_text(state: ViewerState, raster: Raster | None) -> str:
         return NOT_IN_VIEW
     lines = [f"光标 ({readout.cursor.x}, {readout.cursor.y})"]
     lines.extend(f"{channel.name}  {channel.text}" for channel in readout.channels)
-    lines.append(f"画面 {layer_text(readout.bits)}")
+    lines.append(f"画面 {layer_text(projection_bits(state), state.image.planes)}")
     return "\n".join(lines)
 
 
@@ -432,16 +426,18 @@ def block_role_text(block: Block) -> str:
     return f"{role} · 流 {block.group}" if block.group else role
 
 
-def canvas_note(block: Block, count: int) -> str:
+def canvas_note(block: Block, count: int, hint: SizeHint | None = None) -> str:
     """Which blocks the canvas is showing: a numbered stream, or one block.
 
     Opening a file shows its first stream, so the note a fresh page carries is
-    the same sentence clicking that stream's name produces.
+    the same sentence clicking that stream's name produces. A hint means the
+    stream was drawn under a geometry its own bytes imply, and the note says so.
     """
     if not block.group:
         return f"画布：{block.label}（按扫描行渲染）"
     members = f"{block.label} 等 {count} 个块" if count > 1 else block.label
-    return f"画布：流 {block.group}（{members}）"
+    note = f"画布：流 {block.group}（{members}）"
+    return f"{note} · 按 {hint.width}×{hint.height} 渲染" if hint else note
 
 
 def original_note() -> str:
@@ -521,8 +517,8 @@ SECTION_SWEEP = "扫描"
 SECTION_ARNOLD = "猫脸变换"
 SECTION_HISTOGRAM = "直方图"
 SECTION_CHI2 = "卡方"
-HISTOGRAM_TIP = "读画布所示的值：位选择只留勾中的位，区域淡化不剔除像素"
-CHI2_TIP = "p 接近 1：这一位的值对像被交换过，即该位像被写入过"
+HISTOGRAM_TIP = "读栈所留的样本：投影的打包也算在内，区域只数留下的像素——圈一块载荷，分布跟着变"
+CHI2_TIP = "样本值上的值对检验：p 接近 1 说明这一位像被按位写入过；人口同样是区域留下的像素"
 SWEEP_START = "开始扫描"
 SWEEP_STOP = "停止"
 SWEEP_COLUMNS = ("命令", "顺序", "预览", "结果")

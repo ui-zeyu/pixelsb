@@ -44,35 +44,6 @@ def bits_for(selection: frozenset[BitChoice], plane: str) -> tuple[int, ...]:
     return tuple(sorted(choice.bit for choice in selection if choice.plane == plane))
 
 
-def active_bits(
-    planes: tuple[SamplePlane, ...],
-    selection: frozenset[BitChoice],
-) -> tuple[BitChoice, ...]:
-    """The selected bits in plane order, then low to high."""
-    return tuple(
-        BitChoice(plane.name, bit) for plane in planes for bit in bits_for(selection, plane.name)
-    )
-
-
 def whole(planes: tuple[SamplePlane, ...], selection: frozenset[BitChoice]) -> bool:
     """Whether the selection is every bit of every plane: the original image."""
     return selection == all_bits(planes)
-
-
-def mask_of(bits: tuple[int, ...]) -> int:
-    return sum(1 << bit for bit in bits)
-
-
-def bit_value(sample: int, bit: int) -> int:
-    return (sample >> bit) & 1
-
-
-def shown_channel_value(sample: int, bits: tuple[int, ...]) -> tuple[int, int]:
-    """Return the number to display for one plane, and the bit width used to format it.
-
-    A single selected bit is ``0`` or ``1``. Several bits keep their original weights,
-    which is exactly the stored sample masked onto the selected bits.
-    """
-    if len(bits) == 1:
-        return bit_value(sample, bits[0]), 1
-    return sample & mask_of(bits), max(bits) + 1

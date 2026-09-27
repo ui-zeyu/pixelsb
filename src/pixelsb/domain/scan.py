@@ -1,7 +1,7 @@
 """The zsteg sweep: candidates over channels, bits, and stream order.
 
 Every candidate *is* a recipe — a bits selection and the extract order that goes
-with it — so a hit applies to the stack unchanged and the sweep is the extract
+with it — so a hit lands as the stack's projection and the sweep is the extract
 panel's own run across the whole parameter space. This module only enumerates
 what to try; judging a stream is the caller's job.
 """

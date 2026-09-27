@@ -4,8 +4,7 @@ from dataclasses import dataclass
 
 from pixelsb.domain.formatting import format_sample
 from pixelsb.domain.labels import widest_text, zoom_required
-from pixelsb.domain.models import BitChoice, DisplayFormat, PixelCoord, Raster, ViewerState
-from pixelsb.domain.selection import active_bits, bits_for, shown_channel_value, whole
+from pixelsb.domain.models import DisplayFormat, PixelCoord, Raster, ViewerState
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,7 +19,6 @@ class ChannelValue:
 class Readout:
     cursor: PixelCoord
     channels: tuple[ChannelValue, ...]
-    bits: tuple[BitChoice, ...] | None  # None: every bit of every plane
 
 
 def build_readout(state: ViewerState, raster: Raster) -> Readout | None:
@@ -35,9 +33,6 @@ def build_readout(state: ViewerState, raster: Raster) -> Readout | None:
     return Readout(
         cursor=cursor,
         channels=_channels(raster, row, column, state.value_format),
-        bits=None
-        if whole(raster.planes, raster.selection)
-        else active_bits(raster.planes, raster.selection),
     )
 
 
@@ -55,12 +50,9 @@ def _channels(
     column: int,
     fmt: DisplayFormat,
 ) -> tuple[ChannelValue, ...]:
+    """One number per plane, at the plane's own depth: the sample as it is."""
     sample = tuple(raster.samples[row, column].tolist())
-    values: list[ChannelValue] = []
-    for plane in raster.planes:
-        bits = bits_for(raster.selection, plane.name)
-        if not bits:
-            continue
-        shown, depth = shown_channel_value(sample[plane.index], bits)
-        values.append(ChannelValue(plane.name, format_sample(shown, depth, fmt)))
-    return tuple(values)
+    return tuple(
+        ChannelValue(plane.name, format_sample(sample[plane.index], plane.bit_depth, fmt))
+        for plane in raster.planes
+    )

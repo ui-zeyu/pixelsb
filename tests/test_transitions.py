@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -10,12 +11,12 @@ from pixelsb.domain.models import (
     BitChoice,
     BitOrder,
     BitsMask,
-    CropMask,
     DisplayFormat,
     ExtractEncoding,
     ExtractOrder,
     GrayscaleMask,
     InvertMask,
+    Layer,
     LoadedImage,
     PixelCoord,
     RegionMask,
@@ -25,12 +26,11 @@ from pixelsb.domain.models import (
     ThresholdMask,
     ViewerState,
 )
-from pixelsb.domain.selection import all_bits
+from pixelsb.domain.selection import all_bits, channel_members
 from pixelsb.domain.transitions import (
     add_layer,
     add_mask_text,
     apply_arnold,
-    bits_position,
     clear_layers,
     cycle_format,
     filter_position,
@@ -39,12 +39,12 @@ from pixelsb.domain.transitions import (
     open_image,
     remove_layer,
     select_all_bits,
-    select_choices,
     select_lsb,
     select_lsb_at,
     select_lsbs,
     select_only,
     set_bit_order,
+    set_bits,
     set_channel,
     set_channel_order,
     set_column,
@@ -61,7 +61,7 @@ from pixelsb.domain.transitions import (
     step_zoom,
     toggle_bit,
 )
-from tests.support import bits_of, make_image, mask_of, masks, planes_rgb
+from tests.support import bits_of, make_image, masks, planes_rgb
 
 _PLANES = planes_rgb()
 
@@ -130,16 +130,12 @@ def test_a_layer_index_outside_the_stack_is_refused() -> None:
             call()
 
 
-def test_the_filter_box_binds_the_layer_whose_mask_has_a_command_line() -> None:
+def test_the_filter_box_binds_the_layer_in_hand() -> None:
     state = add_layer(add_layer(_open(), RegionMask("R > 0")), RegionMask("G > 0"))
-    assert filter_position(state.layers, _PLANES, 1) == 1
-    assert filter_position(state.layers, _PLANES, 0) == 0
-    assert filter_position(state.layers, _PLANES) is None  # no layer in hand: nothing to edit
-    others = add_layer(add_layer(_open(), InvertMask()), RegionMask("R > 0"))
-    assert filter_position(others.layers, _PLANES, 0) == 0  # the invert has its own command
-    assert filter_position(others.layers, _PLANES, 9) is None  # nor is a layer that is gone
-    emptied = add_layer(_open(), BitsMask(frozenset()))
-    assert filter_position(emptied.layers, _PLANES, 0) is None  # no bits, no line
+    assert filter_position(state.layers, 1) == 1
+    assert filter_position(state.layers, 0) == 0
+    assert filter_position(state.layers) is None  # no layer in hand: nothing to edit
+    assert filter_position(state.layers, 9) is None  # nor is a layer that is gone
 
 
 def test_writing_a_filter_text_adds_a_mask_on_top() -> None:
@@ -154,41 +150,40 @@ def test_writing_a_filter_text_adds_a_mask_on_top() -> None:
     )  # named: rewritten
 
 
-def test_a_command_line_becomes_its_mask() -> None:
-    assert masks(set_mask_text(_open(), "b.0")) == (BitsMask(frozenset({BitChoice("B", 0)})),)
+def test_a_line_of_bits_lands_as_the_projection_layer() -> None:
+    state = set_mask_text(_open(), "b.0")
+    assert masks(state) == (BitsMask(frozenset({BitChoice("B", 0)})),)
+    assert bits_of(state) == frozenset({BitChoice("B", 0)})
+    # A second bits line rewrites the projection instead of stacking a tower.
+    assert masks(set_mask_text(state, "r.3")) == (BitsMask(frozenset({BitChoice("R", 3)})),)
     bound = add_layer(_open(), InvertMask())
     assert masks(set_mask_text(bound, "thr 200", layer=0)) == (ThresholdMask(200),)
 
 
+def test_a_bits_line_takes_the_topmost_projection_wherever_the_box_points() -> None:
+    """The view is one layer; a bits line drives it whatever the box was editing."""
+    state = add_layer(_open(), RegionMask("R > 0"))
+    shown = set_mask_text(state, "b.0", layer=0)
+    assert masks(shown) == (RegionMask("R > 0"), BitsMask(frozenset({BitChoice("B", 0)})))
+    again = set_mask_text(shown, "r.3", layer=0)
+    assert masks(again) == (RegionMask("R > 0"), BitsMask(frozenset({BitChoice("R", 3)})))
+
+
 def test_a_line_names_one_operation_of_one_kind() -> None:
-    """Two kinds in one line would be two operations, and the line names one."""
-    state = add_layer(_open(), BitsMask(frozenset({BitChoice("R", 3)})))
+    """Two kinds in one line would be two things, and the line names one."""
+    state = set_mask_text(_open(), "r.3")
     with pytest.raises(commands.CommandError, match="一行只写一个操作"):
         set_mask_text(state, "b > r and b.0", layer=0)
     with pytest.raises(commands.CommandError, match="单独一行"):
         set_mask_text(state, "thr 128 and b.0", layer=0)
-    assert masks(state) == (BitsMask(frozenset({BitChoice("R", 3)})),)  # the stack stands
+    assert masks(state) == (BitsMask(frozenset({BitChoice("R", 3)})),)  # the projection stands
 
 
 def test_a_line_rewrites_the_operation_in_hand_whatever_kind_it_was() -> None:
     """Picking an operation and writing a command edits that operation, kind and all."""
     region = add_layer(_open(), RegionMask("R > 0"))
-    assert masks(set_mask_text(region, "b.0", layer=0)) == (
-        BitsMask(frozenset({BitChoice("B", 0)})),
-    )  # the line in the box replaces what the box was showing
-    bits = add_layer(region, BitsMask(frozenset({BitChoice("R", 3)})))
-    assert masks(set_mask_text(bits, "b.0", layer=1)) == (
-        RegionMask("R > 0"),
-        BitsMask(frozenset({BitChoice("B", 0)})),
-    )  # the layer in hand is the one rewritten
-    assert masks(set_mask_text(bits, "b > r", layer=0)) == (
-        RegionMask("b > r"),
-        BitsMask(frozenset({BitChoice("R", 3)})),
-    )
-    assert masks(set_mask_text(bits, "thr 64", layer=0)) == (
-        ThresholdMask(64),
-        BitsMask(frozenset({BitChoice("R", 3)})),
-    )
+    assert masks(set_mask_text(region, "b > r", layer=0)) == (RegionMask("b > r"),)
+    assert masks(set_mask_text(region, "thr 64", layer=0)) == (ThresholdMask(64),)
     pair = add_layer(add_layer(_open(), InvertMask()), ThresholdMask(64))
     assert masks(set_mask_text(pair, "gray", layer=1)) == (InvertMask(), GrayscaleMask())
     assert masks(set_mask_text(pair, "gray", layer=0)) == (GrayscaleMask(), ThresholdMask(64))
@@ -198,13 +193,10 @@ def test_adding_a_line_stacks_it_instead_of_rewriting_the_layer_in_hand() -> Non
     """Shift+Enter's line: the operation in hand keeps its command and its place."""
     state = add_layer(_open(), ThresholdMask(200))
     assert masks(add_mask_text(state, "thr 128")) == (ThresholdMask(200), ThresholdMask(128))
-    bits = add_layer(state, BitsMask(frozenset({BitChoice("R", 3)})))
-    assert masks(add_mask_text(bits, "b.0")) == (
-        ThresholdMask(200),
-        BitsMask(frozenset({BitChoice("R", 3)})),
-        BitsMask(frozenset({BitChoice("B", 0)})),
-    )  # a second selection layer, the one below untouched
-    assert masks(add_mask_text(bits, "b > r")) == (
+    projected = set_bits(state, frozenset({BitChoice("R", 3)}))
+    added = add_mask_text(projected, "b.0")
+    assert masks(added) == (ThresholdMask(200), BitsMask(frozenset({BitChoice("B", 0)})))
+    assert masks(add_mask_text(projected, "b > r")) == (
         ThresholdMask(200),
         BitsMask(frozenset({BitChoice("R", 3)})),
         RegionMask("b > r"),
@@ -288,34 +280,16 @@ def test_stepping_planes_walks_the_display_order() -> None:
     assert step_plane(empty, 1) is empty  # no image: nothing to step
 
 
-def test_a_bits_edit_falls_back_when_the_named_layer_is_not_a_bits_mask() -> None:
-    state = add_layer(add_layer(_open(), InvertMask()), BitsMask(frozenset({BitChoice("R", 0)})))
-    assert bits_position(state.layers, 0) == 1
-    assert bits_position(state.layers, 1) == 1
-    assert bits_position(state.layers, 9) == 1
-    assert bits_position(()) is None
-    stepped = step_plane(state, 1, layer=0)  # layer 0 is the invert mask
-    assert mask_of(stepped, BitsMask).selection == frozenset({BitChoice("G", 7)})
-    assert len(masks(stepped)) == 2
-
-
-def test_stepping_planes_rewrites_the_mask_it_was_pointed_at() -> None:
-    state = add_layer(_open(), BitsMask(frozenset({BitChoice("R", 0)})))
-    stepped = step_plane(state, 1, layer=0)
-    assert len(masks(stepped)) == 1
-    assert mask_of(stepped, BitsMask).selection == frozenset({BitChoice("G", 7)})
-
-
-def test_stepping_planes_survives_a_mask_that_names_another_images_channel() -> None:
-    """A mask kept across an image change can show a plane the new one does not have."""
+def test_stepping_planes_survives_a_projection_from_another_image() -> None:
+    """A projection kept across an image change can show a bit the new one lacks."""
     deep = tuple(SamplePlane(plane.name, plane.index, 16, plane.origin) for plane in planes_rgb())
     state = open_image(ViewerState(), make_image(np.zeros((1, 1, 3), dtype=np.uint16), deep))
     carried = open_image(select_only(state, "R", 12), _image(path="b.png"))
-    assert mask_of(carried, BitsMask).selection == frozenset({BitChoice("R", 12)})
-    stepped = step_plane(carried, 1)  # R12 is no plane of the 8-bit image
+    assert bits_of(carried) == frozenset({BitChoice("R", 12)})
+    stepped = step_plane(carried, 1)  # R12 is no bit of the 8-bit image
     assert bits_of(stepped) == frozenset({BitChoice("R", 7)})  # the ladder head
     assert bits_of(step_plane(carried, -1)) == frozenset({BitChoice("B", 0)})
-    assert len(masks(stepped)) == 1  # the mask is rewritten, not duplicated
+    assert len(masks(stepped)) == 1  # the carried projection was rewritten in place
 
 
 def test_stepping_channels_shows_every_bit_of_one_channel() -> None:
@@ -339,32 +313,40 @@ def test_missing_plane_shortcut_leaves_the_state_alone() -> None:
     assert select_lsb(state, "L") is state
 
 
-def test_the_first_bit_edit_adds_a_mask_holding_every_other_bit() -> None:
+def test_the_first_bit_edit_starts_from_every_bit() -> None:
     """A shortcut narrows one bit off the whole image instead of starting from LSBs."""
     state = toggle_bit(_open(), "R", 7)
     image = state.image
     assert image is not None
     assert bits_of(state) == all_bits(image.planes) - {BitChoice("R", 7)}
-    assert len(masks(state)) == 1
+    assert masks(state) == (BitsMask(all_bits(image.planes) - {BitChoice("R", 7)}),)
 
 
-def test_a_bit_edit_rewrites_the_topmost_bits_mask() -> None:
-    state = add_layer(add_layer(_open(), BitsMask(frozenset({BitChoice("R", 0)}))), InvertMask())
-    assert mask_of(toggle_bit(state, "R", 3), BitsMask).selection == frozenset(
-        {BitChoice("R", 0), BitChoice("R", 3)}
-    )
-    assert bits_of(select_only(state, "G", 2)) == frozenset({BitChoice("G", 2)})
-    assert len(masks(select_only(state, "G", 2))) == 2
-
-
-def test_the_bits_presets_replace_the_selection_whole() -> None:
+def test_the_bits_presets_replace_the_projection_whole() -> None:
     state = select_only(_open(), "R", 3)
     assert bits_of(select_lsbs(state)) == frozenset(
         {BitChoice("R", 0), BitChoice("G", 0), BitChoice("B", 0)}
     )
+    assert len(masks(select_lsbs(state))) == 1  # still the one projection layer
+    # 原图 takes the projection out of the stack entirely.
+    assert masks(select_all_bits(state)) == ()
     image = state.image
     assert image is not None
     assert bits_of(select_all_bits(state)) == all_bits(image.planes)
+    fresh = _open()
+    assert select_all_bits(fresh) is fresh  # nothing to take out
+
+
+def test_editing_a_switched_off_projection_switches_it_back_on() -> None:
+    """The bits are where the user is looking; a view edit that stays off says nothing."""
+    state = _open()
+    off = replace(
+        state,
+        layers=(Layer(BitsMask(frozenset({BitChoice("R", 3), BitChoice("G", 5)})), enabled=False),),
+    )
+    edited = toggle_bit(off, "R", 3)
+    assert edited.layers[0].enabled
+    assert bits_of(edited) == frozenset({BitChoice("G", 5)})
 
 
 def test_select_only_rejects_a_bit_past_the_plane() -> None:
@@ -376,8 +358,11 @@ def test_channel_and_column_group_switches() -> None:
     state = _open()
     image = state.image
     assert image is not None
+    red_members = channel_members(image.planes, "R")
     off = set_channel(state, "R", on=False)
-    assert bits_of(off) == all_bits(image.planes) - {BitChoice("R", bit) for bit in range(8)}
+    assert bits_of(off) == all_bits(image.planes) - red_members
+    # The projection is the layer itself, not a shadow of it.
+    assert masks(off) == (BitsMask(all_bits(image.planes) - red_members),)
     assert bits_of(set_channel(off, "R", on=True)) == all_bits(image.planes)
     column = set_column(state, 0, on=False)
     assert bits_of(column) == all_bits(image.planes) - {
@@ -385,20 +370,6 @@ def test_channel_and_column_group_switches() -> None:
         BitChoice("G", 0),
         BitChoice("B", 0),
     }
-
-
-def test_a_group_switch_only_touches_the_mask_it_was_pointed_at() -> None:
-    state = add_layer(add_layer(_open(), InvertMask()), BitsMask(frozenset({BitChoice("R", 0)})))
-    switched = set_column(state, 0, on=True, layer=1)
-    assert mask_of(switched, BitsMask).selection == frozenset(
-        {BitChoice("R", 0), BitChoice("G", 0), BitChoice("B", 0)}
-    )
-
-
-def test_the_crop_mask_is_part_of_the_stack() -> None:
-    state = add_layer(_open(), CropMask())
-    assert masks(state) == (CropMask(),)
-    assert masks(remove_layer(state, 0)) == ()
 
 
 def test_zoom_and_format_cycle() -> None:
@@ -437,7 +408,7 @@ def test_setting_an_order_that_is_already_in_force_changes_nothing() -> None:
     assert set_channel_order(state, ()) is state
 
 
-def test_set_frame_keeps_the_stack_the_selection_and_the_cursor() -> None:
+def test_set_frame_keeps_the_stack_the_projection_and_the_cursor() -> None:
     image = make_image(np.full((2, 2, 3), 7, dtype=np.uint16), _PLANES, path=Path("a.png"))
     other = make_image(np.full((2, 2, 3), 9, dtype=np.uint16), _PLANES, path=Path("a.png"))
     state = set_cursor(select_only(open_image(ViewerState(), image), "G", 2), PixelCoord(1, 1))
@@ -471,18 +442,13 @@ def test_set_frame_without_an_open_image_opens_it() -> None:
     assert state.focus == BitChoice("R", 0)
 
 
-def test_select_choices_lands_on_the_bits_layer_the_grid_edits() -> None:
-    state = _open()
+def test_the_scan_page_landing_sets_the_projection_whole() -> None:
+    state = add_layer(_open(), InvertMask())
     chosen = frozenset({BitChoice("R", 0), BitChoice("B", 0)})
-    moved = select_choices(state, chosen)
-    assert moved.layers[-1].mask == BitsMask(chosen)
+    moved = set_bits(state, chosen)
+    assert bits_of(moved) == chosen
     assert moved.focus == BitChoice("B", 0)
-
-
-def test_select_choices_replaces_what_the_topmost_bits_mask_showed() -> None:
-    state = add_layer(_open(), BitsMask(frozenset({BitChoice("G", 3)})))
-    moved = select_choices(state, frozenset({BitChoice("R", 1)}))
-    assert [layer.mask for layer in moved.layers] == [BitsMask(frozenset({BitChoice("R", 1)}))]
+    assert masks(moved) == (InvertMask(), BitsMask(chosen))  # the projection rides on top
 
 
 def test_the_cat_gallery_rewrites_its_own_layer() -> None:

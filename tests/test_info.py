@@ -10,6 +10,7 @@ from PIL import Image
 from PySide6.QtWidgets import QLabel, QPushButton
 from pytestqt.qtbot import QtBot
 
+from pixelsb.domain.container import SizeHint
 from pixelsb.domain.models import LoadedImage
 from pixelsb.io.loading import image_from_pixels, load_image, openable_repairs
 from pixelsb.ui import text
@@ -263,6 +264,30 @@ def test_clicking_a_smuggled_stream_renders_the_smuggled_bytes(
     image = rendered[0]
     # The fake stream renders leniently: "f" reads as its filter byte, "l" as the pixel.
     assert int(image.samples[0, 0, 0]) == 0x6C
+
+
+def test_a_smuggled_stream_offers_its_own_geometries(qtbot: QtBot, tmp_path: Path) -> None:
+    """The radio draws the stream under the file's IHDR; the buttons redraw by its bytes."""
+    panel = _panel(qtbot, _fake_idat_png(tmp_path))  # rows: IHDR, IDAT, fake IDAT, IEND
+    report = panel._report
+    assert report is not None
+    assert panel._stream_sizes_host.isHidden()  # the file's own stream needs no redraw
+    rendered: list[LoadedImage] = []
+    panel.render_requested.connect(rendered.append)
+    panel._radios[2].setChecked(True)
+    assert not panel._stream_sizes_host.isHidden()
+    assert "4×3" in _label_texts(panel)  # 15 bytes: the aspect-nearest tiling
+    size_button = next(
+        button
+        for button in panel._stream_sizes_host.findChildren(QPushButton)
+        if button.text() == "4×3"
+    )
+    size_button.click()
+    assert len(rendered) == 2  # the radio's declared-geometry render, then the button's
+    assert (rendered[-1].width, rendered[-1].height) == (4, 3)
+    assert panel._canvas_note.text() == text.canvas_note(report.blocks[2], 1, SizeHint(4, 3))
+    panel._radios[1].setChecked(True)  # the file's own stream: the buttons step aside
+    assert panel._stream_sizes_host.isHidden()
 
 
 def test_a_fresh_file_marks_the_first_stream_as_shown(qtbot: QtBot, tmp_path: Path) -> None:

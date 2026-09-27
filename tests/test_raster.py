@@ -55,7 +55,7 @@ def test_live_in_counts_against_the_source_rectangle_after_a_crop() -> None:
 def test_the_raster_refuses_samples_and_planes_that_do_not_match() -> None:
     image = _image()
     with pytest.raises(ValueError, match="channels do not match"):
-        Raster(samples=image.samples, planes=image.planes[:2], selection=frozenset())
+        Raster(samples=image.samples, planes=image.planes[:2])
 
 
 def test_the_raster_refuses_a_live_mask_of_the_wrong_shape() -> None:
@@ -64,7 +64,6 @@ def test_the_raster_refuses_a_live_mask_of_the_wrong_shape() -> None:
         Raster(
             samples=image.samples,
             planes=image.planes,
-            selection=frozenset(),
             live=np.ones((1, 1), dtype=bool),
         )
 
@@ -75,13 +74,11 @@ def test_the_raster_refuses_row_and_column_indices_of_the_wrong_length() -> None
         Raster(
             samples=image.samples,
             planes=image.planes,
-            selection=frozenset(),
             rows=np.arange(2, dtype=np.intp),
         )
     with pytest.raises(ValueError, match="columns must hold one source column"):
         Raster(
             samples=image.samples,
             planes=image.planes,
-            selection=frozenset(),
             columns=np.arange(2, dtype=np.intp),
         )

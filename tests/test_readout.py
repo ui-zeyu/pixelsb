@@ -46,14 +46,13 @@ def test_empty_states_have_hints() -> None:
     assert readout_text(_state(), None) == "移动鼠标或方向键查看像素"
 
 
-def test_numbers_follow_the_canvas_selection() -> None:
+def test_numbers_follow_the_projection() -> None:
     state = _state(BitsMask(frozenset({BitChoice("R", 0)})))
     state = set_format(set_cursor(state, PixelCoord(0, 0)), DisplayFormat.BINARY)
     board = board_of(state)
     readout = build_readout(state, board)
     assert readout is not None
     assert [(channel.name, channel.text) for channel in readout.channels] == [("R", "1")]
-    assert readout.bits == (BitChoice("R", 0),)
     assert readout_text(state, board).endswith("画面 R0")
     assert widest_text(board, DisplayFormat.BINARY) == "1"
     assert label_zoom(state, board) == 9

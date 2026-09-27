@@ -3,7 +3,10 @@
 Every consumer reads one :class:`Raster` — the canvas, the cursor readout, the
 extract stream — so a mask changes the picture and the bytes at once. Masks run
 bottom to top, and each one sees what the masks under it left behind: a region
-mask over a threshold compares the thresholded values, not the stored ones.
+mask over a threshold compares the thresholded values, a spectrum over a
+projection is the spectrum of the bit plane, and the masks read nothing else.
+There is no view outside the stack: which bits are on show is itself a mask,
+and its output is the picture every reader gets.
 """
 
 from dataclasses import replace
@@ -14,7 +17,9 @@ from numpy.typing import NDArray
 
 from pixelsb.domain.models import (
     COLOR_SLOTS,
+    GRAY_SLOTS,
     ArnoldMask,
+    BitChoice,
     BitsMask,
     CropMask,
     FftMask,
@@ -34,7 +39,7 @@ from pixelsb.domain.models import (
     plane_or_none,
 )
 from pixelsb.domain.predicate import PredicateError, compile_filter
-from pixelsb.domain.selection import all_bits
+from pixelsb.domain.selection import bits_for
 
 # Rec. 709 luma weights, scaled into integer arithmetic.
 _LUMA = np.array([2126, 7152, 722], dtype=np.uint32)
@@ -42,8 +47,13 @@ _LUMA_SCALE = 10_000
 
 
 def resolve(image: LoadedImage, layers: tuple[Layer, ...]) -> Raster:
-    """Apply the enabled masks, bottom to top, onto the image's own pixels."""
-    raster = Raster(samples=image.samples, planes=image.planes, selection=all_bits(image.planes))
+    """Apply the enabled masks, bottom to top: each one reads the one below it.
+
+    A mask that cannot apply here — a region expression that will not compile,
+    the cat map wanting a square, a projection naming a channel the picture
+    lacks — keeps everything and reports itself against its layer.
+    """
+    raster = Raster(samples=image.samples, planes=image.planes)
     failures: list[MaskFailure] = []
     for index, layer in enumerate(layers):
         if not layer.enabled:
@@ -51,9 +61,6 @@ def resolve(image: LoadedImage, layers: tuple[Layer, ...]) -> Raster:
         try:
             raster = apply_mask(raster, layer.mask)
         except (PredicateError, ValueError) as exc:
-            # A region expression that will not compile or run, and a transform
-            # that refuses this raster (the cat map wants the whole square),
-            # keep everything; the panel reports it against the layer.
             failures.append(MaskFailure(index, str(exc)))
     return replace(raster, failures=tuple(failures))
 
@@ -62,7 +69,7 @@ def apply_mask(raster: Raster, mask: Mask) -> Raster:
     """One mask's effect on a raster."""
     match mask:
         case BitsMask(selection=selection):
-            return replace(raster, selection=selection & all_bits(raster.planes))
+            return _projected(raster, selection)
         case RegionMask(expression=expression):
             keep = compile_filter(expression, raster.planes).evaluate(raster)
             return replace(raster, live=keep if raster.live is None else raster.live & keep)
@@ -77,8 +84,8 @@ def apply_mask(raster: Raster, mask: Mask) -> Raster:
             return replace(raster, samples=raster.samples ^ np.uint16(value))
         case CropMask():
             return _cropped(raster)
-        case FftMask():
-            return replace(raster, samples=_spectrum(raster))
+        case FftMask(planes=planes):
+            return replace(raster, samples=_spectrum(raster, planes))
         case ArnoldMask(times=times, a=a, b=b):
             return _arnold(raster, times, a, b)
         case _ as unknown:
@@ -141,15 +148,13 @@ def arnold_image(samples: SampleArray, times: int, a: int, b: int) -> SampleArra
 
 
 def _arnold(raster: Raster, times: int, a: int, b: int) -> Raster:
-    """The cat map over the whole canvas; the live mask travels with the pixels.
+    """The cat map over the samples as a whole; the live mask travels with the pixels.
 
-    Coordinates restart from the transformed picture — that is the honest
-    reading, since after the mix a cell's source row and column stop being
-    separable, and what the user wants from this mask is the restored picture's
-    own pixels and numbers.
+    Any square block of samples will do — a crop that left a square still holds
+    all of its cells. Coordinates restart from the transformed picture: after
+    the mix a cell's source row and column stop being separable, and what the
+    user wants from this mask is the restored picture's own pixels and numbers.
     """
-    if raster.rows is not None:
-        raise ValueError("猫脸变换要作用在完整画幅上：被裁剪过的图没有完整的方形坐标")
     if raster.height != raster.width:
         raise ValueError(f"猫脸变换要方图：这张是 {raster.width}×{raster.height}")
     source_y, source_x = arnold_indices(raster.height, times, a, b)
@@ -157,6 +162,8 @@ def _arnold(raster: Raster, times: int, a: int, b: int) -> Raster:
         raster,
         samples=_scattered(raster.samples, source_y, source_x),
         live=None if raster.live is None else _scattered(raster.live, source_y, source_x),
+        rows=None,
+        columns=None,
     )
 
 
@@ -167,8 +174,47 @@ def _scattered(array: NDArray, source_y: IndexArray, source_x: IndexArray) -> ND
     return out
 
 
-def _spectrum(raster: Raster) -> SampleArray:
-    """The channels the selection carries, each as its log-magnitude spectrum.
+def _projected(raster: Raster, selection: frozenset[BitChoice]) -> Raster:
+    """The projected picture: named channels rebuilt from their chosen bits.
+
+    Each chosen channel's bits pack onto the low end in ascending order and its
+    depth shrinks to how many were chosen, so the value every later reader sees
+    is the one the canvas used to paint over the lens. Channels carrying none
+    of the selection are out of the picture — the projection names the picture
+    it makes, and a plane with no bits in it has nothing to show there.
+    """
+    missing = sorted(
+        {choice.plane for choice in selection} - {plane.name for plane in raster.planes}
+    )
+    if missing:
+        raise ValueError(f"位选择的通道这张图没有：{'、'.join(missing)}")
+    if not selection:
+        raise ValueError("位选择是空的：至少要选一位")
+    channels: list[NDArray] = []
+    planes: list[SamplePlane] = []
+    for index, plane in enumerate(raster.planes):
+        bits = bits_for(selection, plane.name)
+        if not bits:
+            continue
+        channels.append(_packed(raster.samples[:, :, index], bits))
+        planes.append(replace(plane, index=len(planes), bit_depth=len(bits)))
+    return replace(raster, samples=np.stack(channels, axis=-1), planes=tuple(planes))
+
+
+def _packed(channel: NDArray, bits: tuple[int, ...]) -> NDArray:
+    """The channel's chosen bits, packed onto the low end in ascending order."""
+    top = (1 << len(bits)) - 1
+    low, high = bits[0], bits[-1]
+    if high - low + 1 == len(bits):  # a contiguous run: one shift, one mask
+        return (channel >> low) & top
+    packed = np.zeros(channel.shape, dtype=channel.dtype)
+    for offset, bit in enumerate(bits):
+        packed |= ((channel >> bit) & 1) << offset
+    return packed
+
+
+def _spectrum(raster: Raster, planes: tuple[str, ...] | None) -> SampleArray:
+    """The named channels, each as its log-magnitude spectrum.
 
     The logarithm goes twice: once because the spectrum's dynamic range is far
     past what 16 bits would show linearly, and again because the DC peak — the
@@ -176,17 +222,23 @@ def _spectrum(raster: Raster) -> SampleArray:
     leave everything but the center dot in the dark. Each channel stretches to
     its own maximum, so a faint watermark shows as well in blue as in red.
 
-    A channel with no bit selected keeps its samples: the canvas paints none of
-    it, so a spectrum there would be work nobody sees. That is the dial for the
-    planes a spectrum does not help — alpha above all — and it is the
-    bits mask below this one that works it, like any other stacked mask.
+    ``None`` names the color trio and gray, whatever of them the image has —
+    alpha never takes part by default, since its spectrum is a near-dark
+    picture. A channel the mask does not name keeps its samples.
     """
-    painted = {choice.plane for choice in raster.selection}
-    if not any(plane.name in painted for plane in raster.planes):
+    if planes is None:
+        names = (*COLOR_SLOTS, *GRAY_SLOTS)
+        wanted = {plane.name for plane in raster.planes if plane.name in names}
+    else:
+        wanted = set(planes)
+        missing = wanted - {plane.name for plane in raster.planes}
+        if missing:
+            raise ValueError(f"频谱的通道这张图没有：{'、'.join(sorted(missing))}")
+    if not wanted:
         return raster.samples  # no channel takes part, so no sample changes
     out = np.array(raster.samples)
     for index, plane in enumerate(raster.planes):
-        if plane.name not in painted:
+        if plane.name not in wanted:
             continue
         magnitude = np.abs(np.fft.fft2(raster.samples[:, :, index].astype(np.float64)))
         view = np.log1p(np.log1p(np.fft.fftshift(magnitude)))

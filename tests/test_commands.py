@@ -28,7 +28,7 @@ _PLANES_16 = (SamplePlane("L", 0, 16, SampleOrigin.RAW),)
 _WHOLE = {name: frozenset(channel_members(_PLANES, name)) for name in ("R", "G", "B")}
 
 
-def test_a_channel_and_a_bit_show_that_one_bit() -> None:
+def test_a_channel_and_a_bit_project_that_one_bit() -> None:
     assert commands.parse("b.0", _PLANES) == BitsMask(frozenset({BitChoice("B", 0)}))
     assert commands.parse("R.7", _PLANES) == BitsMask(frozenset({BitChoice("R", 7)}))
 
@@ -175,10 +175,6 @@ def test_a_level_past_the_widest_channel_of_this_image_is_refused() -> None:
 @pytest.mark.parametrize(
     "mask",
     [
-        BitsMask(frozenset({BitChoice("R", 3)})),
-        BitsMask(channel_members(_PLANES, "G")),
-        BitsMask(all_bits(_PLANES)),
-        BitsMask(frozenset({BitChoice("R", 0), BitChoice("G", 1)})),
         RegionMask("rect(0, 0, 10, 10) and R > 3"),
         InvertMask(),
         GrayscaleMask(),
@@ -186,38 +182,52 @@ def test_a_level_past_the_widest_channel_of_this_image_is_refused() -> None:
         XorMask(0x0F),
         CropMask(),
         FftMask(),
+        FftMask(("R", "G")),
         ArnoldMask(2, 1, 3),
+        BitsMask(frozenset({BitChoice("R", 3)})),
+        BitsMask(channel_members(_PLANES, "G")),
+        BitsMask(all_bits(_PLANES)),
     ],
 )
 def test_a_mask_reads_back_as_the_command_that_means_it(mask: Mask) -> None:
-    assert commands.parse(commands.text_of(mask, _PLANES) or "", _PLANES) == mask
+    assert commands.parse(commands.text_of(mask, _PLANES), _PLANES) == mask
+
+
+@pytest.mark.parametrize(
+    "selection",
+    [
+        frozenset({BitChoice("R", 0), BitChoice("G", 1)}),
+        frozenset({BitChoice("R", 7), BitChoice("R", 2)}),
+    ],
+)
+def test_a_projection_reads_back_as_the_line_that_sets_it(selection: frozenset[BitChoice]) -> None:
+    line = commands.bits_text(_PLANES, selection)
+    assert line is not None
+    assert commands.parse(line, _PLANES) == BitsMask(selection)
 
 
 def test_the_command_lines_are_in_the_house_style() -> None:
     assert commands.text_of(InvertMask(), _PLANES) == "inv"
     assert commands.text_of(ThresholdMask(200), _PLANES) == "thr 200"
     assert commands.text_of(XorMask(0x0F), _PLANES) == "xor 0x0F"
-    assert commands.text_of(BitsMask(frozenset({BitChoice("B", 0)})), _PLANES) == "b.0"
-    assert commands.text_of(BitsMask(channel_members(_PLANES, "B")), _PLANES) == "b"
-    assert commands.text_of(BitsMask(all_bits(_PLANES)), _PLANES) == "all"
+    assert commands.text_of(FftMask(), _PLANES) == "fft"
+    assert commands.text_of(FftMask(("R", "G")), _PLANES) == "fft r g"
+    assert commands.bits_text(_PLANES, frozenset({BitChoice("B", 0)})) == "b.0"
+    assert commands.bits_text(_PLANES, channel_members(_PLANES, "B")) == "b"
+    assert commands.bits_text(_PLANES, all_bits(_PLANES)) == "all"
     assert (
-        commands.text_of(
-            BitsMask(frozenset({BitChoice("B", 0), BitChoice("B", 1)})),
-            _PLANES,
-        )
+        commands.bits_text(_PLANES, frozenset({BitChoice("B", 0), BitChoice("B", 1)}))
         == "b.0 or b.1"
     )
 
 
-def test_a_bits_selection_the_text_cannot_say_has_no_line() -> None:
-    assert commands.text_of(BitsMask(frozenset()), _PLANES) is None  # nothing to name
+def test_a_projection_with_no_bits_has_no_line() -> None:
+    assert commands.bits_text(_PLANES, frozenset()) is None  # nothing to name
 
 
-def test_a_selection_naming_another_images_channel_has_no_line() -> None:
-    deep = BitsMask(
-        frozenset({BitChoice("R", 0), BitChoice("L", 5)})  # L is no plane of this image
-    )
-    assert commands.text_of(deep, _PLANES) is None
+def test_a_projection_naming_another_images_channel_has_no_line() -> None:
+    deep = frozenset({BitChoice("R", 0), BitChoice("L", 5)})  # L is no plane of this image
+    assert commands.bits_text(_PLANES, deep) is None
 
 
 def test_a_narrow_plane_takes_the_bits_it_has() -> None:
@@ -227,7 +237,14 @@ def test_a_narrow_plane_takes_the_bits_it_has() -> None:
     )
     alpha = BitsMask(frozenset({BitChoice("A", 0)}))
     assert commands.parse("a", planes) == alpha
-    assert commands.text_of(alpha, planes) == "a"  # the one bit is the channel whole
+    assert commands.bits_text(planes, alpha.selection) == "a"  # the one bit is the whole
+
+
+def test_fft_takes_channel_names_as_its_own_parameters() -> None:
+    assert commands.parse("fft r g", _PLANES) == FftMask(("R", "G"))
+    assert commands.parse("fft", _PLANES) == FftMask()
+    with pytest.raises(commands.CommandError, match="通道名"):
+        commands.parse("fft r > g", _PLANES)
 
 
 def test_the_cat_maps_line_takes_three_integers() -> None:

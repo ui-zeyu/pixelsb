@@ -1,7 +1,7 @@
 """The histogram page: every channel's value census, and the chi-square read.
 
-The chart draws the planes the canvas is showing — the values the stack and
-the bits selection leave in view, a crop already taken away — overlaid in one
+The chart draws the planes the raster carries — the values the stack leaves,
+a projection's packing included, a crop already taken away — overlaid in one
 log-scaled plot, where the shapes a stego tool leaves are spiky pairs and
 missing values rather than a smooth hill. Under it, one chi-square row per
 channel: the p of the value-pair test per shown bit, warning-tinted when a bit
@@ -18,7 +18,7 @@ from PySide6.QtGui import QColor, QFontMetricsF, QPainter, QPaintEvent, QPen, QP
 from PySide6.QtWidgets import QGridLayout, QLabel, QVBoxLayout, QWidget
 
 from pixelsb.domain import histogram
-from pixelsb.domain.models import BitChoice, LoadedImage, Raster, SampleArray, SamplePlane
+from pixelsb.domain.models import LoadedImage, Raster, SampleArray, SamplePlane
 from pixelsb.ui import text, theme
 from pixelsb.ui.controls import drain, section_title
 from pixelsb.ui.extract_view import dump_font
@@ -38,13 +38,19 @@ _FALLBACK_COLOR = "#8b8d98"
 
 
 @dataclass(frozen=True, slots=True)
-class _PlaneData:
-    """One plane's drawing and verdicts: the log histogram, and the bit tails."""
+class _Series:
+    """One painted plane's chart line: the log histogram of its shown values."""
 
     name: str
     color: QColor
     shape: NDArray[np.float64]  # log10(1 + count) per display bin
     top: int  # the plane's range's end, the x axis's candidate end
+
+
+@dataclass(frozen=True, slots=True)
+class _Verdicts:
+    """One plane's chi-square row: the p per shown bit, over the stored values."""
+
     bits: tuple[int, ...]  # the source bits this row's cells read
     tails: tuple[tuple[float, int] | None, ...]  # per shown bit: (χ², df), or None
     p: tuple[float | None, ...]  # per shown bit: the tail's p
@@ -54,25 +60,26 @@ def _plane_color(name: str) -> QColor:
     return QColor(_PLANE_COLORS.get(name, _FALLBACK_COLOR))
 
 
-def _plane_data(raster: Raster, plane: SamplePlane) -> _PlaneData:
-    counts, top = histogram.plane_counts(raster, plane)
-    stored = histogram.stored_counts(raster, plane)
-    bits = histogram.shown_bits(raster, plane)
+def _series(counts: NDArray[np.int64], plane: SamplePlane) -> _Series:
+    """The chart line of one plane, drawn from the census it shares with the row."""
+    return _Series(
+        name=plane.name,
+        color=_plane_color(plane.name),
+        shape=np.log10(_binned(counts[: plane.maximum + 1]) + 1.0),
+        top=plane.maximum,
+    )
+
+
+def _verdicts(counts: NDArray[np.int64], plane: SamplePlane) -> _Verdicts:
+    """The chi-square row of one plane, from the census it shares with the chart."""
+    bits = histogram.shown_bits(plane)
     tails: list[tuple[float, int] | None] = []
     p: list[float | None] = []
     for bit in bits:
-        verdict = histogram.pair_chi_square(stored, bit)
+        verdict = histogram.pair_chi_square(counts, bit)
         tails.append(verdict)
         p.append(None if verdict is None else histogram.chi2_tail(*verdict))
-    return _PlaneData(
-        name=plane.name,
-        color=_plane_color(plane.name),
-        shape=np.log10(_binned(counts[: top + 1]) + 1.0),
-        top=top,
-        bits=bits,
-        tails=tuple(tails),
-        p=tuple(p),
-    )
+    return _Verdicts(bits=bits, tails=tuple(tails), p=tuple(p))
 
 
 def _binned(counts: NDArray[np.int64]) -> NDArray[np.float64]:
@@ -87,10 +94,10 @@ class _Chart(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._planes: tuple[_PlaneData, ...] = ()
+        self._planes: tuple[_Series, ...] = ()
         self.setMinimumHeight(_CHART_HEIGHT)
 
-    def set_planes(self, planes: tuple[_PlaneData, ...]) -> None:
+    def set_planes(self, planes: tuple[_Series, ...]) -> None:
         self._planes = planes
         self.update()
 
@@ -145,7 +152,7 @@ class _Chart(QWidget):
                 f"{round(top * tick / 4):X}",
             )
 
-    def _line(self, painter: QPainter, area: QRectF, data: _PlaneData, peak: float) -> None:
+    def _line(self, painter: QPainter, area: QRectF, data: _Series, peak: float) -> None:
         """One plane's histogram as a polyline over the display bins.
 
         The scale is the chart's one peak, not the plane's own: a channel's
@@ -190,7 +197,7 @@ class HistogramPanel(QWidget):
         self._image: LoadedImage | None = None
         self._raster: Raster | None = None
         self._samples: SampleArray | None = None  # identity: what the numbers were read from
-        self._selection: frozenset[BitChoice] | None = None  # and which bits they were read through
+        self._live: NDArray[np.bool_] | None = None  # and which pixels they were read from
         self._signature: tuple[tuple[str, int, tuple[int, ...]], ...] = ()
         self._cells: dict[tuple[str, int], QLabel] = {}
         self._chart = _Chart()
@@ -216,43 +223,47 @@ class HistogramPanel(QWidget):
     def set_source(self, image: LoadedImage | None, raster: Raster | None) -> None:
         """Point the page at the canvas's picture; it recomputes when the view moves.
 
-        The counts and the pair test read the samples and the bits selection —
-        the picture the canvas paints — so a bits change recounts, and only a
-        region change, whose dimming hides no pixels, keeps the read it has.
+        The counts and the pair test read the raster's samples and the region's
+        kept pixels — the population about to be extracted — so a change in
+        either recounts.
         """
         samples = None if raster is None else raster.samples
-        selection = None if raster is None else raster.selection
-        if image is self._image and samples is self._samples and selection == self._selection:
+        live = None if raster is None else raster.live
+        if image is self._image and samples is self._samples and live is self._live:
             self._raster = raster
             return
         self._image = image
         self._raster = raster
         self._samples = samples
-        self._selection = selection
+        self._live = live
         planes: tuple[SamplePlane, ...] = ()
         signature: tuple[tuple[str, int, tuple[int, ...]], ...] = ()
-        data: tuple[_PlaneData, ...] = ()
+        series: tuple[_Series, ...] = ()
+        rows: tuple[tuple[SamplePlane, _Verdicts], ...] = ()
         if raster is not None and raster.width > 0 and raster.height > 0:
             planes = raster.planes
             signature = tuple(
-                (plane.name, plane.bit_depth, histogram.shown_bits(raster, plane))
-                for plane in planes
+                (plane.name, plane.bit_depth, histogram.shown_bits(plane)) for plane in planes
             )
-            data = tuple(_plane_data(raster, plane) for plane in planes)
+            built: list[_Series] = []
+            judged: list[tuple[SamplePlane, _Verdicts]] = []
+            for plane in planes:
+                counted, _top = histogram.plane_counts(raster, plane)  # one census feeds both
+                built.append(_series(counted, plane))
+                judged.append((plane, _verdicts(counted, plane)))
+            series, rows = tuple(built), tuple(judged)
         if signature != self._signature:
             self._signature = signature
             self._build_grid(raster, planes)
-        self._chart.set_planes(data)
-        self._update_cells(data)
-        self._empty.setVisible(raster is None or not data)
+        self._chart.set_planes(series)
+        self._update_cells(rows)
+        self._empty.setVisible(raster is None or not series)
 
     def _build_grid(self, raster: Raster | None, planes: tuple[SamplePlane, ...]) -> None:
         """One row per plane; the columns sit at the bits the rows actually read."""
         drain(self._grid)
         self._cells = {}
-        shown = (
-            [histogram.shown_bits(raster, plane) for plane in planes] if raster is not None else []
-        )
+        shown = [histogram.shown_bits(plane) for plane in planes] if raster is not None else []
         width = max((bits[-1] for bits in shown if bits), default=-1)
         for bit in range(width + 1):
             head = QLabel(str(bit))
@@ -269,10 +280,10 @@ class HistogramPanel(QWidget):
                 self._grid.addWidget(cell, row, 1 + bit)
         self._grid_host.setVisible(bool(planes))
 
-    def _update_cells(self, data: tuple[_PlaneData, ...]) -> None:
+    def _update_cells(self, rows: tuple[tuple[SamplePlane, _Verdicts], ...]) -> None:
         """Fill the grid: the p per shown bit, tinted when the bit reads as written."""
-        for plane in data:
-            for bit, verdict, p in zip(plane.bits, plane.tails, plane.p, strict=True):
+        for plane, row in rows:
+            for bit, verdict, p in zip(row.bits, row.tails, row.p, strict=True):
                 cell = self._cells.get((plane.name, bit))
                 if cell is None:
                     continue

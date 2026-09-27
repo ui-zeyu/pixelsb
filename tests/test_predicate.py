@@ -8,6 +8,7 @@ from pixelsb.domain.models import (
     BitsMask,
     CropMask,
     LoadedImage,
+    Mask,
     RegionMask,
     SampleArray,
     SamplePlane,
@@ -28,10 +29,10 @@ def _image() -> LoadedImage:
     return make_image(_SAMPLES, planes_rgb())
 
 
-def _match(expression: str, chosen: frozenset[BitChoice] | None = None) -> NDArray[np.bool_]:
-    """The mask an expression makes of the sample image, over that bit selection."""
-    stack = () if chosen is None else (BitsMask(chosen),)
-    return compile_filter(expression, planes_rgb()).evaluate(raster(_image(), *stack))
+def _match(expression: str, *masks: Mask) -> NDArray[np.bool_]:
+    """The mask an expression makes of the stack's output."""
+    board = raster(_image(), *masks)
+    return compile_filter(expression, board.planes).evaluate(board)
 
 
 def test_comparisons_and_logic() -> None:
@@ -75,30 +76,11 @@ def test_removed_aliases_are_unknown_fields() -> None:
             compile_filter(expression, planes_rgb())
 
 
-def test_a_bare_channel_is_the_value_as_stored() -> None:
-    low_bit = frozenset({BitChoice("B", 0)})
-    # The selection drives the canvas and the dump, not a bare channel name.
-    assert _match("B == 50", low_bit).tolist() == [[True, False], [False, False]]
-    assert _match("B == 0", low_bit).tolist() == [[False, False], [False, True]]
-    assert not _match("B == 1", low_bit).any()
-    assert _match("B == 50", frozenset()).tolist() == [[True, False], [False, False]]
-
-
-def test_bits_attribute_is_the_value_of_the_selection() -> None:
-    low_bit = frozenset({BitChoice("B", 0)})
-    assert _match("B.bits == 0", low_bit).all()
-    assert not _match("B.bits == 1", low_bit).any()
-    every_bit = frozenset(BitChoice("B", bit) for bit in range(8))
-    assert _match("B.bits == 50", every_bit).tolist() == [[True, False], [False, False]]
-    assert _match("B.bits == 50").tolist() == [[True, False], [False, False]]
-    assert _match("B.bits == 0", None).tolist() == [[False, False], [False, True]]
-
-
-def test_bits_and_the_bare_name_are_different_values() -> None:
-    low_bit = frozenset({BitChoice("B", 0)})
-    # B = 50, 200, 10, 0: bit 0 of each is 0, 0, 0, 0, so only the last agrees.
-    assert _match("B.bits == B", low_bit).tolist() == [[False, False], [False, True]]
-    assert _match("B.bits <= B", low_bit).all()
+def test_a_bare_channel_reads_what_the_projection_left() -> None:
+    """After a projection the channel IS the packed bits, so the filter reads them."""
+    board = raster(_image(), BitsMask(frozenset({BitChoice("B", 0)})))
+    match = compile_filter("B == 0", board.planes).evaluate(board)
+    assert match.all()  # every stored B (50, 200, 10, 0) has an even lowest bit
 
 
 def test_a_bit_attribute_reads_one_bit_of_the_channel() -> None:
@@ -130,7 +112,7 @@ def test_identifier_errors_name_the_problem() -> None:
     with pytest.raises(PredicateError, match="未知字段"):
         compile_filter("A.0 == 0", planes_rgb())
     with pytest.raises(PredicateError, match="不支持的表达式元素"):
-        compile_filter("R.3.bits == 1", planes_rgb())
+        compile_filter("R.3.foo == 1", planes_rgb())
 
 
 def test_a_bit_index_is_marked_up_for_the_parser() -> None:
@@ -197,7 +179,6 @@ def test_a_filter_reports_the_fields_it_reads() -> None:
     assert fields("rect(0, 0, 1, 1)") == {"left", "top", "right", "bottom"}
     assert fields("grid(0, 0, 2, 2)") == {"left", "top"}
     assert fields("R > 1") == {"R"}
-    assert fields("R.bits + R") == {"R", "R.bits"}
     assert fields("R.3 + B.7") == {"R.3", "B.7"}
     assert fields("B >= R and G < 100") == {"R", "G", "B"}
     # A call's arguments are read; the function name is not a field of its own.
@@ -227,26 +208,9 @@ def test_each_channel_is_built_once_per_evaluation(monkeypatch: pytest.MonkeyPat
         return read(samples, plane)
 
     monkeypatch.setattr(predicate, "_stored_values", spy)
-    _match("R > B.7 and B.bits > 0 and B.3 > 1 and B > 1")
+    _match("R > B.7 and B.3 > 1 and B > 1")
     # Every flavour of B, bit fields included, shares the one copy of the channel.
     assert sorted(seen) == ["B", "R"]
-
-
-def test_a_bit_only_filter_never_builds_the_selection(monkeypatch: pytest.MonkeyPatch) -> None:
-    seen: list[str] = []
-
-    def spy(
-        _channel: NDArray[np.uint32],
-        plane: str,
-        _chosen: frozenset[BitChoice] | None,
-    ) -> None:
-        seen.append(plane)
-
-    monkeypatch.setattr(predicate, "_selected_values", spy)
-    assert _match("R.0 == 1 or B.7 == 0").tolist() == [[True, False], [True, True]]
-    assert seen == []
-    assert _match("0 <= left <= 0").tolist() == [[True, False], [True, False]]
-    assert not _match("50 <= left <= 100").any()
 
 
 def test_rect_errors_are_clear() -> None:

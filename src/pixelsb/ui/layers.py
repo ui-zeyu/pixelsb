@@ -177,7 +177,8 @@ class LayerPanel(QWidget):
 
     def _row_detail(self, index: int, layer: Layer) -> str:
         """One mask's parameters, clipped by the label's own width."""
-        detail = text.mask_detail(layer.mask, self._planes())
+        image = self._state.image
+        detail = text.mask_detail(layer.mask, image.planes if image else ())
         return f"{text.WARNING_MARK} {detail}" if index in self._failures else detail
 
     def _base_detail(self) -> str:

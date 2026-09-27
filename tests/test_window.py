@@ -31,6 +31,7 @@ from pixelsb.domain.models import (
 from pixelsb.domain.transitions import (
     add_layer,
     select_only,
+    set_bits,
     set_cursor,
     set_format,
     set_mask_text,
@@ -70,6 +71,24 @@ def test_open_bit_plane_and_detail_text(qtbot: QtBot, rgb_png: Path) -> None:
     assert "画面 R0" in detail
 
 
+def test_a_projection_change_repaints_the_canvas(qtbot: QtBot, rgb_png: Path) -> None:
+    """The projection decides what the pixels are: a change is a content change."""
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.open_path(rgb_png)
+    before = window.canvas._frame.rgb
+    window._filter_edit.setText("b.0")
+    window._apply_filter_text()
+    after = window.canvas._frame.rgb
+    assert after is not None
+    assert before is not after
+    assert set(after.ravel().tolist()) <= {0, 255}  # a single bit, drawn as a plane
+    window.extract_panel._bits_editor._matrix.bit_clicked.emit("R", 7, False)
+    widened = window.canvas._frame.rgb
+    assert widened is not after  # a grid click repaints too
+
+
 def test_left_click_keeps_the_cursor_where_hover_left_it(qtbot: QtBot, rgb_png: Path) -> None:
     window = MainWindow()
     qtbot.addWidget(window)
@@ -96,35 +115,24 @@ def test_failed_open_keeps_the_current_image(qtbot: QtBot, rgb_png: Path, tmp_pa
     assert messages
 
 
-def test_a_region_mask_reads_the_values_the_stack_leaves_below_it(
-    qtbot: QtBot, rgb_png: Path
-) -> None:
+def test_every_mask_reads_the_result_of_the_one_below_it(qtbot: QtBot, rgb_png: Path) -> None:
     window = MainWindow()
     qtbot.addWidget(window)
     window.open_path(rgb_png)
-    # A bare channel is the value as stored, whichever bits are selected above it.
+    # A bare channel is the value as stored, while nothing above has changed it.
     window.apply(partial(add_layer, mask=RegionMask("R == 255")))
     assert window._raster is not None
     first = window._raster.live
     assert first is not None
     assert first.tolist() == [[True, False], [False, False]]
-    window.apply(partial(add_layer, mask=BitsMask(frozenset({BitChoice("R", 7)}))))
+    # The projection is a layer: above it, the region reads the projected bits,
+    # and R0 of the stored byte is set exactly where R is odd — only at (0, 0).
+    window.apply(partial(set_bits, choices=frozenset({BitChoice("R", 0)})))
+    window.apply(partial(add_layer, mask=RegionMask("R == 1")))
     assert window._raster is not None
     second = window._raster.live
     assert second is not None
-    assert np.array_equal(first, second)
-    # .bits reads what the selection builds, so a mask on top of it moves with it:
-    # R.7 is the bit itself, and the pixel whose R is 255 has it set.
-    window.apply(partial(add_layer, mask=RegionMask("R.bits == 1")))
-    assert window._raster is not None
-    third = window._raster.live
-    assert third is not None
-    assert third.tolist() == first.tolist()
-    window.apply(partial(add_layer, mask=RegionMask("R.bits == 0")))
-    assert window._raster is not None
-    fourth = window._raster.live
-    assert fourth is not None
-    assert not fourth.any()
+    assert second.tolist() == [[True, False], [False, False]]
 
 
 def test_a_bad_region_expression_is_reported_and_keeps_the_image(
@@ -218,7 +226,7 @@ def test_typing_a_filter_with_no_region_layer_selected_adds_one(
     assert masks(window.store.state) == (InvertMask(), RegionMask("G >= R"))
 
 
-def test_typing_a_command_with_no_layer_in_hand_adds_its_mask(qtbot: QtBot, rgb_png: Path) -> None:
+def test_typing_a_bits_line_lands_a_projection_layer(qtbot: QtBot, rgb_png: Path) -> None:
     window = MainWindow()
     qtbot.addWidget(window)
     window.open_path(rgb_png)
@@ -226,7 +234,8 @@ def test_typing_a_command_with_no_layer_in_hand_adds_its_mask(qtbot: QtBot, rgb_
     window._filter_edit.setText("b.0")
     window._apply_filter_text()
     assert masks(window.store.state) == (BitsMask(frozenset({BitChoice("B", 0)})),)
-    assert window._filter_edit.text() == "b.0"  # the new layer is in hand, command and all
+    assert bits_of(window.store.state) == frozenset({BitChoice("B", 0)})
+    assert window._filter_edit.text() == "b.0"  # the view reads as its own line
 
 
 def test_the_grid_and_the_command_input_agree(qtbot: QtBot, rgb_png: Path) -> None:
@@ -263,8 +272,12 @@ def test_a_line_of_two_kinds_is_refused_and_names_no_operation(qtbot: QtBot, rgb
     assert masks(window.store.state) == (RegionMask("b > r"),)
     window._filter_edit.setText("b.0")
     window._apply_filter_text()
-    assert masks(window.store.state) == (BitsMask(frozenset({BitChoice("B", 0)})),)
-    # A command written over the region's own command replaces it: kind and all.
+    # A bits line is a projection of its own: it lands on top of the region.
+    assert masks(window.store.state) == (
+        RegionMask("b > r"),
+        BitsMask(frozenset({BitChoice("B", 0)})),
+    )
+    assert bits_of(window.store.state) == frozenset({BitChoice("B", 0)})
     assert window._filter_edit.text() == "b.0"
 
 
@@ -346,13 +359,24 @@ def test_enter_writes_the_line_back_as_the_command_it_ran(qtbot: QtBot, rgb_png:
         ("b>r", "b > r"),
         ("thr 0x80", "thr 128"),
         ("xor 0xff", "xor 0xFF"),
-        ("R or B", "r or b"),
-        (" b.0 ", "b.0"),
     ):
         window._filter_edit.setText(typed)
         window._commit_filter()
         assert window._filter_edit.text() == command, typed
+        assert image is not None
         assert text.mask_detail(window.store.state.layers[-1].mask, image.planes) == command, typed
+    for typed, command, shown in (
+        (
+            "R or B",
+            "r or b",
+            frozenset(BitChoice(name, bit) for name in ("R", "B") for bit in range(8)),
+        ),
+        (" b.0 ", "b.0", frozenset({BitChoice("B", 0)})),
+    ):
+        window._filter_edit.setText(typed)
+        window._commit_filter()
+        assert window._filter_edit.text() == command, typed
+        assert bits_of(window.store.state) == shown, typed
 
 
 def test_enter_leaves_a_line_it_could_not_run_as_typed(qtbot: QtBot, rgb_png: Path) -> None:
@@ -372,14 +396,14 @@ def test_enter_leaves_a_line_it_could_not_run_as_typed(qtbot: QtBot, rgb_png: Pa
     assert window._filter_edit.styleSheet()  # the box marks the line it refused
 
 
-def test_a_second_command_replaces_the_first_instead_of_stacking(
+def test_a_bits_line_lands_as_its_own_layer_beside_the_operation_in_hand(
     qtbot: QtBot, rgb_png: Path
 ) -> None:
-    """Rewriting the box rewrites the operation it shows, even when the kind changes.
+    """A bits line never rewrites another kind of operation.
 
-    Typing ``b>r`` and then ``b.0`` over it used to leave the region in the stack
-    and add a second operation beside it; the box names one operation, so it edits
-    that one. Stacking a second operation is Shift+Enter's job.
+    Typing ``b>r`` and then ``b.0`` leaves the region in the stack; the bits
+    line is a projection of its own and lands on top of it. Stacking a second
+    plain operation is Shift+Enter's job; the projection is the one view layer.
     """
     window = MainWindow()
     qtbot.addWidget(window)
@@ -392,7 +416,11 @@ def test_a_second_command_replaces_the_first_instead_of_stacking(
     edit.clear()  # delete the words, write another line
     edit.setText("b.0")
     window._commit_filter()
-    assert masks(window.store.state) == (BitsMask(frozenset({BitChoice("B", 0)})),)
+    assert masks(window.store.state) == (
+        RegionMask("b > r"),
+        BitsMask(frozenset({BitChoice("B", 0)})),
+    )
+    assert bits_of(window.store.state) == frozenset({BitChoice("B", 0)})
     assert edit.text() == "b.0"
 
 
@@ -556,15 +584,18 @@ def test_clicking_a_recipe_row_shows_its_command_and_edits_that_operation(
     assert window._filter_edit.text() == ""
 
 
-def test_the_bits_grid_edits_the_layer_its_editor_belongs_to(qtbot: QtBot, rgb_png: Path) -> None:
+def test_the_bits_grid_edits_the_projection(qtbot: QtBot, rgb_png: Path) -> None:
     window = MainWindow()
     qtbot.addWidget(window)
     window.open_path(rgb_png)
-    window.layers_panel.add_requested.emit(BitsMask(frozenset({BitChoice("R", 0)})))
+    window.apply(partial(set_bits, choices=frozenset({BitChoice("R", 0)})))
     matrix = window.extract_panel._bits_editor._matrix
     assert matrix._boxes[BitChoice("R", 0)].isChecked()
     matrix.bit_clicked.emit("G", 1, False)  # a click on the grid
     assert bits_of(window.store.state) == frozenset({BitChoice("R", 0), BitChoice("G", 1)})
+    assert masks(window.store.state) == (
+        BitsMask(frozenset({BitChoice("R", 0), BitChoice("G", 1)})),
+    )
     window.extract_panel._bits_editor.channel_toggle.emit("B", True)
     expected = {BitChoice("R", 0), BitChoice("G", 1)}
     expected.update(BitChoice("B", bit) for bit in range(8))
@@ -676,7 +707,7 @@ def test_the_bit_shortcuts_bring_their_own_mask(qtbot: QtBot, rgb_png: Path) -> 
     window.open_path(rgb_png)
     window.canvas.setFocus()
     qtbot.keyClick(window.canvas, Qt.Key.Key_R)
-    assert masks(window.store.state) == (BitsMask(frozenset({BitChoice("R", 0)})),)
+    assert bits_of(window.store.state) == frozenset({BitChoice("R", 0)})
     qtbot.keyClick(window.canvas, Qt.Key.Key_2)
     assert bits_of(window.store.state) == frozenset({BitChoice("G", 0)})
     qtbot.keyClick(window.canvas, Qt.Key.Key_B)  # every channel letter works, B included
@@ -685,17 +716,21 @@ def test_the_bit_shortcuts_bring_their_own_mask(qtbot: QtBot, rgb_png: Path) -> 
     assert bits_of(window.store.state) == frozenset({BitChoice("B", 1)})
 
 
-def test_the_bit_shortcuts_edit_the_mask_the_grid_shows(qtbot: QtBot, rgb_png: Path) -> None:
-    """The grid and the keyboard write the same mask: the selected bits one."""
+def test_the_bit_shortcuts_edit_the_projection_wherever_it_sits(
+    qtbot: QtBot, rgb_png: Path
+) -> None:
+    """The grid and the keyboard write the same projection layer, wherever it sits."""
     window = MainWindow()
     qtbot.addWidget(window)
     window.show()
     window.open_path(rgb_png)
-    window.apply(partial(add_layer, mask=BitsMask(frozenset({BitChoice("R", 0)}))))
+    window.apply(partial(set_bits, choices=frozenset({BitChoice("R", 0)})))
     window.apply(partial(add_layer, mask=InvertMask()))
     window.layers_panel._select(0)
     window.canvas.setFocus()
     qtbot.keyClick(window.canvas, Qt.Key.Key_G)
+    assert bits_of(window.store.state) == frozenset({BitChoice("G", 0)})
+    # The projection was rewritten under the invert, which now reads it.
     assert masks(window.store.state) == (
         BitsMask(frozenset({BitChoice("G", 0)})),
         InvertMask(),
@@ -708,7 +743,7 @@ def test_the_bits_steppers_make_the_mask_they_edit(qtbot: QtBot, rgb_png: Path) 
     window.open_path(rgb_png)
     # The walk itself belongs to the transitions; here the buttons just have to
     # be wired to it, one step each way.
-    window.apply(partial(add_layer, mask=BitsMask(frozenset({BitChoice("R", 0)}))))
+    window.apply(partial(set_bits, choices=frozenset({BitChoice("R", 0)})))
     editor = window.extract_panel._bits_editor
     editor.plane_next.click()
     assert bits_of(window.store.state) == frozenset({BitChoice("G", 7)})  # one on from R0
@@ -724,14 +759,14 @@ def test_the_bits_presets_rewrite_the_mask_they_edit(qtbot: QtBot, rgb_png: Path
     window = MainWindow()
     qtbot.addWidget(window)
     window.open_path(rgb_png)
-    window.layers_panel.add_requested.emit(BitsMask(frozenset({BitChoice("R", 3)})))
+    window.apply(partial(set_bits, choices=frozenset({BitChoice("R", 3)})))
     window.extract_panel._bits_editor.lsbs_button.click()
     assert bits_of(window.store.state) == frozenset(
         {BitChoice("R", 0), BitChoice("G", 0), BitChoice("B", 0)}
     )
     window.extract_panel._bits_editor.original_button.click()
     assert len(bits_of(window.store.state)) == 24
-    assert masks(window.store.state) == (BitsMask(bits_of(window.store.state)),)
+    assert masks(window.store.state) == ()  # 原图 takes the projection out
 
 
 def test_typing_in_the_filter_box_keeps_its_keys(qtbot: QtBot, rgb_png: Path) -> None:
@@ -1073,24 +1108,6 @@ def test_open_loaded_shows_a_rendered_image_in_the_canvas(qtbot: QtBot, rgb_png:
     assert planes_of(window.store.state.image) == ("R", "G", "B")
 
 
-def test_the_view_menu_resets_to_the_image_and_to_the_lowest_bits(
-    qtbot: QtBot, rgb_png: Path
-) -> None:
-    window = MainWindow()
-    qtbot.addWidget(window)
-    window.open_path(rgb_png)
-    window.layers_panel.add_requested.emit(InvertMask())
-    window._original_action.trigger()
-    assert masks(window.store.state) == ()
-    window._lsb_action.trigger()
-    assert masks(window.store.state) == (
-        BitsMask(frozenset({BitChoice("R", 0), BitChoice("G", 0), BitChoice("B", 0)})),
-    )
-    window.layers_panel.add_requested.emit(CropMask())
-    window._original_action.trigger()
-    assert masks(window.store.state) == ()
-
-
 def test_the_readout_follows_the_stack(qtbot: QtBot, rgb_png: Path) -> None:
     window = MainWindow()
     qtbot.addWidget(window)
@@ -1121,9 +1138,10 @@ def test_open_again_keeps_the_stack_and_prunes_nothing(qtbot: QtBot, rgb_png: Pa
     window = MainWindow()
     qtbot.addWidget(window)
     window.open_path(rgb_png)
-    window.layers_panel.add_requested.emit(BitsMask(frozenset({BitChoice("R", 3)})))
+    window.apply(partial(set_bits, choices=frozenset({BitChoice("R", 3)})))
     window.open_path(rgb_png)
     assert masks(window.store.state) == (BitsMask(frozenset({BitChoice("R", 3)})),)
+    assert bits_of(window.store.state) == frozenset({BitChoice("R", 3)})
 
 
 def test_the_scan_page_applies_a_candidate_to_the_stack(qtbot: QtBot, rgb_png: Path) -> None:
@@ -1141,8 +1159,7 @@ def test_the_scan_page_applies_a_candidate_to_the_stack(qtbot: QtBot, rgb_png: P
     assert row is not None
     panel._on_clicked(row, 0)
     state = window.store.state
-    assert state.layers
-    assert isinstance(state.layers[-1].mask, BitsMask)
+    assert isinstance(state.layers[-1].mask, BitsMask)  # the candidate's bits are the view now
     hit = row.data(0, Qt.ItemDataRole.UserRole)
     assert state.extract_order == hit.candidate.order
 
@@ -1360,7 +1377,7 @@ def test_gallery_thumbnails_read_gray_as_gray() -> None:
     )
     samples = np.zeros((2, 2, 2), dtype=np.uint16)
     samples[..., 0] = 40
-    rgb = _as_rgb(samples, planes, (255, 255))
+    rgb = _as_rgb(samples, planes)
     assert (
         rgb[..., 0].tolist() == rgb[..., 1].tolist() == rgb[..., 2].tolist() == [[40, 40], [40, 40]]
     )
@@ -1376,16 +1393,15 @@ def test_gallery_thumbnails_take_the_color_trio_and_leave_alpha_out() -> None:
     )
     samples = np.zeros((2, 2, 4), dtype=np.uint16)
     samples[..., 0], samples[..., 1], samples[..., 2], samples[..., 3] = 10, 200, 30, 255
-    tops = (255, 255, 255, 255)
-    assert _as_rgb(samples, planes, tops).tolist() == [[[10, 200, 30], [10, 200, 30]]] * 2
+    assert _as_rgb(samples, planes).tolist() == [[[10, 200, 30], [10, 200, 30]]] * 2
 
 
 def test_the_gallery_sweeps_the_values_the_canvas_shows(qtbot: QtBot, tmp_path: Path) -> None:
-    """A bits selection carries into the sweep: the thumbnails show the view, in its scale.
+    """A bits selection carries into the sweep: thumbnails show what the canvas shows.
 
-    R alternates 2 and 3; through an R bit-0 view the picture is a red-and-black
-    checkerboard, and a thumbnail that read the stored bytes would stay nearly
-    black — the mask's own range is what scales the view up to full brightness.
+    R alternates 2 and 3; through an R bit-0 view the canvas is a gray bit
+    plane, and a thumbnail that read the stored bytes would stay nearly black
+    and disagree with the picture the picked operation lands on.
     """
     window = MainWindow()
     qtbot.addWidget(window)

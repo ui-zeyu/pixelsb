@@ -5,7 +5,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
     QHBoxLayout,
-    QLabel,
     QLineEdit,
     QPushButton,
     QScrollArea,
@@ -32,7 +31,7 @@ from pixelsb.domain.models import (
     ViewerState,
 )
 from pixelsb.domain.selection import grid_planes
-from pixelsb.domain.transitions import bits_shadowed, current_bits
+from pixelsb.domain.transitions import current_bits
 from pixelsb.io.classify import stream_classifier
 from pixelsb.ui import text, theme
 from pixelsb.ui.bits import BitMatrix
@@ -62,19 +61,18 @@ class ExtractPanel(QWidget):
     bit_order_requested = Signal(str)
     scan_requested = Signal(str)
     save_requested = Signal()
-    bit_clicked = Signal(int, str, int, bool)  # layer, plane, bit, this bit alone
-    channel_toggle = Signal(int, str, bool)
-    column_toggle = Signal(int, int, bool)
-    original_requested = Signal(int)
-    lsbs_requested = Signal(int)
-    plane_step = Signal(int, int)  # layer, delta
-    channel_step = Signal(int, int)
+    bit_clicked = Signal(str, int, bool)  # plane, bit, this bit alone
+    channel_toggle = Signal(str, bool)
+    column_toggle = Signal(int, bool)
+    original_requested = Signal()
+    lsbs_requested = Signal()
+    plane_step = Signal(int)
+    channel_step = Signal(int)
 
     def __init__(self) -> None:
         super().__init__()
         self.setObjectName("extractPanel")
         self._state = ViewerState()
-        self._bits_layer: int | None = None
         self._extract_key: tuple[object, ...] | None = None
         self._view_key: tuple[object, ...] | None = None
         self._order_key: tuple[object, ...] | None = None
@@ -121,21 +119,14 @@ class ExtractPanel(QWidget):
         self,
         state: ViewerState,
         raster: Raster | None = None,
-        *,
-        bits_layer: int | None = None,
     ) -> None:
-        """Show one state. ``bits_layer`` is the bits mask the grid shows and edits."""
+        """Show one state: the projection the grid shows, and the bytes the stream packs."""
         self._state = state
-        self._bits_layer = bits_layer
-        planes = () if state.image is None else state.image.planes
-        chosen = current_bits(state, bits_layer)
-        # The grid shows the mask in hand; the order row describes the stream, which
-        # a shadowing mask above may be the one packing. Before an image is open
-        # there is no raster and nothing to pack, so the two agree.
-        packed = chosen if raster is None else raster.selection
+        chosen = current_bits(state)
         self._bits_editor.set_layer(grid_planes(state.image.planes) if state.image else (), chosen)
-        self._bits_editor.set_shadowed(bits_shadowed(state.layers, bits_layer))
-        self._sync_order_controls(planes, packed)
+        # The order row describes the stream, which packs the raster's own planes:
+        # a projection narrowed them in the stack, so the two agree by construction.
+        self._sync_order_controls(() if raster is None else raster.planes)
         self._sync_extract(state, raster)
         self._extract_view.sync_encoding(state.extract_encoding)
 
@@ -162,25 +153,25 @@ class ExtractPanel(QWidget):
         editor.channel_step.connect(self._on_channel_step)
 
     def _on_bit(self, plane: str, bit: int, exclusive: bool) -> None:
-        self.bit_clicked.emit(self._bits_layer, plane, bit, exclusive)
+        self.bit_clicked.emit(plane, bit, exclusive)
 
     def _on_channel(self, name: str, checked: bool) -> None:
-        self.channel_toggle.emit(self._bits_layer, name, checked)
+        self.channel_toggle.emit(name, checked)
 
     def _on_column(self, bit: int, checked: bool) -> None:
-        self.column_toggle.emit(self._bits_layer, bit, checked)
+        self.column_toggle.emit(bit, checked)
 
     def _on_original(self) -> None:
-        self.original_requested.emit(self._bits_layer)
+        self.original_requested.emit()
 
     def _on_lsbs(self) -> None:
-        self.lsbs_requested.emit(self._bits_layer)
+        self.lsbs_requested.emit()
 
     def _on_plane_step(self, delta: int) -> None:
-        self.plane_step.emit(self._bits_layer, delta)
+        self.plane_step.emit(delta)
 
     def _on_channel_step(self, delta: int) -> None:
-        self.channel_step.emit(self._bits_layer, delta)
+        self.channel_step.emit(delta)
 
     # --- the stream --------------------------------------------------------
 
@@ -220,14 +211,10 @@ class ExtractPanel(QWidget):
         if 0 <= index < len(self._order_items):
             self.channel_order_requested.emit(self._order_items[index])
 
-    def _sync_order_controls(
-        self,
-        planes: tuple[SamplePlane, ...],
-        chosen: frozenset[BitChoice],
-    ) -> None:
+    def _sync_order_controls(self, planes: tuple[SamplePlane, ...]) -> None:
         """Sync the order controls. This runs on every cursor move, so it caches."""
-        choices = order_choices(planes, chosen)
-        applied = applied_order(planes, chosen, self._state.extract_order)
+        choices = order_choices(planes)
+        applied = applied_order(planes, self._state.extract_order)
         # A preference kept from an earlier, slimmer channel set can sit outside
         # the list; the list then leads with it, so the shown order stays true.
         items = choices if applied in choices else ((applied,) if applied else ()) + choices
@@ -286,9 +273,8 @@ class ExtractPanel(QWidget):
 class _BitsEditor(QWidget):
     """The bit grid with its presets and the arrows that walk planes and channels.
 
-    The grid edits one bits mask of the stack, named by the index the window hands
-    to :meth:`ExtractPanel.set_state`; ``None`` stands for the image itself, where
-    every bit is on and an edit brings a mask of its own into being.
+    The grid drives the stack's topmost projection; the window routes its
+    signals through :class:`ExtractPanel` into the bits transitions.
     """
 
     bit_clicked = Signal(str, int, bool)
@@ -311,10 +297,6 @@ class _BitsEditor(QWidget):
             text.CHANNEL_PREV, text.CHANNEL_PREV_TIP, self.channel_step, -1
         )
         self.channel_next = _stepper(text.CHANNEL_NEXT, text.CHANNEL_NEXT_TIP, self.channel_step, 1)
-        self._shadow_note = QLabel(self)
-        self._shadow_note.setObjectName("detailWarn")
-        self._shadow_note.setWordWrap(True)
-        self._shadow_note.setVisible(False)
 
     def header(self) -> QHBoxLayout:
         """The section title with the two presets on its right."""
@@ -377,11 +359,6 @@ class _BitsEditor(QWidget):
         # The scroll area hides the grid's height from the panel's layout, so the
         # card has to be told how tall every channel of this image is.
         self._grid_area.setMinimumHeight(self._matrix.minimumSizeHint().height() + 2)
-
-    def set_shadowed(self, shadowed: bool) -> None:
-        """Say so when an enabled bits mask above this one is the one in force."""
-        self._shadow_note.setText(text.MASK_BITS_SHADOWED if shadowed else "")
-        self._shadow_note.setVisible(shadowed)
 
 
 def _stacked(first: QWidget, second: QWidget) -> QWidget:

@@ -53,10 +53,12 @@ class InfoPanel(QWidget):
 
     Three titled cards: 文件信息, 检查 (the census — anomalies above the block
     list: a radio picks the block whose full chunk dumps below in the extract
-    view's style, clicking a block name renders its whole stream as pixels),
-    and EXIF. The census reads the whole file, so it runs once per file and
-    waits for the page; rendering a block swaps the canvas image but not the
-    file being described, so the list, the selection, and the marks all stay.
+    view's style, clicking a block name renders its whole stream as pixels,
+    and a smuggled stream gets buttons for the geometries its own bytes
+    imply), and EXIF. The census reads the whole file, so it runs once per
+    file and waits for the page; rendering a block swaps the canvas image but
+    not the file being described, so the list, the selection, and the marks
+    all stay.
     """
 
     render_requested = Signal(object)  # a LoadedImage rendered from blocks
@@ -86,6 +88,11 @@ class InfoPanel(QWidget):
         self._sizes_row.setSpacing(6)
         self._sizes_host = QWidget()
         self._sizes_host.setLayout(self._sizes_row)
+        self._stream_sizes_row = QHBoxLayout()
+        self._stream_sizes_row.setSpacing(6)
+        self._stream_sizes_host = QWidget()
+        self._stream_sizes_host.setLayout(self._stream_sizes_row)
+        self._stream_sizes_host.setVisible(False)
         self._blocks_layout = QGridLayout()
         self._blocks_layout.setHorizontalSpacing(12)
         self._blocks_layout.setVerticalSpacing(3)
@@ -135,6 +142,7 @@ class InfoPanel(QWidget):
                 self._sizes_host,
                 blocks_host,
                 self._canvas_note,
+                self._stream_sizes_host,
             )
         )
         self._frames_layout = QGridLayout()
@@ -207,12 +215,13 @@ class InfoPanel(QWidget):
         self._canvas_row = next(
             (index for index, block in enumerate(report.blocks) if block.group == 1), None
         )
-        first = report.blocks[self._canvas_row] if self._canvas_row is not None else None
+        first = self._canvas_block()
         self._canvas_note.setText(
             text.canvas_note(first, len(self._stream_payloads(first)))
             if first is not None
             else text.original_note()
         )
+        self._show_stream_sizes(first)
         self._show_blocks()
         self._show_dump()
         self._show_sizes()
@@ -349,12 +358,63 @@ class InfoPanel(QWidget):
             _restyle(self._canvas_note, "warnNote")
             self._canvas_note.setText(text.render_failed(str(exc)))
             self._revert_canvas_row()
+            self._show_stream_sizes(self._canvas_block())
             return
         _restyle(self._canvas_note, "infoLine")
         self._canvas_note.setText(text.canvas_note(block, len(payloads)))
         self._canvas_row = row
         self._mark_rendered()
+        self._show_stream_sizes(block)
         self.render_requested.emit(image_from_pixels(image.path, pixels))
+
+    def _render_stream_at(self, block: Block | None, hint: SizeHint) -> None:
+        """Render the stream on the canvas under a geometry its own bytes imply.
+
+        The header swap stays in memory: nothing is written, and the census
+        keeps describing the file on disk.
+        """
+        image, report = self._image, self._report
+        if image is None or report is None or report.header is None or block is None:
+            return
+        header = replace(report.header, width=hint.width, height=hint.height)
+        try:
+            pixels = render_blocks(self._stream_payloads(block), header, report.palette)
+        except (ValueError, OverflowError) as exc:
+            _restyle(self._canvas_note, "warnNote")
+            self._canvas_note.setText(text.render_failed(str(exc)))
+            return
+        _restyle(self._canvas_note, "infoLine")
+        self._canvas_note.setText(text.canvas_note(block, len(self._stream_payloads(block)), hint))
+        self.render_requested.emit(image_from_pixels(image.path, pixels))
+
+    def _canvas_block(self) -> Block | None:
+        """The block whose stream the canvas is showing, when there is one."""
+        report = self._report
+        if report is None or self._canvas_row is None:
+            return None
+        return report.blocks[self._canvas_row]
+
+    def _show_stream_sizes(self, block: Block | None) -> None:
+        """Buttons for the canvas stream's own geometries, under the canvas note.
+
+        The radio renders a smuggled stream under the file's own IHDR, which
+        shears a stream of another shape; the census names the sizes its byte
+        count fills exactly, and one click redraws it in memory. Stream 1 is
+        the file's own picture, whose repairs live in the row above.
+        """
+        drain(self._stream_sizes_row)
+        hints = _stream_hints(self._report, block)
+        self._stream_sizes_host.setVisible(bool(hints))
+        for hint in hints:
+            button = QPushButton(text.size_hint_label(hint))
+            button.setObjectName("ghost")
+            button.setToolTip(text.STREAM_SIZE_TIP)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.clicked.connect(
+                lambda _checked=False, block=block, hint=hint: self._render_stream_at(block, hint)
+            )
+            self._stream_sizes_row.addWidget(button)
+        self._stream_sizes_row.addStretch(1)
 
     def _revert_canvas_row(self) -> None:
         """Put the radios back where the canvas really is, after a failed render."""
@@ -512,6 +572,19 @@ def _radio_rows(blocks: Sequence[Block]) -> set[int]:
             streams.add(block.group)
             heads.add(index)
     return heads
+
+
+def _stream_hints(report: ContainerReport | None, block: Block | None) -> tuple[SizeHint, ...]:
+    """The census's sizes for the stream on the canvas; the first stream has none.
+
+    Groups count streams from one, and the extra-stream findings list the
+    smuggled ones in the same order from two, so a group indexes the findings
+    directly.
+    """
+    extra = [f for f in report.findings if f.kind == "idat-extra"] if report else []
+    if block is None or block.group < 2 or block.group - 2 >= len(extra):
+        return ()
+    return extra[block.group - 2].sizes
 
 
 def _preview(block: Block) -> QLabel:

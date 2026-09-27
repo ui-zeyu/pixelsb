@@ -8,7 +8,6 @@ from pytestqt.qtbot import QtBot
 
 from pixelsb.domain.models import Raster, RegionMask
 from pixelsb.domain.scan import ScanHit, scan_candidates
-from pixelsb.domain.selection import all_bits
 from pixelsb.io.loading import image_from_pixels
 from pixelsb.ui.scan_panel import ScanPanel
 from tests.support import planes_rgb, raster
@@ -101,9 +100,7 @@ def test_a_new_recipe_keeps_the_hit_list(qtbot: QtBot, tmp_path: Path) -> None:
 def test_the_sweep_reads_the_canvas_not_the_file(qtbot: QtBot, tmp_path: Path) -> None:
     """The scan shares the other pages' source: the stack's result, not the file."""
     image = image_from_pixels(tmp_path / "white.png", np.full((4, 4, 3), 255, dtype=np.uint8))
-    canvas = Raster(
-        samples=np.zeros_like(image.samples), planes=image.planes, selection=all_bits(image.planes)
-    )
+    canvas = Raster(samples=np.zeros_like(image.samples), planes=image.planes)
     panel = ScanPanel()
     qtbot.addWidget(panel)
     panel.set_source(image, canvas)

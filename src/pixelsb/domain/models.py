@@ -177,7 +177,17 @@ def ensure_inside(image: LoadedImage, coord: PixelCoord) -> None:
 
 @dataclass(frozen=True, slots=True)
 class BitsMask:
-    """The bits of each channel the canvas paints and the stream packs."""
+    """The projected picture: each named channel rebuilt from its chosen bits.
+
+    The chosen bits are packed onto the low end in ascending order, and the
+    channel's own depth shrinks to how many were chosen, so ``r.4`` leaves R a
+    one-bit channel and ``r.4 or r.5`` a two-bit one. A channel carrying none
+    of the selection is out of the picture entirely — this is the view the
+    canvas painted, made into the samples the next operation reads. An empty
+    selection names no picture and fails the layer; a selection naming a
+    channel this raster lacks fails the way a spectrum naming a missing
+    channel does.
+    """
 
     selection: frozenset[BitChoice]
 
@@ -236,14 +246,18 @@ class CropMask:
 
 @dataclass(frozen=True, slots=True)
 class FftMask:
-    """Every channel the selection carries, replaced by its log-magnitude spectrum.
+    """The named channels, each replaced by its log-magnitude spectrum.
 
     A view of the frequency domain rather than a reversible edit: the bright
     points away from the center are the periodic patterns a frequency-domain
     watermark leaves, and the value masks read them as ordinary pixels. The
-    bits mask below this one decides which channels take part: uncheck a
-    channel there and its samples keep their stored values.
+    channels are this mask's own parameters: ``None`` means the color trio and
+    gray when the image has them (never alpha, whose spectrum is a dark
+    picture), and a name this frame lacks is a failure of the layer, which
+    keeps the samples it was given.
     """
+
+    planes: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -253,9 +267,10 @@ class ArnoldMask:
     This is the recovery direction: a picture scrambled by the forward map with
     parameters ``(a, b)`` is read again by the same parameters here, because the
     inverse of ``[[1, b], [a, ab+1]]`` is exactly ``[[ab+1, -b], [-a, 1]]``. It
-    needs the full square canvas: after the mix a cell's pixels come from one
-    row *and* one column at once, so the raster's own coordinate bookkeeping
-    cannot follow them, and coordinates start over from the transformed picture.
+    needs a square block of samples, which a crop that left a square still is:
+    after the mix a cell's pixels come from one row *and* one column at once,
+    so the raster's own coordinate bookkeeping cannot follow them, and
+    coordinates start over from the transformed picture.
     """
 
     times: int = 1
@@ -270,8 +285,7 @@ class ArnoldMask:
 
 
 type Mask = (
-    BitsMask
-    | RegionMask
+    RegionMask
     | InvertMask
     | GrayscaleMask
     | ThresholdMask
@@ -279,6 +293,7 @@ type Mask = (
     | CropMask
     | FftMask
     | ArnoldMask
+    | BitsMask
 )
 
 
@@ -310,16 +325,16 @@ class MaskFailure:
 class Raster:
     """The pixels every consumer reads: the canvas, the readout, the extractor.
 
-    ``samples`` are the values the enabled masks left behind, ``selection`` the
-    bits of them the canvas paints and the stream packs, ``live`` the pixels the
-    region masks kept (``None`` = every pixel), and ``rows``/``columns`` the
-    source coordinates of the raster's cells. ``None`` there means the cells are
-    the image's own, in order, which is what a crop mask takes away from.
+    ``samples`` are the values the enabled masks left behind, ``live`` the
+    pixels the region masks kept (``None`` = every pixel), and ``rows``/
+    ``columns`` the source coordinates of the raster's cells. ``None`` there
+    means the cells are the image's own, in order, which is what a crop mask
+    takes away from. The planes travel with the samples: a projection renames
+    their depths, so a one-bit plane is a one-bit plane to every reader.
     """
 
     samples: SampleArray
     planes: tuple[SamplePlane, ...]
-    selection: frozenset[BitChoice]
     live: NDArray[np.bool_] | None = None
     rows: IndexArray | None = None
     columns: IndexArray | None = None
@@ -447,8 +462,10 @@ class ViewerState:
     """What the viewer is showing: an image, the mask stack over it, and the view.
 
     ``layers`` runs bottom to top, so the first mask sees the image itself and
-    the last one sees everything below it. Neither ``cursor`` nor ``focus``
-    belongs to a mask: they are where the keyboard is, not what the pixels are.
+    the last one sees everything below it — every operation, the bits
+    projection included, takes the one under it as its input. Neither ``cursor``
+    nor ``focus`` belongs to a mask: they are where the keyboard is, not what
+    the pixels are.
     """
 
     image: LoadedImage | None = None

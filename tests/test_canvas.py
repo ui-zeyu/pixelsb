@@ -40,7 +40,11 @@ def _image(width: int, height: int, name: str = "a.png") -> LoadedImage:
     return make_image(samples, planes_rgb(), path=Path(name))
 
 
-def _state_for(image: LoadedImage, *masks: Mask, zoom: float = 1.0) -> ViewerState:
+def _state_for(
+    image: LoadedImage,
+    *masks: Mask,
+    zoom: float = 1.0,
+) -> ViewerState:
     return ViewerState(image=image, layers=layers(*masks), zoom=zoom)
 
 
@@ -116,7 +120,7 @@ def test_painting_labels_with_a_region_mask(qtbot: QtBot) -> None:
     canvas = _canvas(qtbot)
     image = _image(40, 20)
     marked = _state_for(
-        image, BitsMask(frozenset({BitChoice("R", 0)})), RegionMask("R >= 8"), zoom=12
+        image, RegionMask("R >= 8"), BitsMask(frozenset({BitChoice("R", 0)})), zoom=12
     )
     canvas.set_state(marked, _board(marked))
     canvas.grab()

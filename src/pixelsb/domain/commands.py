@@ -2,12 +2,15 @@
 
 A line names a single operation, and its first word says which kind it is:
 
-* **操作动词** — ``thr 128``, ``xor 0xFF``, ``inv``, ``gray``, ``crop``: the line
-  is the verb and its argument, nothing else. A verb is not a truth value, so it
-  never joins an ``and``/``or``; another operation is another line.
+* **操作动词** — ``thr 128``, ``xor 0xFF``, ``inv``, ``gray``, ``crop``,
+  ``fft r g``, ``arnold 1 2 3``: the line is the verb and its argument, nothing
+  else. A verb is not a truth value, so it never joins an ``and``/``or``;
+  another operation is another line.
 * **位选择** — channel atoms only: ``b`` (the channel whole), ``b.0`` (one bit),
   ``all``. They combine with ``or`` (union), ``and`` (intersection) and ``not``
-  (complement) into the one selection the canvas shows and the stream packs.
+  (complement) into the one selection the projection rebuilds the channels
+  from. Like every operation it lands in the stack: what it makes becomes the
+  picture and the bytes the operations above it read.
 * **区域条件** — anything else: comparisons, arithmetic, coordinates, ``rect`` /
   ``grid``, and the bit fields inside them (``b > r``, ``left < 10``,
   ``B.0 == 1``). The text is handed to :mod:`pixelsb.domain.predicate`, which
@@ -18,7 +21,7 @@ A line names a single operation, and its first word says which kind it is:
 
 ``and`` / ``or`` / ``not`` join operands of one kind, the way a typed language
 joins one type: a line that mixes a selection with a region condition is refused,
-because it would name two operations. Operations are combined by the stack
+because it would name two things. Operations are combined by the stack
 instead — one line each, folded bottom up.
 """
 
@@ -79,12 +82,13 @@ def parse(text: str, planes: tuple[SamplePlane, ...]) -> Mask | None:
     box judges the *line* — a shape no condition can have (a stray comma's tuple,
     a list, an unknown function) is refused, and the typist's words stay put to
     be fixed. What the line *names* is the stack's business: a condition about a
-    field this image lacks is complete, and lands as a layer that says so.
+    field this image lacks is complete, and lands as a layer that says so. A
+    line of channel atoms names the projection, whose bits it builds.
     """
     line = text.strip()
     if not line:
         return None
-    mask = _verb_line(line, level_ceiling(planes))
+    mask = _verb_line(line, planes)
     if mask is not None:
         return mask
     if _VERB.search(line):  # a verb the head test did not claim is a verb out of place
@@ -101,18 +105,11 @@ def parse(text: str, planes: tuple[SamplePlane, ...]) -> Mask | None:
     return RegionMask(_expression_text(part))
 
 
-def text_of(mask: Mask, planes: tuple[SamplePlane, ...]) -> str | None:
-    """The command line that means this mask again, or ``None`` when text falls short.
-
-    A bits selection has a line while it touches channels this image has: every bit
-    of every channel is ``all``, each whole channel one bare name (``b``), each
-    single bit its own ``b.0``, joined by ``or``. Only an emptied selection — or
-    one carried over from an image with other channels — keeps the command input
-    empty.
-    """
+def text_of(mask: Mask, planes: tuple[SamplePlane, ...]) -> str:
+    """The command line that means this mask again, in the house style."""
     match mask:
         case BitsMask(selection=selection):
-            return _bits_line(planes, selection)
+            return _bits_line(planes, selection) or ""
         case RegionMask(expression=expression):
             return expression
         case InvertMask():
@@ -125,15 +122,28 @@ def text_of(mask: Mask, planes: tuple[SamplePlane, ...]) -> str | None:
             return f"thr {level}"
         case XorMask(value=value):
             return f"xor 0x{value:02X}"
-        case FftMask():
-            return "fft"
+        case FftMask(planes=names):
+            if names is None:
+                return "fft"
+            return "fft " + " ".join(name.lower() for name in names)
         case ArnoldMask(times=times, a=a, b=b):
             return f"arnold {times} {a} {b}"
         case _ as unknown:
             assert_never(unknown)
 
 
-def _verb_line(line: str, ceiling: int) -> Mask | None:
+def bits_text(planes: tuple[SamplePlane, ...], selection: frozenset[BitChoice]) -> str | None:
+    """The command line that sets this projection, or ``None`` when text falls short.
+
+    Every bit of every channel is ``all``, each whole channel one bare name
+    (``b``), each single bit its own ``b.0``, joined by ``or``. An emptied
+    selection — or one carried over from an image with other channels — has no
+    line, which keeps the command input free for a fresh one.
+    """
+    return _bits_line(planes, selection)
+
+
+def _verb_line(line: str, planes: tuple[SamplePlane, ...]) -> Mask | None:
     """The operation a line that opens with a verb names, or ``None`` for another kind."""
     match = _VERB.match(line)
     if match is None:
@@ -142,21 +152,24 @@ def _verb_line(line: str, ceiling: int) -> Mask | None:
     verb = match["verb"].lower()
     taken = _parameter_words(verb, words)
     argument = " ".join(words[:taken]) if taken else None
-    mask = _verb_mask(verb, argument, ceiling)
+    mask = _verb_mask(verb, argument, level_ceiling(planes))
     if words[taken:]:  # the verb and its parameters are the whole line
         raise CommandError(_VERB_APART)
     return mask
 
 
 def _parameter_words(verb: str, words: list[str]) -> int:
-    """How many words this verb reads as its parameters: three, one, or none.
+    """How many words this verb reads as its parameters: three, one, or all.
 
     A connective in the first word's place is a line trying to combine, so no
-    parameter is taken and the leftover words refuse the line below.
+    parameter is taken and the leftover words refuse the line below. ``fft``
+    reads every word as a channel name, so ``fft r g`` stays one operation.
     """
     if not words or words[0].lower() in _CONNECTIVES:
         return 0
-    return 3 if verb == "arnold" else 1
+    if verb == "arnold":
+        return 3
+    return len(words) if verb == "fft" else 1
 
 
 def _combine(node: ast.expr, planes: tuple[SamplePlane, ...]) -> ast.expr | frozenset[BitChoice]:
@@ -248,12 +261,33 @@ def _verb_mask(verb: str, argument: str | None, ceiling: int) -> Mask:
             raise CommandError(f"{verb} 需要一个数值：{verb} 128 或 {verb} 0xFF")
         return kind(_level(argument, ceiling))
     if (kind := _BARE_MASKS.get(verb)) is not None:
+        if verb == "fft":
+            return _fft_mask(argument)
         if argument is not None:
             raise CommandError(f"{verb} 不需要参数（收到：{argument}）")
         return kind()
     if verb == "arnold":
         return _arnold_mask(argument)
     raise CommandError(f"看不懂的命令：{verb}")  # the verb pattern only lets these through
+
+
+_PLANE_NAME = re.compile(r"(?i)^[a-z]+$")
+
+
+def _fft_mask(argument: str | None) -> FftMask:
+    """The spectrum's line: bare, or the channel names it works on.
+
+    The names are this mask's own parameters, so ``fft r g`` keeps doing the
+    same thing when another frame carries other channels; whether the image
+    has them is the stack's business, reported against the layer.
+    """
+    if argument is None:
+        return FftMask()
+    names = tuple(argument.split())
+    for name in names:
+        if _PLANE_NAME.match(name) is None:
+            raise CommandError(f"fft 的参数是通道名：fft r g（收到：{argument}）")
+    return FftMask(tuple(name.upper() for name in names))
 
 
 def _arnold_mask(argument: str | None) -> ArnoldMask:

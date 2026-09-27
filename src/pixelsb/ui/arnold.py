@@ -14,6 +14,7 @@ stay on the page until a new picture arrives.
 
 from collections.abc import Iterator
 from functools import partial
+from itertools import product
 from typing import cast, override
 
 import numpy as np
@@ -34,15 +35,12 @@ from PySide6.QtWidgets import (
 
 from pixelsb.domain.models import (
     ARNOLD_PARAM_LIMIT,
-    COLOR_SLOTS,
-    GRAY_SLOTS,
     LoadedImage,
     Raster,
     SampleArray,
     SamplePlane,
-    plane_or_none,
 )
-from pixelsb.domain.samples import scale_to_byte, viewed_samples
+from pixelsb.domain.samples import painted_rgb
 from pixelsb.domain.stack import arnold_image
 from pixelsb.ui import painting, text, theme
 from pixelsb.ui.controls import drain, section_title
@@ -55,11 +53,11 @@ _SPIN_WIDTH = 104  # wide enough for every digit ±2147483647 can ask for
 class _BruteWorker(Stoppable):
     """The sweep over a parameter cube, one thumbnail per candidate.
 
-    ``samples`` are the values the canvas shows — the selection's bits where it
-    carries a plane — and ``tops`` are the ranges those values end at, so the
-    thumbnails scale the way the canvas does. ``jobs`` is consumed lazily, so a
-    wide range costs the page nothing until each candidate is actually
-    transformed, and ``stop`` answers between them.
+    ``samples`` are the canvas's pixels, and every candidate is painted the way
+    the canvas paints them — a bit-plane view sweeps and shows as the bit plane
+    it is. ``jobs`` is consumed lazily, so a wide range costs the page nothing
+    until each candidate is actually transformed, and ``stop`` answers between
+    them.
     """
 
     found = Signal(int, int, int, float, QImage)
@@ -68,7 +66,6 @@ class _BruteWorker(Stoppable):
     def __init__(
         self,
         samples: SampleArray,
-        tops: tuple[int, ...],
         planes: tuple[SamplePlane, ...],
         jobs: Iterator[tuple[int, int, int]],
         total: int,
@@ -76,7 +73,6 @@ class _BruteWorker(Stoppable):
     ) -> None:
         super().__init__(parent)
         self._samples = samples
-        self._tops = tops
         self._planes = planes
         self._jobs = jobs
         self.total = total
@@ -88,43 +84,19 @@ class _BruteWorker(Stoppable):
             if self._stopping:
                 break
             decoded = arnold_image(self._samples, times, a, b)
-            rgb = _as_rgb(decoded, self._planes, self._tops)
+            rgb = _as_rgb(decoded, self._planes)
             self.found.emit(times, a, b, _smoothness(rgb), _thumbnail(rgb))
             self.count += 1
             self.reached.emit(self.count)
 
 
-def _picture_indexes(planes: tuple[SamplePlane, ...]) -> tuple[int, ...]:
-    """Which planes make the picture's color: the triplet, or one gray plane.
+def _as_rgb(samples: SampleArray, planes: tuple[SamplePlane, ...]) -> NDArray[np.uint8]:
+    """The candidate as the canvas would paint it: same view, same colors.
 
-    Chosen by name the way the canvas chooses them, so a palette image shows
-    the colors it looks up — taking the first three channels as RGB is what
-    painted such thumbnails cyan.
+    The cat map commutes with the bits projection, so what a thumbnail shows is
+    exactly what the canvas shows once the pick lands in the stack.
     """
-    red, green, blue = (plane_or_none(planes, name) for name in COLOR_SLOTS)
-    if red is not None and green is not None and blue is not None:
-        return red.index, green.index, blue.index
-    gray = next(
-        (plane for name in GRAY_SLOTS if (plane := plane_or_none(planes, name)) is not None),
-        planes[0],
-    )
-    return (gray.index,)
-
-
-def _as_rgb(
-    samples: SampleArray, planes: tuple[SamplePlane, ...], tops: tuple[int, ...]
-) -> NDArray[np.uint8]:
-    """The picture as HxWx3 bytes, at the scale the canvas shows each plane.
-
-    A gray picture repeats its one plane, so an alpha plane must never dress
-    itself up as a color channel, which is what turned gray-plus-alpha thumbnails
-    teal.
-    """
-    indexes = _picture_indexes(planes)
-    scaled = [scale_to_byte(samples[:, :, index], tops[index]) for index in indexes]
-    if len(scaled) == 1:
-        scaled = scaled * 3
-    return np.stack(scaled, axis=-1)
+    return painted_rgb(Raster(samples=samples, planes=planes))
 
 
 def _smoothness(rgb: NDArray[np.uint8]) -> float:
@@ -287,8 +259,7 @@ class ArnoldPanel(QWidget):
             return
         self._clear_grid()
         self._seats = self._columns()
-        samples, tops = viewed_samples(raster)
-        self._worker = _BruteWorker(samples, tops, raster.planes, self._jobs(), total, self)
+        self._worker = _BruteWorker(raster.samples, raster.planes, self._jobs(), total, self)
         self._worker.found.connect(self._on_found)
         self._worker.reached.connect(self._on_reached)
         self._worker.finished.connect(partial(self._on_done, self._worker))
@@ -311,10 +282,11 @@ class ArnoldPanel(QWidget):
 
     def _jobs(self) -> Iterator[tuple[int, int, int]]:
         (times_from, times_to), (a_from, a_to), (b_from, b_to) = self._ranges
-        for times in range(times_from.value(), times_to.value() + 1):
-            for a in range(a_from.value(), a_to.value() + 1):
-                for b in range(b_from.value(), b_to.value() + 1):
-                    yield times, a, b
+        return product(
+            range(times_from.value(), times_to.value() + 1),
+            range(a_from.value(), a_to.value() + 1),
+            range(b_from.value(), b_to.value() + 1),
+        )
 
     def _on_found(self, times: int, a: int, b: int, score: float, image: QImage) -> None:
         """One candidate lands: it goes up right away, the order is settled at the end."""

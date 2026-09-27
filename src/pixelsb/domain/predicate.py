@@ -2,11 +2,11 @@
 
 Fields: ``left``, ``top``, ``right``, ``bottom`` (a pixel occupies
 ``[left, right) x [top, bottom)``), and the channel names. A bare channel name is
-the channel as stored; ``R.bits`` is the selection value instead, where a channel
-with no selected bit reads as 0; and ``R.3`` is bit 3 of the stored channel alone.
-The expression is parsed with :mod:`ast` and every node is compiled into a numpy
-closure — strings are never evaluated. Only the fields an expression mentions are
-built for it, so a filter over coordinates alone never touches the image samples.
+the channel as stored; ``R.3`` is bit 3 of the stored channel alone. The
+expression is parsed with :mod:`ast` and every node is compiled into a numpy
+closure — strings are never evaluated. Only the fields an expression mentions
+are built for it, so a filter over coordinates alone never touches the image
+samples.
 """
 
 import ast
@@ -24,13 +24,11 @@ import numpy as np
 from numpy.typing import NDArray
 
 from pixelsb.domain.models import (
-    BitChoice,
     IndexArray,
     Raster,
     SampleArray,
     SamplePlane,
 )
-from pixelsb.domain.selection import bits_for, mask_of
 
 type Value = NDArray[Any]
 type FieldEnv = dict[str, Value]
@@ -45,7 +43,6 @@ _RECT_EDGES = ("left", "top", "right", "bottom")
 _GRID = "grid"
 _GRID_PARAMS = ("x", "y", "step_x", "step_y")
 _GRID_AXES = ("left", "top")
-_BITS = "bits"
 # A bit index is a digit after the dot, which Python's grammar has no attribute
 # for, so ``R.3`` is compiled as ``R._3``: _BIT_MARK is the underscore that turns
 # the digits into an attribute name (see :func:`with_bit_attributes`).
@@ -109,7 +106,7 @@ def field_names(planes: tuple[SamplePlane, ...]) -> dict[str, Field]:
 
 
 def _value_key(plane: str, attribute: str) -> str:
-    """Environment key for one flavour of a channel value, e.g. ``B.bits``, ``B.3``."""
+    """Environment key for one flavour of a channel value, e.g. ``B.3``."""
     return f"{plane}.{attribute}"
 
 
@@ -303,7 +300,7 @@ def _canonical_name(field: str, names: dict[str, Field]) -> Field:
 
 
 def _compile_attribute(field: str, attribute: str, names: dict[str, Field]) -> Evaluator:
-    """A channel attribute: ``R.bits`` (the selection value) or ``R.3`` (one bit)."""
+    """A channel attribute: ``R.3``, bit 3 of the stored channel alone."""
     canonical = _canonical_name(field, names)
     if not canonical.bits:
         raise PredicateError(f"字段 {canonical.name} 没有属性")
@@ -325,10 +322,8 @@ def _attribute_key(field: Field, attribute: str) -> str:
                 f"（收到 {field.name}.{bit}）"
             )
         return str(bit)
-    if attribute.lower() == _BITS:
-        return _BITS
     raise PredicateError(
-        f"字段 {field.name} 的属性只能是 {_BITS} 或位号，"
+        f"字段 {field.name} 的属性只能是位号，"
         f"如 {field.name}.0～{field.name}.{field.bits - 1}（收到：{attribute}）"
     )
 
@@ -474,16 +469,13 @@ def _field_values(
     }
     values: FieldEnv = {name: array for name, array in edges.items() if name in wanted}
     for plane in raster.planes:
-        selection_key = _value_key(plane.name, _BITS)
         bits = _wanted_bits(wanted, plane.name)
-        if plane.name not in wanted and selection_key not in wanted and not bits:
+        if plane.name not in wanted and not bits:
             continue
         # One copy of the channel serves the stored value and every bit of it.
         stored = _stored_values(raster.samples, plane)
         if plane.name in wanted:
             values[plane.name] = stored
-        if selection_key in wanted:
-            values[selection_key] = _selected_values(stored, plane.name, raster.selection)
         for bit in bits:
             values[_value_key(plane.name, str(bit))] = (stored >> np.uint32(bit)) & np.uint32(1)
     return values
@@ -507,19 +499,5 @@ def _wanted_bits(wanted: frozenset[str], plane: str) -> tuple[int, ...]:
 
 
 def _stored_values(samples: SampleArray, plane: SamplePlane) -> Value:
-    """The channel exactly as stored, ignoring the bit selection."""
+    """The channel exactly as stored."""
     return samples[:, :, plane.index].astype(np.uint32)
-
-
-def _selected_values(
-    channel: Value,
-    plane: str,
-    chosen: frozenset[BitChoice],
-) -> Value:
-    """The channel masked onto the selected bits; no selected bit reads as 0."""
-    bits = bits_for(chosen, plane)
-    if not bits:
-        return np.zeros(channel.shape, dtype=np.uint32)
-    if len(bits) == 1:
-        return (channel >> np.uint32(bits[0])) & np.uint32(1)
-    return channel & np.uint32(mask_of(bits))

@@ -42,12 +42,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from pixelsb.domain.commands import CommandError, parse, text_of
+from pixelsb.domain.commands import CommandError, bits_text, parse, text_of
 from pixelsb.domain.geometry import SLIDER_STEPS, initial_zoom, slider_position, slider_zoom
 from pixelsb.domain.models import (
     MAX_ZOOM,
     MIN_ZOOM,
     BitOrder,
+    BitsMask,
     DisplayFormat,
     ExtractEncoding,
     LoadedImage,
@@ -65,21 +66,20 @@ from pixelsb.domain.transitions import (
     add_layer,
     add_mask_text,
     apply_arnold,
-    bits_position,
-    clear_layers,
     cycle_format,
     filter_position,
     move_cursor,
     move_layer,
     open_image,
+    projection_bits,
     remove_layer,
     select_all_bits,
-    select_choices,
     select_lsb,
     select_lsb_at,
     select_lsbs,
     select_only,
     set_bit_order,
+    set_bits,
     set_channel,
     set_channel_order,
     set_column,
@@ -255,12 +255,6 @@ class MainWindow(QMainWindow):
         quit_action = file_menu.addAction(text.QUIT)
         quit_action.setShortcut(QKeySequence.StandardKey.Quit)
         quit_action.triggered.connect(_drop_checked(self.close))
-
-        view_menu = self.menuBar().addMenu(text.VIEW_MENU)
-        self._original_action = view_menu.addAction(text.ORIGINAL)
-        self._original_action.triggered.connect(_drop_checked(partial(self.apply, clear_layers)))
-        self._lsb_action = view_menu.addAction(text.ALL_LSB)
-        self._lsb_action.triggered.connect(_drop_checked(partial(self.apply, select_lsbs)))
 
         help_menu = self.menuBar().addMenu(text.HELP_MENU)
         shortcuts_action = help_menu.addAction(text.SHORTCUTS)
@@ -514,7 +508,7 @@ class MainWindow(QMainWindow):
                     return True
                 self._nudge(dx * step, dy * step)
             case keymap.FocusBit(delta=delta):
-                self.apply(partial(step_focus_bit, delta=delta, layer=self._bits_layer()))
+                self.apply(partial(step_focus_bit, delta=delta))
             case keymap.Zoom(step=step):
                 self._zoom_by(step)
             case keymap.Fit():
@@ -522,9 +516,9 @@ class MainWindow(QMainWindow):
             case keymap.CycleFormat():
                 self.apply(cycle_format)
             case keymap.ChannelLsb(name=name):
-                self.apply(partial(select_lsb, name=name, layer=self._bits_layer()))
+                self.apply(partial(select_lsb, name=name))
             case keymap.OrderedLsb(position=position):
-                self.apply(partial(select_lsb_at, position=position, layer=self._bits_layer()))
+                self.apply(partial(select_lsb_at, position=position))
             case keymap.Page(panel=panel):
                 self._panels.set_current(panel)
         return True
@@ -536,7 +530,7 @@ class MainWindow(QMainWindow):
         self.layers_panel.set_state(state, raster)
         self._sync_controls(state, raster)
         self.canvas.set_state(state, raster)
-        self.extract_panel.set_state(state, raster, bits_layer=self._bits_layer())
+        self.extract_panel.set_state(state, raster)
         self.info_panel.set_image(state.image)
         self._status_info.setText(self._info_text(state, raster))
         self._status_view.setText(status_view(state, raster))
@@ -545,14 +539,6 @@ class MainWindow(QMainWindow):
         title = text.APP_NAME if image is None else f"{image.path.name} — {text.APP_NAME}"
         if self.windowTitle() != title:
             self.setWindowTitle(title)
-
-    def _bits_layer(self) -> int | None:
-        """The bits mask the grid and the shortcuts work on: the layer in hand.
-
-        The grid lives in the extract panel, so both panels need the same answer;
-        ``None`` means no bits mask is in play and an edit brings one into being.
-        """
-        return bits_position(self.store.state.layers, self.layers_panel.selected)
 
     def _resolve(self, state: ViewerState) -> Raster | None:
         """The raster a state works out to, remembered for as long as the stack stands.
@@ -663,31 +649,43 @@ class MainWindow(QMainWindow):
 
     def _box_position(self) -> int | None:
         """Which layer the filter box is editing, if any."""
-        image = self.store.state.image
-        planes = () if image is None else image.planes
-        return filter_position(self.store.state.layers, planes, self.layers_panel.selected)
+        return filter_position(self.store.state.layers, self.layers_panel.selected)
 
     def _box_text(self) -> str:
-        """What the filter box holds: the command line of the layer it edits."""
+        """What the filter box holds: the layer it edits, else the view as a line.
+
+        With no layer in hand the box speaks for the topmost projection, so a
+        grid click or a preset writes the line back and Enter does not silently
+        undo it.
+        """
         position = self._box_position()
         image = self.store.state.image
-        if position is None or image is None:
+        if position is not None:
+            return text_of(self.store.state.layers[position].mask, image.planes if image else ())
+        if image is None:
             return ""
-        return text_of(self.store.state.layers[position].mask, image.planes) or ""
+        projection = projection_bits(self.store.state)
+        if projection is None:
+            return ""
+        return bits_text(image.planes, projection) or ""
 
     def _command_text(self, line: str) -> str | None:
-        """How the operation a line names writes itself, or ``None`` when it names none.
+        """How the thing a line names writes itself, or ``None`` when it names none.
 
         This is the wording the recipe row holds, so a line the box has just run
         can be written back in it. ``None`` covers a sentence still being typed
-        and a mask no command spells (a bit selection with no bits), so neither
-        is rewritten.
+        and a projection no line spells (emptied, or carried from another image),
+        so neither is rewritten.
         """
         image = self.store.state.image
         if image is None:
             return None
-        mask = parse(line, image.planes)
-        return None if mask is None else text_of(mask, image.planes)
+        parsed = parse(line, image.planes)
+        if parsed is None:
+            return None
+        if isinstance(parsed, BitsMask):
+            return bits_text(image.planes, parsed.selection)
+        return text_of(parsed, image.planes)
 
     def _write_box(self, line: str) -> None:
         """Put a line in the box as the box's own doing, never as the typist's."""
@@ -742,8 +740,8 @@ class MainWindow(QMainWindow):
     # --- the scan page and the cat-map gallery ------------------------------
 
     def _on_scan_applied(self, candidate: ScanCandidate) -> None:
-        """A scan row: its recipe into the stack, its read order into the extract panel."""
-        self.apply(partial(select_choices, choices=candidate.selection))
+        """A scan row: its projection into the stack, its read order into the extract panel."""
+        self.apply(partial(set_bits, choices=candidate.selection))
         self.apply(partial(set_channel_order, names=candidate.order.planes))
         self.apply(partial(set_bit_order, bit_order=candidate.order.bit_order))
         self.apply(partial(set_scan_order, scan=candidate.order.scan))
@@ -766,13 +764,14 @@ class MainWindow(QMainWindow):
         """
         position = self._box_position()
         image = self.store.state.image
-        key = None if image is None else (image, self.store.state.layers)
+        state = self.store.state
+        key = None if image is None else (image, state.layers)
         if (
             (key != self._box_edit_key or force)
             and not self._box_authoring
             and not self._command_error
         ):
-            self._write_box("" if position is None else self._box_text())
+            self._write_box(self._box_text())
             self._command_error = ""
             self._box_edit_key = key
         failed = bool(self._command_error) or (
@@ -789,7 +788,7 @@ class MainWindow(QMainWindow):
         shows that layer's command even while the box still holds focus.
         """
         self._sync_filter_box(self._raster, force=True)
-        self.extract_panel.set_state(self.store.state, self._raster, bits_layer=self._bits_layer())
+        self.extract_panel.set_state(self.store.state, self._raster)
 
     def _on_layer_added(self, mask: Mask) -> None:
         self.apply(partial(add_layer, mask=mask))
@@ -803,27 +802,27 @@ class MainWindow(QMainWindow):
     def _on_layer_enabled(self, layer: int, on: bool) -> None:
         self.apply(partial(set_layer_enabled, layer=layer, on=on))
 
-    def _on_bit(self, layer: int, plane: str, bit: int, exclusive: bool) -> None:
+    def _on_bit(self, plane: str, bit: int, exclusive: bool) -> None:
         transition = select_only if exclusive else toggle_bit
-        self.apply(partial(transition, plane=plane, bit=bit, layer=layer))
+        self.apply(partial(transition, plane=plane, bit=bit))
 
-    def _on_channel_toggle(self, layer: int, name: str, checked: bool) -> None:
-        self.apply(partial(set_channel, name=name, on=checked, layer=layer))
+    def _on_channel_toggle(self, name: str, checked: bool) -> None:
+        self.apply(partial(set_channel, name=name, on=checked))
 
-    def _on_column_toggle(self, layer: int, bit: int, checked: bool) -> None:
-        self.apply(partial(set_column, bit=bit, on=checked, layer=layer))
+    def _on_column_toggle(self, bit: int, checked: bool) -> None:
+        self.apply(partial(set_column, bit=bit, on=checked))
 
-    def _on_plane_step(self, layer: int, delta: int) -> None:
-        self.apply(partial(step_plane, delta=delta, layer=layer))
+    def _on_plane_step(self, delta: int) -> None:
+        self.apply(partial(step_plane, delta=delta))
 
-    def _on_channel_step(self, layer: int, delta: int) -> None:
-        self.apply(partial(step_channel, delta=delta, layer=layer))
+    def _on_channel_step(self, delta: int) -> None:
+        self.apply(partial(step_channel, delta=delta))
 
-    def _on_all_bits(self, layer: int) -> None:
-        self.apply(partial(select_all_bits, layer=layer))
+    def _on_all_bits(self) -> None:
+        self.apply(select_all_bits)
 
-    def _on_lsbs(self, layer: int) -> None:
-        self.apply(partial(select_lsbs, layer=layer))
+    def _on_lsbs(self) -> None:
+        self.apply(select_lsbs)
 
     def _on_format(self, index: int) -> None:
         fmt = _enum_at(self._format_combo, index, DisplayFormat)

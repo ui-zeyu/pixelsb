@@ -85,13 +85,22 @@ class Block:
 
 
 @dataclass(frozen=True, slots=True)
+class SizeHint:
+    """A (width, height) the pixel data on hand would fill exactly."""
+
+    width: int
+    height: int
+
+
+@dataclass(frozen=True, slots=True)
 class Finding:
     """An anomaly: bytes no renderer will show, or structure no reader expects.
 
     ``payload`` carries the suspicious bytes when they are contiguous, so the
     panel can preview them and scan them for signatures without re-reading;
     ``decoded`` holds a nested stream (the usual fake-IDAT shape) unfolded, so
-    what the renderer skips can still be read.
+    what the renderer skips can still be read, and ``sizes`` names the
+    geometries those decoded bytes would fill exactly.
     """
 
     kind: str
@@ -99,14 +108,7 @@ class Finding:
     length: int = 0
     payload: bytes = b""
     decoded: bytes = b""
-
-
-@dataclass(frozen=True, slots=True)
-class SizeHint:
-    """A (width, height) the pixel data on hand would fill exactly."""
-
-    width: int
-    height: int
+    sizes: tuple[SizeHint, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -208,20 +210,20 @@ def _png_idat_findings(
 
     Tolerant readers render only the first stream and silently drop the rest —
     which is exactly where fake IDATs hide — so each stream beyond the first
-    is reported where it starts, and its start doubles as a group number for
-    the census. Stream start offsets come back for that grouping, and the first
-    stream's decompressed size for the geometry candidates.
+    is reported where it starts, its start doubles as a group number for the
+    census, and its finding carries the geometries its own bytes would fill.
+    Stream start offsets come back for that grouping, and the first stream's
+    decompressed size for the geometry candidates.
     """
     findings: list[Finding] = []
-    idat_blocks = [block for block in blocks if block.label == "IDAT"]
-    if not idat_blocks:
-        return findings, [], 0
     positions = [index for index, block in enumerate(blocks) if block.label == "IDAT"]
+    if not positions:
+        return findings, [], 0
     if any(later - earlier != 1 for earlier, later in pairwise(positions)):
         findings.append(Finding("idat-gap", blocks[positions[1]].offset))
-    data = b"".join(block.payload for block in idat_blocks)
+    data = b"".join(blocks[index].payload for index in positions)
     view = memoryview(data)  # a slice of the view is free; a slice of the bytes copies
-    base = idat_blocks[0].offset + 8
+    base = blocks[positions[0]].offset + 8
     streams: list[tuple[int, int, bytes]] = []
     cursor = 0
     while cursor < len(data):
@@ -242,7 +244,14 @@ def _png_idat_findings(
             break
     for start, end, decoded in streams[1:]:
         findings.append(
-            Finding("idat-extra", start, end - start, data[start - base : end - base], decoded)
+            Finding(
+                "idat-extra",
+                start,
+                end - start,
+                data[start - base : end - base],
+                decoded,
+                sizes=_size_candidates(header, len(decoded)),
+            )
         )
     if streams and header is not None and (expected := header.pixel_budget()) is not None:
         real = len(streams[0][2])

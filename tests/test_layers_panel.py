@@ -7,8 +7,6 @@ from PySide6.QtCore import QPoint, Qt
 from pytestqt.qtbot import QtBot
 
 from pixelsb.domain.models import (
-    BitChoice,
-    BitsMask,
     CropMask,
     GrayscaleMask,
     InvertMask,
@@ -21,7 +19,6 @@ from pixelsb.domain.models import (
     ViewerState,
     XorMask,
 )
-from pixelsb.domain.selection import channel_members
 from pixelsb.ui import text
 from pixelsb.ui.layers import LayerPanel
 from tests.support import board_of, make_image, planes_rgb
@@ -87,16 +84,6 @@ def test_the_base_row_reads_the_file_that_is_open(qtbot: QtBot) -> None:
 def test_the_rows_name_what_each_mask_holds(qtbot: QtBot) -> None:
     panel = _panel(
         qtbot,
-        BitsMask(
-            frozenset(
-                {
-                    BitChoice("R", 0),
-                    BitChoice("R", 1),
-                    BitChoice("R", 2),
-                    BitChoice("G", 5),
-                }
-            )
-        ),
         ThresholdMask(200),
         XorMask(0x0F),
         CropMask(),
@@ -107,23 +94,11 @@ def test_the_rows_name_what_each_mask_holds(qtbot: QtBot) -> None:
         "裁剪",
         "异或",
         "阈值",
-        "位选择",
         text.LAYER_BASE,
     ]
     details = {name: detail for _index, name, detail in _rows(panel)}
-    assert details["位选择"] == "r.0 or r.1 or r.2 or g.5"  # every grid state reads as its command
     assert details["阈值"] == "thr 200"
     assert details["异或"] == "xor 0x0F"
-
-
-def test_a_single_bit_selection_reads_as_the_same_command_the_box_writes(
-    qtbot: QtBot,
-) -> None:
-    """The grid click and the command agree: one channel's one bit is ``b.0``."""
-    panel = _panel(qtbot, BitsMask(frozenset({BitChoice("B", 0)})))
-    assert _rows(panel)[0][2] == "b.0"
-    _show(panel, BitsMask(channel_members(planes_rgb(), "B")))
-    assert _rows(panel)[0][2] == "b"
 
 
 def test_a_new_mask_takes_the_selection(qtbot: QtBot) -> None:

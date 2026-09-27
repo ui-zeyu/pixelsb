@@ -21,7 +21,6 @@ from pixelsb.domain.models import (
 )
 from pixelsb.domain.predicate import PredicateError, compile_filter
 from pixelsb.domain.samples import render_raster
-from pixelsb.domain.selection import all_bits
 from pixelsb.domain.stack import apply_mask, match_span
 from tests.support import make_image, planes_rgb, raster
 
@@ -42,29 +41,25 @@ def _bits_of(image: LoadedImage, bits: set[int]) -> frozenset[BitChoice]:
 
 
 def _selected(image: LoadedImage, bits: set[int]) -> Raster:
-    """The raster that image makes with those bits of every channel selected."""
+    """The raster that image makes with those bits of every channel projected."""
     return raster(image, BitsMask(_bits_of(image, bits)))
 
 
 def _whole_channel(image: LoadedImage, name: str) -> Raster:
-    """The raster that image makes with all eight bits of one channel selected."""
-    return raster(image, BitsMask(frozenset(BitChoice(name, bit) for bit in range(8))))
+    """The raster that image makes with all eight bits of one channel projected."""
+    chosen = frozenset(BitChoice(name, bit) for bit in range(8))
+    return raster(image, BitsMask(chosen))
 
 
-def _select_in(raster: Raster, bits: set[int]) -> Raster:
-    """That raster with those bits of every channel selected instead."""
-    chosen = frozenset(BitChoice(plane.name, bit) for plane in raster.planes for bit in bits)
-    return apply_mask(raster, BitsMask(chosen))
+def _projected(board: Raster, bits: set[int]) -> Raster:
+    """That raster again, with those bits of every plane projected."""
+    chosen = frozenset(BitChoice(plane.name, bit) for plane in board.planes for bit in bits)
+    return apply_mask(board, BitsMask(chosen))
 
 
 def _marked(image: LoadedImage, live: NDArray[np.bool_]) -> Raster:
     """A raster of that image with those pixels standing as the ones that survived."""
-    return Raster(
-        samples=image.samples,
-        planes=image.planes,
-        selection=all_bits(image.planes),
-        live=live,
-    )
+    return Raster(samples=image.samples, planes=image.planes, live=live)
 
 
 def _pattern(side: int, pattern: int) -> NDArray[np.bool_]:
@@ -143,12 +138,20 @@ def test_a_bit_field_is_that_bit_of_the_stored_channel(bit: int) -> None:
 
 @given(bits=_BITS)
 def test_the_render_is_the_divide_reference(bits: set[int]) -> None:
-    """Whatever the selected bits, scaling them to bytes goes by the exact field."""
+    """Whatever the projected bits, scaling them to bytes goes by the packed field."""
     image = _image(5, 4, seed=11)
-    field = sum(1 << bit for bit in bits)
+    ordered = sorted(bits)
+    top = (1 << len(ordered)) - 1
+
+    def shown(channel: np.ndarray) -> np.ndarray:
+        packed = np.zeros(channel.shape, dtype=np.uint32)
+        for offset, bit in enumerate(ordered):
+            packed |= ((channel.astype(np.uint32) >> bit) & 1) << offset
+        return packed
+
     expected = np.stack(
         [
-            ((image.samples[:, :, index] & field).astype(np.uint32) * 255 // field).astype(np.uint8)
+            (shown(image.samples[:, :, index]).astype(np.uint32) * 255 // top).astype(np.uint8)
             for index in range(3)
         ],
         axis=-1,
@@ -157,17 +160,17 @@ def test_the_render_is_the_divide_reference(bits: set[int]) -> None:
 
 
 @given(bits=_BITS)
-def test_the_extract_stream_packs_the_selected_bits_msb_first(bits: set[int]) -> None:
+def test_the_extract_stream_packs_the_projected_bits_msb_first(bits: set[int]) -> None:
     image = _image(3, 2, seed=5)
+    projected = _selected(image, bits)
     stream = [
-        (int(image.samples[row, column, plane.index]) >> bit) & 1
-        for row in range(image.height)
-        for column in range(image.width)
-        for plane in image.planes
-        for bit in range(8)
-        if bit in bits
+        (int(projected.samples[row, column, plane.index]) >> offset) & 1
+        for row in range(projected.height)
+        for column in range(projected.width)
+        for plane in projected.planes
+        for offset in range(plane.bit_depth)
     ]
-    assert extract_bytes(_selected(image, bits)) == np.packbits(stream).tobytes()
+    assert extract_bytes(projected) == np.packbits(stream).tobytes()
 
 
 @given(pattern=_PATTERNS)
@@ -220,8 +223,8 @@ def test_the_column_order_carries_the_live_mask_along(pattern: int, bits: set[in
     image = _image(side, side, seed=7)
     live = _pattern(side, pattern)
     columns = ExtractOrder(scan=ScanOrder.YZ)
-    assert extract_bytes(_select_in(_marked(image, live), bits), columns) == extract_bytes(
-        _select_in(_marked(_transposed(image), live.T), bits)
+    assert extract_bytes(_projected(_marked(image, live), bits), columns) == extract_bytes(
+        _projected(_marked(_transposed(image), live.T), bits)
     )
 
 

@@ -127,51 +127,58 @@ def clear_layers(state: ViewerState) -> ViewerState:
 
 
 def set_mask_text(state: ViewerState, text: str, *, layer: int | None = None) -> ViewerState:
-    """Write the command input's text as the one operation it names.
+    """Write the command input's text as the one thing it names.
 
-    The line lands on the operation the box is editing — the layer in hand — and
-    rewrites it, kind and all: that is what picking a row and changing its command
-    means. With no operation in hand the line becomes a new one on top. A line
-    still being typed applies nothing. An empty text drops the layer the box is
-    bound to.
+    A line of operations lands on the operation the box is editing — the layer
+    in hand — and rewrites it, kind and all: that is what picking a row and
+    changing its command means. With no operation in hand the line becomes a new
+    one on top. A line of bits names the projection: it takes over the topmost
+    one, or becomes it, whatever the box was editing. A line still being typed
+    applies nothing. An empty text drops the layer the box is bound to.
     """
-    planes = _image(state).planes
     if not text.strip():
-        bound = filter_position(state.layers, planes, layer)
+        bound = filter_position(state.layers, layer)
         return state if bound is None else remove_layer(state, bound)
-    mask = _mask_from_text(state, text)
-    if mask is None:  # not finished: the box keeps the line, the stack keeps its layers
+    parsed = _parsed_line(state, text)
+    if parsed is None:  # not finished: the box keeps the line, the stack keeps its layers
         return state
-    position = filter_position(state.layers, planes, layer)
+    if isinstance(parsed, BitsMask):
+        return set_bits(state, parsed.selection)
+    position = filter_position(state.layers, layer)
     if position is None:
-        return _appended(state, mask)
-    return _remasked(state, position, mask)
+        return _appended(state, parsed)
+    return _remasked(state, position, parsed)
 
 
 def add_mask_text(state: ViewerState, text: str) -> ViewerState:
     """Write the command input's text as a new operation on top, stacking it.
 
     Shift+Enter's line: the operation in hand keeps its command and its place,
-    so a second threshold or a second selection can be added without picking
-    another operation first. A line still being typed, and an empty one, add
-    nothing — there is no operation in them to stack.
+    so a second threshold can be added without picking another operation first.
+    A line of bits still names the projection, which replaces rather than
+    stacks — the view is one thing. A line still being typed, and an empty
+    one, change nothing.
     """
-    mask = _mask_from_text(state, text)
-    return state if mask is None else _appended(state, mask)
+    parsed = _parsed_line(state, text)
+    if parsed is None:
+        return state
+    if isinstance(parsed, BitsMask):
+        return set_bits(state, parsed.selection)
+    return _appended(state, parsed)
 
 
-def _mask_from_text(state: ViewerState, text: str) -> Mask | None:
-    """The mask the line names, or ``None`` while it names none yet.
+def _parsed_line(state: ViewerState, text: str) -> Mask | None:
+    """What the line names, or ``None`` while it names nothing yet.
 
     A mask this image cannot carry — the cat map wants a square — is refused
     here rather than landed as a layer that could only report itself broken.
     """
-    mask = commands.parse(text, _image(state).planes)
-    if mask is None:
+    parsed = commands.parse(text, _image(state).planes)
+    if parsed is None:
         return None
-    if isinstance(mask, ArnoldMask) and (image := _image(state)).width != image.height:
+    if isinstance(parsed, ArnoldMask) and (image := _image(state)).width != image.height:
         raise commands.CommandError(f"猫脸变换要方图：这张是 {image.width}×{image.height}")
-    return mask
+    return parsed
 
 
 def apply_arnold(state: ViewerState, times: int, a: int, b: int) -> ViewerState:
@@ -186,20 +193,16 @@ def apply_arnold(state: ViewerState, times: int, a: int, b: int) -> ViewerState:
     return _remasked(state, position, mask) if position is not None else _appended(state, mask)
 
 
-def select_choices(
-    state: ViewerState,
-    choices: frozenset[BitChoice],
-) -> ViewerState:
-    """Show exactly these bits, the way the scan page and the grid both land.
+def set_bits(state: ViewerState, choices: frozenset[BitChoice]) -> ViewerState:
+    """Make these bits the view: the topmost projection takes them.
 
-    The targeted bits mask is rewritten whole — the sweep's answer replaces
-    whatever it showed — and lands on the same mask the grid edits: the layer in
-    hand when it carries bits, else the topmost one, else a fresh one on top.
+    One projection layer carries the view, so a new answer replaces it and
+    never stacks a tower; with no projection in the stack, the bits become a
+    new layer on top, where they read everything below. The focus rides to the
+    highest bit shown, where the bit keys start.
     """
-    if not choices:
-        return state
-    focus = min(choices, key=lambda choice: (-choice.bit, choice.plane))
-    return replace(_edit_bits(state, None, lambda _current: frozenset(choices)), focus=focus)
+    focus = min(choices, key=lambda choice: (-choice.bit, choice.plane)) if choices else None
+    return _write_bits(state, choices, focus=focus)
 
 
 def _appended(state: ViewerState, mask: Mask) -> ViewerState:
@@ -207,63 +210,52 @@ def _appended(state: ViewerState, mask: Mask) -> ViewerState:
     return replace(state, layers=(*state.layers, Layer(mask)))
 
 
-def toggle_bit(
-    state: ViewerState, plane: str, bit: int, *, layer: int | None = None
-) -> ViewerState:
-    """Switch one bit of one channel on or off in the targeted bits mask."""
+def toggle_bit(state: ViewerState, plane: str, bit: int) -> ViewerState:
+    """Switch one bit of one channel on or off in the projection."""
     choice = _choice(_image(state), plane, bit)
     return _edit_bits(
         state,
-        layer,
         lambda current: current - {choice} if choice in current else current | {choice},
     )
 
 
-def select_only(
-    state: ViewerState, plane: str, bit: int, *, layer: int | None = None
-) -> ViewerState:
+def select_only(state: ViewerState, plane: str, bit: int) -> ViewerState:
     """Show that one bit alone."""
     choice = _choice(_image(state), plane, bit)
-    return replace(_edit_bits(state, layer, lambda _current: frozenset({choice})), focus=choice)
+    return _write_bits(state, frozenset({choice}), focus=choice)
 
 
-def set_channel(
-    state: ViewerState,
-    name: str,
-    *,
-    on: bool,
-    layer: int | None = None,
-) -> ViewerState:
-    """Switch every bit of one channel in the targeted bits mask on or off."""
+def set_channel(state: ViewerState, name: str, *, on: bool) -> ViewerState:
+    """Switch every bit of one channel in the projection on or off."""
     members = _channel_members(_image(state), name)
-    return _edit_bits(state, layer, lambda current: _set_members(current, members, on=on))
+    return _edit_bits(state, lambda current: _set_members(current, members, on=on))
 
 
-def set_column(state: ViewerState, bit: int, *, on: bool, layer: int | None = None) -> ViewerState:
-    """Switch one bit column across every plane in the targeted bits mask on or off."""
+def set_column(state: ViewerState, bit: int, *, on: bool) -> ViewerState:
+    """Switch one bit column across every plane in the projection on or off."""
     members = column_members(_image(state).planes, bit)
-    return _edit_bits(state, layer, lambda current: _set_members(current, members, on=on))
+    return _edit_bits(state, lambda current: _set_members(current, members, on=on))
 
 
-def select_lsbs(state: ViewerState, *, layer: int | None = None) -> ViewerState:
+def select_lsbs(state: ViewerState) -> ViewerState:
     """Show every channel's lowest bit, the way StegSolve opens."""
     image = state.image
     if image is None:
         return state
     chosen = lsb_bits(image.planes)
     focus = state.focus if state.focus is not None else next(iter(chosen), None)
-    return replace(_edit_bits(state, layer, lambda _current: chosen), focus=focus)
+    return _write_bits(state, chosen, focus=focus)
 
 
-def select_all_bits(state: ViewerState, *, layer: int | None = None) -> ViewerState:
-    """Show every bit of every channel again: the image as it was decoded."""
-    image = state.image
-    if image is None:
+def select_all_bits(state: ViewerState) -> ViewerState:
+    """Drop the projection: every bit of every channel again, the decoded image."""
+    position = _topmost(state.layers, BitsMask)
+    if position is None:
         return state
-    return _edit_bits(state, layer, lambda _current: all_bits(image.planes))
+    return replace(state, layers=state.layers[:position] + state.layers[position + 1 :])
 
 
-def step_focus_bit(state: ViewerState, delta: int, *, layer: int | None = None) -> ViewerState:
+def step_focus_bit(state: ViewerState, delta: int) -> ViewerState:
     """Move the one shown bit up or down its channel, stopping at either end."""
     image = state.image
     if image is None:
@@ -271,10 +263,10 @@ def step_focus_bit(state: ViewerState, delta: int, *, layer: int | None = None) 
     focus = state.focus or BitChoice(image.planes[0].name, 0)
     plane = image.plane(focus.plane)
     bit = min(max(focus.bit + delta, 0), plane.bit_depth - 1)
-    return select_only(state, plane.name, bit, layer=layer)
+    return select_only(state, plane.name, bit)
 
 
-def step_plane(state: ViewerState, delta: int, *, layer: int | None = None) -> ViewerState:
+def step_plane(state: ViewerState, delta: int) -> ViewerState:
     """Walk single bit planes in display order: R7 … R0, G7 … G0, B7 … B0.
 
     A step from a wider view enters the ladder at the end the arrow points at,
@@ -285,24 +277,24 @@ def step_plane(state: ViewerState, delta: int, *, layer: int | None = None) -> V
     if image is None or delta == 0:
         return state
     ladder = plane_ladder(grid_planes(image.planes))
-    choice = _single_bit(state, layer)
-    # A mask carried over from another image can show a bit this one has no plane
-    # for; that is no single bit of *this* image, so the step enters at the end the
-    # arrow points at, as a step from a wider view does.
+    choice = _single_bit(state)
+    # A projection carried over from another image can show a bit this one has
+    # no plane for; that is no single bit of *this* image, so the step enters at
+    # the end the arrow points at, as a step from a wider view does.
     if choice is None or choice not in ladder:
         choice = ladder[0] if delta > 0 else ladder[-1]
     else:
         choice = ladder[(ladder.index(choice) + delta) % len(ladder)]
-    return select_only(state, choice.plane, choice.bit, layer=layer)
+    return select_only(state, choice.plane, choice.bit)
 
 
-def step_channel(state: ViewerState, delta: int, *, layer: int | None = None) -> ViewerState:
+def step_channel(state: ViewerState, delta: int) -> ViewerState:
     """Walk whole channels: every bit of R, then G, then B, wrapping around."""
     image = state.image
     if image is None or delta == 0:
         return state
     names = [plane.name for plane in grid_planes(image.planes)]
-    current = current_bits(state, layer)
+    current = current_bits(state)
     # A view that is not already one whole channel starts just off the ladder,
     # so the first step lands on the channel the arrow points at.
     position = next(
@@ -312,20 +304,20 @@ def step_channel(state: ViewerState, delta: int, *, layer: int | None = None) ->
     name = names[(position + delta) % len(names)]
     members = _channel_members(image, name)
     return replace(
-        _edit_bits(state, layer, lambda _current: members),
+        _edit_bits(state, lambda _current: members),
         focus=BitChoice(name, 0),
     )
 
 
-def select_lsb(state: ViewerState, name: str, *, layer: int | None = None) -> ViewerState:
+def select_lsb(state: ViewerState, name: str) -> ViewerState:
     """Show one named channel's lowest bit."""
     image = state.image
     if image is None or plane_or_none(image.planes, name) is None:
         return state
-    return select_only(state, name, 0, layer=layer)
+    return select_only(state, name, 0)
 
 
-def select_lsb_at(state: ViewerState, position: int, *, layer: int | None = None) -> ViewerState:
+def select_lsb_at(state: ViewerState, position: int) -> ViewerState:
     """Show the lowest bit of the plane sitting at ``position`` in the grid order."""
     image = state.image
     if image is None:
@@ -333,26 +325,35 @@ def select_lsb_at(state: ViewerState, position: int, *, layer: int | None = None
     shown = grid_planes(image.planes)
     if not 0 <= position < len(shown):
         return state
-    return select_only(state, shown[position].name, 0, layer=layer)
+    return select_only(state, shown[position].name, 0)
 
 
 def _edit_bits(
     state: ViewerState,
-    layer: int | None,
     update: Callable[[frozenset[BitChoice]], frozenset[BitChoice]],
 ) -> ViewerState:
-    """Rewrite one bits mask's selection; with no mask to write, one is added on top.
+    """Rewrite the projection's bits; the focus stays where the keyboard is."""
+    return _write_bits(state, update(current_bits(state)), focus=None)
 
-    A mask added this way starts from every bit, so an edit that switches one bit
-    off leaves the rest of the picture alone: the shortcuts never narrow the view
-    to a single plane behind the user's back.
+
+def _write_bits(
+    state: ViewerState,
+    choices: frozenset[BitChoice],
+    *,
+    focus: BitChoice | None,
+) -> ViewerState:
+    """Land one projection: the topmost one re-taken, or a new layer on top.
+
+    The rewritten layer switches on as well — the bits are where the user is
+    looking, and a view command that leaves the view switched off says nothing.
     """
-    found = _bits_at(state.layers, layer)
-    if found is None:
-        selection = update(all_bits(_image(state).planes))
-        return replace(state, layers=(*state.layers, Layer(BitsMask(selection))))
-    position, current = found
-    return _remasked(state, position, BitsMask(update(current)))
+    position = _topmost(state.layers, BitsMask)
+    layer = Layer(BitsMask(choices), enabled=True)
+    if position is None:
+        state = replace(state, layers=(*state.layers, layer))
+    else:
+        state = replace(state, layers=_replaced(state.layers, position, layer))
+    return replace(state, focus=focus) if focus is not None else state
 
 
 def _topmost(layers: tuple[Layer, ...], kind: type[Mask]) -> int | None:
@@ -363,86 +364,47 @@ def _topmost(layers: tuple[Layer, ...], kind: type[Mask]) -> int | None:
     )
 
 
-def bits_position(layers: tuple[Layer, ...], layer: int | None = None) -> int | None:
-    """Where the bits mask an edit targets sits: the named one, the topmost, or neither.
+def current_bits(state: ViewerState) -> frozenset[BitChoice]:
+    """What the topmost projection shows; with none, every bit of the image.
 
-    The bit grid and the shortcuts edit the same mask, so they share this rule: the
-    layer in hand when it carries a bits mask, else the topmost one. An index the
-    stack no longer has — or one whose mask is something else — names nothing, so a
-    stale selection falls back rather than failing the edit.
+    The bit grid, the shortcuts, and the extract panel all read the same view,
+    so they share this.
     """
-    named = None if layer is None or not 0 <= layer < len(layers) else layers[layer].mask
-    if isinstance(named, BitsMask):
-        return layer
-    return _topmost(layers, BitsMask)
+    projected = projection_bits(state)
+    if projected is not None:
+        return projected
+    return all_bits(() if state.image is None else state.image.planes)
 
 
-def _bits_at(
-    layers: tuple[Layer, ...],
-    layer: int | None,
-) -> tuple[int, frozenset[BitChoice]] | None:
-    """Where the bits mask an edit targets sits, and what it selects."""
-    position = bits_position(layers, layer)
-    if position is None:
+def projection_bits(state: ViewerState) -> frozenset[BitChoice] | None:
+    """The bits the topmost projection carries, or ``None`` with no projection."""
+    layer = _bits_layer(state)
+    return None if layer is None else layer.selection
+
+
+def _single_bit(state: ViewerState) -> BitChoice | None:
+    """The one bit the projection shows, when it shows exactly one."""
+    layer = _bits_layer(state)
+    if layer is None or len(layer.selection) != 1:
         return None
-    mask = layers[position].mask
-    assert isinstance(mask, BitsMask)  # bits_position only names bits masks
-    return position, mask.selection
+    return next(iter(layer.selection))
 
 
-def current_bits(state: ViewerState, layer: int | None = None) -> frozenset[BitChoice]:
-    """What the bits mask in hand shows; with none in hand, every bit of the image.
-
-    The recipe row, the bit grid, and the shortcuts that walk a channel all read
-    the same mask, so they share this.
-    """
-    image = state.image
-    planes = () if image is None else image.planes
-    found = _bits_at(state.layers, layer)
-    return all_bits(planes) if found is None else found[1]
-
-
-def _single_bit(state: ViewerState, layer: int | None) -> BitChoice | None:
-    """The one plane the targeted mask shows, when it shows exactly one."""
-    found = _bits_at(state.layers, layer)
-    if found is None or len(found[1]) != 1:
-        return None
-    return next(iter(found[1]))
-
-
-def filter_position(
-    layers: tuple[Layer, ...],
-    planes: tuple[SamplePlane, ...],
-    layer: int | None = None,
-) -> int | None:
-    """Where the mask the filter box edits sits: the layer in hand, or nowhere.
-
-    The box edits what it shows, so it takes the layer in hand exactly when that
-    layer's mask has a command line of its own. Only a bits selection with no
-    bits selected — or one carried over from an image with other channels — has
-    none, so over it the box stays empty and writing into it adds a fresh mask
-    on top. An index the stack no longer has names nothing for the same reason.
-    """
-    if (
-        layer is not None
-        and 0 <= layer < len(layers)
-        and commands.text_of(layers[layer].mask, planes) is not None
-    ):
-        return layer
+def _bits_layer(state: ViewerState) -> BitsMask | None:
+    """The topmost projection's mask, or ``None`` when the stack carries none."""
+    for layer in reversed(state.layers):
+        if isinstance(layer.mask, BitsMask):
+            return layer.mask
     return None
 
 
-def bits_shadowed(layers: tuple[Layer, ...], layer: int | None) -> bool:
-    """Whether an enabled bits mask above the one in hand replaces what it picks.
+def filter_position(layers: tuple[Layer, ...], layer: int | None = None) -> int | None:
+    """Where the mask the filter box edits sits: the layer in hand, or nowhere.
 
-    Bits selections are a replacement, so the two panels that report on one — the
-    recipe row and the bit grid — both ask this about the layer they are on.
+    Every mask has a command line of its own now, so an index the stack has is
+    the box's edit target, and one it no longer has names nothing.
     """
-    if layer is None or not 0 <= layer < len(layers):
-        return False
-    if not isinstance(layers[layer].mask, BitsMask):
-        return False
-    return any(above.enabled and isinstance(above.mask, BitsMask) for above in layers[layer + 1 :])
+    return layer if layer is not None and 0 <= layer < len(layers) else None
 
 
 def _layer_at(layers: tuple[Layer, ...], layer: int) -> Layer:

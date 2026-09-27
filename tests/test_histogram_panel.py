@@ -74,11 +74,11 @@ def test_a_recipe_change_recounts_the_canvas(qtbot: QtBot, tmp_path: Path) -> No
     assert after == 0.0  # 10 ^ 0xFF moved every pixel away from 10
 
 
-def test_a_bits_selection_moves_the_census_and_the_columns(qtbot: QtBot, tmp_path: Path) -> None:
-    """The page reads what the canvas paints: bit 0 alone — two values, one column.
+def test_a_projection_moves_the_census_and_the_columns(qtbot: QtBot, tmp_path: Path) -> None:
+    """The page reads the raster's planes: a one-bit projection, one value column.
 
-    The pair test keeps reading the stored values, so the balanced LSB still
-    lands hot in the one column the selection leaves.
+    The projection is in the stack, so the raster carries R alone and the grid
+    shrinks to the bits it has; the balanced LSB still lands hot in that column.
     """
     panel = HistogramPanel()
     qtbot.addWidget(panel)
@@ -88,22 +88,28 @@ def test_a_bits_selection_moves_the_census_and_the_columns(qtbot: QtBot, tmp_pat
     panel.set_source(image, raster(image))
     panel.set_source(image, raster(image, BitsMask(frozenset({BitChoice("R", 0)}))))
     view = panel._chart._planes[0]
-    assert view.top == 1  # the census spans the masked values 0 and 1
+    assert view.top == 1  # the census spans the projected values 0 and 1
     assert ("R", 7) not in panel._cells
     assert ("R", 0) in panel._cells
-    assert ("G", 7) in panel._cells  # planes the selection misses keep their columns
-    assert panel._cells["R", 0].text() == "1.00"
+    assert ("G", 0) not in panel._cells  # planes the projection drops leave the grid
+    assert panel._cells["R", 0].text() == "—"  # one value pair: nothing to test against
 
 
-def test_a_region_change_keeps_the_read(qtbot: QtBot, tmp_path: Path) -> None:
-    """Dimming hides no pixels, so the read stays exactly as it was."""
+def test_a_region_change_recounts_the_pixels_it_kept(qtbot: QtBot, tmp_path: Path) -> None:
+    """A region decides what counts: circle a payload and the read follows it."""
     panel = HistogramPanel()
     qtbot.addWidget(panel)
-    image = _image(tmp_path, np.zeros((8, 8, 3), dtype=np.uint8))
+    pixels = np.zeros((8, 8, 3), dtype=np.uint8)
+    pixels[:2, :2, 0] = 200  # four bright pixels in the corner the region keeps
+    image = _image(tmp_path, pixels)
     panel.set_source(image, raster(image))
     before = panel._chart._planes[0].shape
     panel.set_source(image, raster(image, RegionMask("rect(0, 0, 2, 2)")))
-    assert panel._chart._planes[0].shape is before
+    after = panel._chart._planes[0].shape
+    assert before is not after
+    assert before[0] > 0.0  # the whole canvas counts, zeros included
+    assert after[0] == 0.0  # the dropped pixels no longer count
+    assert after[200] > 0.0  # only the four kept pixels are left
 
 
 def test_no_image_shows_the_note(qtbot: QtBot) -> None:

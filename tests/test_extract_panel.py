@@ -23,7 +23,7 @@ from pixelsb.domain.models import (
     ScanOrder,
     ViewerState,
 )
-from pixelsb.domain.transitions import set_bit_order, set_channel_order, set_scan_order
+from pixelsb.domain.transitions import set_bit_order, set_bits, set_channel_order, set_scan_order
 from pixelsb.io.loading import load_image
 from pixelsb.ui import text, theme
 from pixelsb.ui.extract_panel import ExtractPanel
@@ -32,13 +32,16 @@ from tests.support import board_of, button, make_image
 from tests.support import layers as layers_of
 
 
-def _state(path: Path, *masks: Mask) -> ViewerState:
+def _state(
+    path: Path,
+    *masks: Mask,
+) -> ViewerState:
     return ViewerState(image=load_image(path), layers=layers_of(*masks), zoom=4.0)
 
 
 def _with_bits(state: ViewerState, chosen: set[BitChoice]) -> ViewerState:
-    """The same state with that bit selection added as a mask on top."""
-    return replace(state, layers=(*state.layers, Layer(BitsMask(frozenset(chosen)))))
+    """The same state with that bit selection set as the topmost projection."""
+    return set_bits(state, frozenset(chosen))
 
 
 def _panel(qtbot: QtBot, path: Path) -> ExtractPanel:
@@ -53,8 +56,8 @@ def _panel(qtbot: QtBot, path: Path) -> ExtractPanel:
     return panel
 
 
-def _show(panel: ExtractPanel, state: ViewerState, bits_layer: int | None = None) -> None:
-    panel.set_state(state, board_of(state), bits_layer=bits_layer)
+def _show(panel: ExtractPanel, state: ViewerState) -> None:
+    panel.set_state(state, board_of(state))
 
 
 def _dark_columns(image: QImage, x0: int, x1: int, y0: int, y1: int) -> list[int]:
@@ -219,10 +222,12 @@ def test_note_rows_have_no_offset(qtbot: QtBot, extract_png: Path) -> None:
     assert view.text_pane.toPlainText() == ""
 
 
-def test_an_empty_selection_shows_a_note_without_an_offset(qtbot: QtBot, extract_png: Path) -> None:
+def test_a_stream_with_no_pixels_shows_a_note_without_an_offset(
+    qtbot: QtBot, extract_png: Path
+) -> None:
     panel = ExtractPanel()
     qtbot.addWidget(panel)
-    _show(panel, _state(extract_png, BitsMask(frozenset())))
+    _show(panel, _state(extract_png, RegionMask("left > 100")))
     view = panel._extract_view
     assert view.hex_pane.toPlainText() == "（无数据）"
     assert view.text_pane.toPlainText() == ""
@@ -251,45 +256,20 @@ def test_the_channel_list_holds_only_the_channels_that_carry_bits(
     assert combo.count() == 6
     assert combo.currentText() == "RGB"
     pair = _with_bits(state, {BitChoice("R", 3), BitChoice("B", 0)})
-    _show(panel, pair, bits_layer=len(pair.layers) - 1)
+    _show(panel, pair)
     assert [combo.itemText(index) for index in range(combo.count())] == ["RB", "BR"]
     assert combo.currentText() == "RB"
     single = _with_bits(state, {BitChoice("G", 0)})
-    _show(panel, single, bits_layer=len(single.layers) - 1)
+    _show(panel, single)
     assert [combo.itemText(index) for index in range(combo.count())] == ["G"]
     assert not combo.isEnabled()
 
 
-def test_the_channel_list_follows_the_stream_a_shadowing_mask_packs(
-    qtbot: QtBot, extract_png: Path
-) -> None:
-    """The order row describes the bytes; the mask in hand may not be the one packing.
-
-    Bits selections replace one another, so a mask above the one the grid shows is
-    what the stream reads — the list has to follow that, not the checked boxes.
-    """
-    state = _state(extract_png)
-    layered = replace(
-        state,
-        layers=(
-            Layer(BitsMask(frozenset({BitChoice("R", 0)}))),
-            Layer(BitsMask(frozenset({BitChoice("B", 2)}))),
-        ),
-    )
-    panel = ExtractPanel()
-    qtbot.addWidget(panel)
-    _show(panel, layered, bits_layer=0)  # the one in hand, shadowed by the one above
-    combo = panel._channel_combo
-    assert panel._bits_editor._matrix._boxes[BitChoice("R", 0)].isChecked()  # the grid: in hand
-    assert panel._bits_editor._shadow_note.text() == text.MASK_BITS_SHADOWED
-    assert [combo.itemText(index) for index in range(combo.count())] == ["B"]  # the list: packed
-
-
-def test_the_bit_grid_reads_the_mask_in_hand(qtbot: QtBot, extract_png: Path) -> None:
+def test_the_bit_grid_reads_the_projection(qtbot: QtBot, extract_png: Path) -> None:
     chosen = frozenset({BitChoice("R", 3), BitChoice("B", 0)})
     panel = ExtractPanel()
     qtbot.addWidget(panel)
-    _show(panel, _state(extract_png, BitsMask(chosen)), bits_layer=0)
+    _show(panel, _state(extract_png, BitsMask(chosen)))
     matrix = panel._bits_editor._matrix
     assert matrix._boxes[BitChoice("R", 3)].isChecked()
     assert matrix._boxes[BitChoice("B", 0)].isChecked()
@@ -303,63 +283,34 @@ def test_the_grid_shows_every_bit_without_a_bits_mask(qtbot: QtBot, extract_png:
     assert all(box.isChecked() for box in panel._bits_editor._matrix._boxes.values())
 
 
-def test_the_grid_and_the_presets_speak_for_the_mask_in_hand(
+def test_the_grid_and_the_presets_report_the_edit_they_want(
     qtbot: QtBot, extract_png: Path
 ) -> None:
     panel = ExtractPanel()
     qtbot.addWidget(panel)
-    _show(panel, _state(extract_png, BitsMask(frozenset({BitChoice("R", 0)}))), bits_layer=0)
+    _show(panel, _state(extract_png, BitsMask(frozenset({BitChoice("R", 0)}))))
     asked: list[tuple[object, ...]] = []
     panel.bit_clicked.connect(lambda *args: asked.append(args))
-    panel.original_requested.connect(lambda layer: asked.append(("all", layer)))
-    panel.lsbs_requested.connect(lambda layer: asked.append(("lsbs", layer)))
-    panel.plane_step.connect(lambda layer, delta: asked.append(("plane", layer, delta)))
+    panel.original_requested.connect(lambda: asked.append(("all",)))
+    panel.lsbs_requested.connect(lambda: asked.append(("lsbs",)))
+    panel.plane_step.connect(lambda delta: asked.append(("plane", delta)))
     panel._bits_editor._matrix.bit_clicked.emit("G", 2, True)
     panel._bits_editor.original_button.click()
     panel._bits_editor.lsbs_button.click()
     panel._bits_editor.plane_next.click()
-    assert asked == [(0, "G", 2, True), ("all", 0), ("lsbs", 0), ("plane", 0, 1)]
-
-
-def test_the_grid_says_when_the_mask_in_hand_is_shadowed(qtbot: QtBot, extract_png: Path) -> None:
-    panel = ExtractPanel()
-    qtbot.addWidget(panel)
-    state = _state(
-        extract_png,
-        BitsMask(frozenset({BitChoice("R", 0)})),
-        BitsMask(frozenset({BitChoice("G", 0)})),
-    )
-    _show(panel, state, bits_layer=0)
-    assert not panel._bits_editor._shadow_note.isHidden()
-    assert panel._bits_editor._shadow_note.text() == text.MASK_BITS_SHADOWED
-    _show(panel, state, bits_layer=1)
-    assert panel._bits_editor._shadow_note.isHidden()
-
-
-def test_a_switched_off_bits_mask_shadows_nothing(qtbot: QtBot, extract_png: Path) -> None:
-    state = replace(
-        _state(extract_png, BitsMask(frozenset({BitChoice("R", 0)}))),
-        layers=(
-            Layer(BitsMask(frozenset({BitChoice("R", 0)}))),
-            Layer(BitsMask(frozenset({BitChoice("G", 0)})), enabled=False),
-        ),
-    )
-    panel = ExtractPanel()
-    qtbot.addWidget(panel)
-    _show(panel, state, bits_layer=0)
-    assert panel._bits_editor._shadow_note.isHidden()
+    assert asked == [("G", 2, True), ("all",), ("lsbs",), ("plane", 1)]
 
 
 def test_a_deep_channel_keeps_its_grid_wide_enough_for_every_bit(qtbot: QtBot) -> None:
     """Sixteen columns do not fit the panel: the grid scrolls rather than squeezing."""
     planes = (SamplePlane("L", 0, 16, SampleOrigin.RAW),)
     image = make_image(np.zeros((2, 2, 1), dtype=np.uint16), planes)
-    state = ViewerState(image=image, layers=layers_of(BitsMask(frozenset({BitChoice("L", 0)}))))
+    state = set_bits(ViewerState(image=image), frozenset({BitChoice("L", 0)}))
     panel = ExtractPanel()
     qtbot.addWidget(panel)
     panel.resize(640, 700)
     panel.show()
-    _show(panel, state, bits_layer=0)
+    _show(panel, state)
     matrix = panel._bits_editor._matrix
     assert sorted(choice.bit for choice in matrix._boxes) == list(range(16))
     assert matrix.width() >= matrix.minimumSizeHint().width()
