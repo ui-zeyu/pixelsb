@@ -40,6 +40,7 @@ from pixelsb.domain.models import (
 )
 from pixelsb.domain.predicate import PredicateError, compile_filter
 from pixelsb.domain.selection import bits_for
+from pixelsb.domain.spectrum import log_magnitude
 
 # Rec. 709 luma weights, scaled into integer arithmetic.
 _LUMA = np.array([2126, 7152, 722], dtype=np.uint32)
@@ -216,15 +217,11 @@ def _packed(channel: NDArray, bits: tuple[int, ...]) -> NDArray:
 def _spectrum(raster: Raster, planes: tuple[str, ...] | None) -> SampleArray:
     """The named channels, each as its log-magnitude spectrum.
 
-    The logarithm goes twice: once because the spectrum's dynamic range is far
-    past what 16 bits would show linearly, and again because the DC peak — the
-    whole picture's average brightness — would otherwise eat the range and
-    leave everything but the center dot in the dark. Each channel stretches to
-    its own maximum, so a faint watermark shows as well in blue as in red.
-
-    ``None`` names the color trio and gray, whatever of them the image has —
-    alpha never takes part by default, since its spectrum is a near-dark
-    picture. A channel the mask does not name keeps its samples.
+    Each channel stretches to its own maximum, so a faint watermark shows as
+    well in blue as in red. ``None`` names the color trio and gray, whatever
+    of them the image has — alpha never takes part by default, since its
+    spectrum is a near-dark picture. A channel the mask does not name keeps
+    its samples.
     """
     if planes is None:
         names = (*COLOR_SLOTS, *GRAY_SLOTS)
@@ -240,8 +237,7 @@ def _spectrum(raster: Raster, planes: tuple[str, ...] | None) -> SampleArray:
     for index, plane in enumerate(raster.planes):
         if plane.name not in wanted:
             continue
-        magnitude = np.abs(np.fft.fft2(raster.samples[:, :, index].astype(np.float64)))
-        view = np.log1p(np.log1p(np.fft.fftshift(magnitude)))
+        view = log_magnitude(raster.samples[:, :, index])
         peak = float(view.max())
         out[:, :, index] = (
             np.rint(view * (plane.maximum / peak)).astype(np.uint16) if peak > 0.0 else 0

@@ -430,15 +430,15 @@ class MainWindow(QMainWindow):
         self.arnold_panel.picked.connect(self._on_arnold_picked)
         self.histogram_panel = HistogramPanel()
         self._panels = SidePanels()
+        self._panels.add(Panel.INFO, text.PANEL_INFO, text.PANEL_INFO_TIP, self.info_panel)
+        self._panels.add(
+            Panel.HISTOGRAM, text.PANEL_HISTOGRAM, text.PANEL_HISTOGRAM_TIP, self.histogram_panel
+        )
         self._panels.add(
             Panel.EXTRACT, text.PANEL_EXTRACT, text.PANEL_EXTRACT_TIP, self.extract_panel
         )
         self._panels.add(Panel.SCAN, text.PANEL_SCAN, text.PANEL_SCAN_TIP, self.scan_panel)
         self._panels.add(Panel.ARNOLD, text.PANEL_ARNOLD, text.PANEL_ARNOLD_TIP, self.arnold_panel)
-        self._panels.add(
-            Panel.HISTOGRAM, text.PANEL_HISTOGRAM, text.PANEL_HISTOGRAM_TIP, self.histogram_panel
-        )
-        self._panels.add(Panel.INFO, text.PANEL_INFO, text.PANEL_INFO_TIP, self.info_panel)
 
         left = QScrollArea()
         left.setObjectName("layerArea")

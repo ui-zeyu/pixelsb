@@ -1072,7 +1072,8 @@ def test_the_file_info_menu_raises_the_info_page(qtbot: QtBot, rgb_png: Path) ->
     qtbot.addWidget(window)
     window.show()
     window.open_path(rgb_png)
-    assert window._panels.current is Panel.EXTRACT  # the extract page leads the rail
+    assert window._panels.current is Panel.INFO  # the info page leads the rail
+    window._panels.set_current(Panel.EXTRACT)
     window._show_info()
     assert window._panels.current is Panel.INFO
     assert window.info_panel.isVisible()
@@ -1086,11 +1087,11 @@ def test_the_command_digits_raise_their_page(qtbot: QtBot, rgb_png: Path) -> Non
     window.show()
     window.open_path(rgb_png)
     pages = (
-        (Qt.Key.Key_1, Panel.EXTRACT),
-        (Qt.Key.Key_2, Panel.SCAN),
-        (Qt.Key.Key_3, Panel.ARNOLD),
-        (Qt.Key.Key_4, Panel.HISTOGRAM),
-        (Qt.Key.Key_5, Panel.INFO),
+        (Qt.Key.Key_1, Panel.INFO),
+        (Qt.Key.Key_2, Panel.HISTOGRAM),
+        (Qt.Key.Key_3, Panel.EXTRACT),
+        (Qt.Key.Key_4, Panel.SCAN),
+        (Qt.Key.Key_5, Panel.ARNOLD),
     )
     for key, panel in pages:
         qtbot.keyClick(window, key, Qt.KeyboardModifier.ControlModifier)

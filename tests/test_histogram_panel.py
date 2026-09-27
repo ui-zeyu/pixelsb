@@ -26,6 +26,21 @@ def test_the_page_counts_the_canvas_channels(qtbot: QtBot, tmp_path: Path) -> No
     assert not panel._grid_host.isHidden()
 
 
+def test_the_spectrum_waits_for_the_page_then_reads_the_raster(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """An FFT per change is real money: a hidden page draws none, a shown one does."""
+    panel = HistogramPanel()
+    qtbot.addWidget(panel)
+    image = _image(tmp_path, np.zeros((4, 4, 3), dtype=np.uint8))
+    panel.set_source(image, raster(image))
+    assert panel._spectrum._image is None  # hidden, so no FFT yet
+    panel.show()
+    assert panel._spectrum._image is not None
+    assert panel._spectrum._image.width() == 4
+    assert panel._spectrum.isVisible()
+
+
 def test_a_written_bit_reads_hot_and_a_plain_one_stays_cold(qtbot: QtBot, tmp_path: Path) -> None:
     """A random LSB flattens the value pairs: that bit's cell takes the warning tint.
 
@@ -119,3 +134,26 @@ def test_no_image_shows_the_note(qtbot: QtBot) -> None:
     panel.set_source(None, None)
     assert panel._empty.isVisible()
     assert panel._chart._planes == ()
+
+
+def test_the_spectrum_follows_the_stack_the_page_reads(qtbot: QtBot, tmp_path: Path) -> None:
+    """The spectrum is the fft of the raster in hand, so a projection moves it.
+
+    Choosing another plane or bit is the stack's own job: the projection packs
+    R bit 0 into a plane of its own, and the spectrum redraws from that.
+    """
+    panel = HistogramPanel()
+    qtbot.addWidget(panel)
+    panel.show()
+    pixels = np.zeros((8, 8, 3), dtype=np.uint8)
+    pixels[..., 0] = 0b10  # R carries bit 1 only; its spectrum lands in the red slot
+    image = _image(tmp_path, pixels)
+    panel.set_source(image, raster(image))
+    before = panel._spectrum._rgb
+    assert before is not None
+    assert float(before.max()) > 0.0
+    assert before[:, :, 1].max() == 0  # G is a constant plane, so its slot stays dark
+    panel.set_source(image, raster(image, BitsMask(frozenset({BitChoice("R", 0)}))))
+    after = panel._spectrum._rgb
+    assert after is not None
+    assert float(after.max()) == 0.0  # the projection's bit plane is all zeros

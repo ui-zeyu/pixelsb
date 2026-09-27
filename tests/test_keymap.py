@@ -31,11 +31,11 @@ def test_the_copy_chord_takes_either_command_key() -> None:
 
 def test_the_command_digits_raise_their_page() -> None:
     pages = {
-        Qt.Key.Key_1: Panel.EXTRACT,
-        Qt.Key.Key_2: Panel.SCAN,
-        Qt.Key.Key_3: Panel.ARNOLD,
-        Qt.Key.Key_4: Panel.HISTOGRAM,
-        Qt.Key.Key_5: Panel.INFO,
+        Qt.Key.Key_1: Panel.INFO,
+        Qt.Key.Key_2: Panel.HISTOGRAM,
+        Qt.Key.Key_3: Panel.EXTRACT,
+        Qt.Key.Key_4: Panel.SCAN,
+        Qt.Key.Key_5: Panel.ARNOLD,
     }
     for key, panel in pages.items():
         assert command(key, Qt.KeyboardModifier.ControlModifier) == keymap.Page(panel)

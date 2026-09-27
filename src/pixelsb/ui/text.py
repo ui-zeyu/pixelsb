@@ -40,16 +40,16 @@ HELP_MENU = "帮助"
 OPEN = "打开…"
 QUIT = "退出"
 FILE_INFO = "文件信息"
-PANEL_EXTRACT = "▦"
+PANEL_EXTRACT = "📤"
 PANEL_EXTRACT_TIP = "提取"
-PANEL_INFO = "ⓘ"
+PANEL_INFO = "ℹ️"
 PANEL_INFO_TIP = "文件信息"
-PANEL_SCAN = "⌕"
+PANEL_SCAN = "🔍"
 PANEL_SCAN_TIP = "扫描"
-PANEL_ARNOLD = "猫"
+PANEL_ARNOLD = "🐱"
 PANEL_ARNOLD_TIP = "猫脸变换爆破"
-PANEL_HISTOGRAM = "▥"
-PANEL_HISTOGRAM_TIP = "直方图与卡方"
+PANEL_HISTOGRAM = "📊"
+PANEL_HISTOGRAM_TIP = "直方图 · 卡方 · 频谱"
 SHORTCUTS = "快捷键"
 COMMAND_HELP_TITLE = "命令语法"
 ORIGINAL = "原图"
@@ -253,7 +253,7 @@ R G B A L    画面只看该通道的最低位
 1–9    按顺序只看该通道的最低位
 F    切换进制
 ⌘F    命令输入：b.0、thr 128、xor 0xFF、区域表达式
-⌘1–⌘5    切换右侧栏页面：提取 / 扫描 / 猫 / 直方图 / 文件信息
+⌘1–⌘5    切换右侧栏页面：文件信息 / 直方图 / 提取 / 扫描 / 猫
 ⌘C    复制读数"""
 
 ORIGIN_LABEL = {
@@ -517,8 +517,13 @@ SECTION_SWEEP = "扫描"
 SECTION_ARNOLD = "猫脸变换"
 SECTION_HISTOGRAM = "直方图"
 SECTION_CHI2 = "卡方"
+SECTION_SPECTRUM = "频谱"
 HISTOGRAM_TIP = "读栈所留的样本：投影的打包也算在内，区域只数留下的像素——圈一块载荷，分布跟着变"
 CHI2_TIP = "样本值上的值对检验：p 接近 1 说明这一位像被按位写入过；人口同样是区域留下的像素"
+SPECTRUM_TIP = (
+    "当前操作结果的频谱：颜色各通道进各自的色槽、灰度铺满三槽，直流居中；"
+    "边长超过 512 取中间 512 参与"
+)
 SWEEP_START = "开始扫描"
 SWEEP_STOP = "停止"
 SWEEP_COLUMNS = ("命令", "顺序", "预览", "结果")

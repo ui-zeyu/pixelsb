@@ -1,11 +1,16 @@
-"""The histogram page: every channel's value census, and the chi-square read.
+"""The histogram page: every channel's value census, the chi-square read, and
+the spectrum of the raster they read.
 
 The chart draws the planes the raster carries — the values the stack leaves,
 a projection's packing included, a crop already taken away — overlaid in one
 log-scaled plot, where the shapes a stego tool leaves are spiky pairs and
 missing values rather than a smooth hill. Under it, one chi-square row per
 channel: the p of the value-pair test per shown bit, warning-tinted when a bit
-reads as written.
+reads as written. Last, the spectrum of that same raster: the color planes in
+their own hues, gray across all three, DC centered — a periodic write on a bit
+plane shows there as stripes nothing else on the page would catch. Feeding it
+another plane or bit is the stack's own job: select the bits, and the whole
+page follows.
 """
 
 from dataclasses import dataclass
@@ -14,17 +19,31 @@ from typing import override
 import numpy as np
 from numpy.typing import NDArray
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QFontMetricsF, QPainter, QPaintEvent, QPen, QPolygonF
+from PySide6.QtGui import (
+    QColor,
+    QFontMetricsF,
+    QImage,
+    QPainter,
+    QPaintEvent,
+    QPen,
+    QPolygonF,
+    QResizeEvent,
+    QShowEvent,
+)
 from PySide6.QtWidgets import QGridLayout, QLabel, QVBoxLayout, QWidget
 
 from pixelsb.domain import histogram
 from pixelsb.domain.models import LoadedImage, Raster, SampleArray, SamplePlane
+from pixelsb.domain.spectrum import log_magnitude
 from pixelsb.ui import text, theme
 from pixelsb.ui.controls import drain, section_title
 from pixelsb.ui.extract_view import dump_font
 
 _BINS = 256  # display buckets; a 16-bit plane's 65536 counts fold into them
 _CHART_HEIGHT = 170
+_SPECTRUM_MIN_HEIGHT = 120
+_SPECTRUM_MAX_HEIGHT = 480
+_SPECTRUM_MAX = 512  # the FFT input's longest side; the middle, when larger
 _PAD_LEFT, _PAD_TOP, _PAD_RIGHT, _PAD_BOTTOM = 34.0, 10.0, 10.0, 16.0
 
 _PLANE_COLORS = {
@@ -189,6 +208,97 @@ class _Chart(QWidget):
             x -= 6.0
 
 
+def _capped(data: NDArray[np.uint16]) -> NDArray[np.uint16]:
+    """The middle of a plane too big for a snappy FFT; small planes go whole."""
+    height, width = data.shape
+    if height <= _SPECTRUM_MAX and width <= _SPECTRUM_MAX:
+        return data
+    kept_height = min(height, _SPECTRUM_MAX)
+    kept_width = min(width, _SPECTRUM_MAX)
+    top = (height - kept_height) // 2
+    left = (width - kept_width) // 2
+    return data[top : top + kept_height, left : left + kept_width]
+
+
+def _spectrum_picture(raster: Raster) -> NDArray[np.uint8]:
+    """The raster's spectrum as one picture, the way the fft command treats it.
+
+    The color planes land in their own slots and gray fills all three; alpha
+    never takes part, since its spectrum is a near-dark picture. Each plane
+    stretches to its own peak, so a faint watermark shows as well in blue as
+    in red.
+    """
+    slots = {plane.name: plane.index for plane in raster.planes}
+    names = [name for name in ("R", "G", "B") if name in slots] or (["L"] if "L" in slots else [])
+    height, width = _capped(raster.samples[:, :, next(iter(slots.values()))]).shape
+    picture = np.zeros((height, width, 3), np.uint8)
+    for name in names:
+        view = log_magnitude(_capped(raster.samples[:, :, slots[name]]))
+        peak = float(view.max())
+        if peak <= 0.0:
+            continue
+        channel = (view * (255.0 / peak)).astype(np.uint8)
+        if name == "L":
+            picture[:, :] = channel[:, :, None]
+        else:
+            picture[:, :, ("R", "G", "B").index(name)] = channel
+    return picture
+
+
+class _Spectrum(QWidget):
+    """The raster's spectrum as one picture, stretched to the page's width."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._rgb: NDArray[np.uint8] | None = None  # keeps the bytes the QImage points at
+        self._image: QImage | None = None
+        self.setMinimumHeight(_SPECTRUM_MIN_HEIGHT)
+
+    def set_picture(self, picture: NDArray[np.uint8]) -> None:
+        self._rgb = picture
+        height, width = picture.shape[:2]
+        self._image = QImage(self._rgb.data, width, height, width * 3, QImage.Format.Format_RGB888)
+        self._fit()
+        self.update()
+
+    def clear(self) -> None:
+        self._rgb = None
+        self._image = None
+        self.setMinimumHeight(_SPECTRUM_MIN_HEIGHT)
+        self.update()
+
+    def _fit(self) -> None:
+        """Use the page's whole width; only a very tall picture is capped."""
+        if self._image is None:
+            return
+        wanted = round(self.width() * self._image.height() / self._image.width())
+        self.setFixedHeight(min(max(wanted, _SPECTRUM_MIN_HEIGHT), _SPECTRUM_MAX_HEIGHT))
+
+    @override
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self._fit()
+
+    @override
+    def paintEvent(self, event: QPaintEvent) -> None:
+        painter = QPainter(self)
+        try:
+            painter.fillRect(self.rect(), QColor(theme.FIELD))
+            if self._image is not None:
+                scaled = self._image.scaled(
+                    self.size(),
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                painter.drawImage(
+                    (self.width() - scaled.width()) // 2,
+                    (self.height() - scaled.height()) // 2,
+                    scaled,
+                )
+        finally:
+            painter.end()
+
+
 class HistogramPanel(QWidget):
     """One sidebar page: the canvas's value histograms and the pair test."""
 
@@ -199,6 +309,7 @@ class HistogramPanel(QWidget):
         self._samples: SampleArray | None = None  # identity: what the numbers were read from
         self._live: NDArray[np.bool_] | None = None  # and which pixels they were read from
         self._signature: tuple[tuple[str, int, tuple[int, ...]], ...] = ()
+        self._spectrum_for: tuple[SampleArray, NDArray[np.bool_] | None] | None = None
         self._cells: dict[tuple[str, int], QLabel] = {}
         self._chart = _Chart()
         self._chart.setToolTip(text.HISTOGRAM_TIP)
@@ -209,6 +320,8 @@ class HistogramPanel(QWidget):
         self._grid.setContentsMargins(0, 0, 0, 0)
         self._grid.setHorizontalSpacing(8)
         self._grid.setVerticalSpacing(4)
+        self._spectrum = _Spectrum()
+        self._spectrum.setToolTip(text.SPECTRUM_TIP)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(8)
@@ -217,8 +330,15 @@ class HistogramPanel(QWidget):
         layout.addWidget(section_title(text.SECTION_CHI2))
         self._grid_host.setToolTip(text.CHI2_TIP)
         layout.addWidget(self._grid_host)
+        layout.addWidget(section_title(text.SECTION_SPECTRUM))
+        layout.addWidget(self._spectrum)
         layout.addWidget(self._empty)
         layout.addStretch(1)
+
+    @override
+    def showEvent(self, event: QShowEvent) -> None:
+        super().showEvent(event)
+        self._refresh_spectrum()  # a change while hidden left the spectrum stale
 
     def set_source(self, image: LoadedImage | None, raster: Raster | None) -> None:
         """Point the page at the canvas's picture; it recomputes when the view moves.
@@ -258,6 +378,30 @@ class HistogramPanel(QWidget):
         self._chart.set_planes(series)
         self._update_cells(rows)
         self._empty.setVisible(raster is None or not series)
+        self._refresh_spectrum()
+
+    def _refresh_spectrum(self) -> None:
+        """The spectrum of the raster in hand, when the page can see it.
+
+        An FFT per change is real money, so the page computes one only while
+        shown, and only for a raster it has not drawn yet. The region's faded
+        pixels take part: a spectrum needs the whole grid, and the canvas
+        draws them too.
+        """
+        raster = self._raster
+        if raster is None or raster.width == 0 or raster.height == 0:
+            self._spectrum.setVisible(False)
+            self._spectrum.clear()
+            return
+        self._spectrum.setVisible(True)
+        if not self.isVisible():
+            return
+        done = self._spectrum_for
+        samples, live = raster.samples, raster.live
+        if done is not None and done[0] is samples and done[1] is live:
+            return
+        self._spectrum_for = (samples, live)
+        self._spectrum.set_picture(_spectrum_picture(raster))
 
     def _build_grid(self, raster: Raster | None, planes: tuple[SamplePlane, ...]) -> None:
         """One row per plane; the columns sit at the bits the rows actually read."""

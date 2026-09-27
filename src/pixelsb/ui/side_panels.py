@@ -22,11 +22,11 @@ _RAIL_MARGIN = 6
 class Panel(StrEnum):
     """The pages the rail switches between, in rail order."""
 
+    INFO = "info"
+    HISTOGRAM = "histogram"
     EXTRACT = "extract"
     SCAN = "scan"
     ARNOLD = "arnold"
-    HISTOGRAM = "histogram"
-    INFO = "info"
 
 
 class SidePanels(QWidget):

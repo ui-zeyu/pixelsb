@@ -32,11 +32,11 @@ _ARROW_STEPS = {
 _FOCUS_BIT_KEYS = {Qt.Key.Key_BracketLeft: -1, Qt.Key.Key_BracketRight: 1}
 _ZOOM_KEYS = {Qt.Key.Key_Plus: 1, Qt.Key.Key_Equal: 1, Qt.Key.Key_Minus: -1}
 _PAGE_KEYS = {
-    Qt.Key.Key_1: Panel.EXTRACT,
-    Qt.Key.Key_2: Panel.SCAN,
-    Qt.Key.Key_3: Panel.ARNOLD,
-    Qt.Key.Key_4: Panel.HISTOGRAM,
-    Qt.Key.Key_5: Panel.INFO,
+    Qt.Key.Key_1: Panel.INFO,
+    Qt.Key.Key_2: Panel.HISTOGRAM,
+    Qt.Key.Key_3: Panel.EXTRACT,
+    Qt.Key.Key_4: Panel.SCAN,
+    Qt.Key.Key_5: Panel.ARNOLD,
 }
 _CHANNEL_LETTERS = ("R", "G", "B", "A", "L")
 _ORDERED_LETTERS = tuple(str(index) for index in range(1, 10))

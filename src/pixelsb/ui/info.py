@@ -55,8 +55,8 @@ class InfoPanel(QWidget):
     list: a radio picks the block whose full chunk dumps below in the extract
     view's style, clicking a block name renders its whole stream as pixels,
     and a smuggled stream gets buttons for the geometries its own bytes
-    imply), and EXIF. The census reads the whole file, so it runs once per
-    file and waits for the page; rendering a block swaps the canvas image but
+    imply), and EXIF. The page leads the rail, and the census reads the whole
+    file once per it; rendering a block swaps the canvas image but
     not the file being described, so the list, the selection, and the marks
     all stay.
     """
@@ -194,14 +194,34 @@ class InfoPanel(QWidget):
         self._planes.setText(text.planes_text(image))
         try:
             self._file_data = image.path.read_bytes()
+            report: ContainerReport | None = inspect_container(image.path)
         except OSError:
+            # Pixels with no file behind them — a picked candidate, a canvas
+            # render — leave the census, the frames, and the EXIF empty.
             self._file_data = b""
-        self._render_census(inspect_container(image.path))
+            report = None
+        self._render_census(report)
         self._show_frames()
         self._show_exif(exif_entries(image.path))
 
-    def _render_census(self, report: ContainerReport) -> None:
-        """A clean file says nothing; the blocks and their dump speak for it."""
+    def _render_census(self, report: ContainerReport | None) -> None:
+        """A clean file says nothing; the blocks and their dump speak for it.
+
+        ``None`` is no file to describe: the section empties instead of
+        failing on the read.
+        """
+        if report is None:
+            self._report = None
+            self._selected = None
+            self._canvas_row = None
+            self._warn.setVisible(False)
+            self._hits.setVisible(False)
+            self._canvas_note.setText(text.original_note())
+            self._show_stream_sizes(None)
+            self._show_blocks()
+            self._show_dump()
+            self._show_sizes()
+            return
         lines = text.finding_lines(report)
         self._warn.setVisible(bool(lines))
         self._warn.setText("\n".join(f"{text.WARNING_MARK} {line}" for line in lines))

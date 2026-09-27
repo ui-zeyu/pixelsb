@@ -93,6 +93,22 @@ def test_the_scan_waits_until_the_page_is_seen(qtbot: QtBot, tmp_path: Path) -> 
     assert text.INFO_NO_EXIF in _label_texts(panel)
 
 
+def test_pixels_without_a_file_leave_the_census_empty(qtbot: QtBot, tmp_path: Path) -> None:
+    """A canvas-only image — a picked candidate, a block render — has no bytes
+    behind it; the page keeps its name lines and says nothing about a file."""
+    panel = InfoPanel()
+    qtbot.addWidget(panel)
+    panel.show()
+    panel.set_image(image_from_pixels(tmp_path / "missing.png", np.zeros((2, 2, 3), np.uint8)))
+    assert panel._name.text() == "missing.png"
+    assert panel._file_data == b""
+    assert panel._report is None
+    assert panel._warn.isHidden()
+    assert panel._hits.isHidden()
+    assert panel._name_buttons == {}
+    assert panel._canvas_note.text() == text.original_note()
+
+
 def test_a_clean_file_stays_silent(qtbot: QtBot, tmp_path: Path) -> None:
     """No findings, no words: the block list and the canvas note are the report."""
     panel = _panel(qtbot, _png(tmp_path))
