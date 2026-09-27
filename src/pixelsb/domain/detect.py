@@ -1,6 +1,6 @@
 """Patterns worth flagging inside an extracted byte stream."""
 
-import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 from itertools import islice
 
@@ -17,17 +17,20 @@ _MAGIC: tuple[tuple[str, bytes], ...] = (
     ("GZIP", b"\x1f\x8b"),
     ("ELF", b"\x7fELF"),
 )
-# flag{...}, ctf{...}, and the competition-prefixed spellings (DASCTF{...} and
-# friends all carry "ctf" or "flag" inside the word). A bytes pattern keeps the
-# scan ASCII-only, which is what a flag in a binary stream is.
-_FLAG = re.compile(rb"\w*(?:flag|ctf)\w*\{[^}\n\r]{1,100}\}", re.IGNORECASE)
-_CHIP_LABEL = 20
+# The keywords every flag format spells: flag, ctf, key, password, secret, read
+# case-insensitively (the competition prefixes DASCTF{...} and friends carry
+# "ctf" inside the word). Finding the keyword is all the scan promises — telling
+# a real flag from a chance run of letters is the user's next step. Plain
+# ``find`` is also what keeps the sweep fast: a regex over the whole stream once
+# backtracked itself quadratic on a constant letter run, which is exactly what
+# a constant bit plane extracts to, and froze sweeps on a single candidate.
+_KEYWORDS = (b"flag", b"ctf", b"key", b"password", b"secret")
 MAX_DETECTIONS = 128
 
 
 @dataclass(frozen=True, slots=True)
 class Detection:
-    """One find: a file signature or a flag-shaped run, at its stream offset.
+    """One find: a file signature or a keyword hit, at its stream offset.
 
     ``label`` is what the chip says and is empty for a mark the dump only
     tints — a chunk's own header or CRC, which is a span rather than a find.
@@ -44,7 +47,7 @@ class Detection:
 
 
 def detect_patterns(data: bytes) -> tuple[Detection, ...]:
-    """Every magic header and flag-shaped string in the stream, in stream order.
+    """Every magic header and keyword hit in the stream, in stream order.
 
     The count is capped, so a pathological stream cannot flood the panel; the
     chips and the row highlights both come straight from this tuple.
@@ -52,23 +55,29 @@ def detect_patterns(data: bytes) -> tuple[Detection, ...]:
     magic = (
         Detection(offset, label, len(phrase))
         for label, phrase in _MAGIC
-        for offset in _hits(data, phrase)
+        for offset in _occurrences(data, phrase)
     )
-    flags = (
-        Detection(match.start(), _flag_label(match.group()), len(match.group()), flagged=True)
-        for match in _FLAG.finditer(data)
+    found = sorted(
+        (*magic, *_keywords(data)), key=lambda finding: (finding.offset, finding.flagged)
     )
-    found = sorted((*magic, *flags), key=lambda finding: (finding.offset, finding.flagged))
     return tuple(islice(found, MAX_DETECTIONS))
 
 
-def _hits(data: bytes, phrase: bytes) -> list[int]:
-    positions, start = [], 0
+def _keywords(data: bytes) -> Iterator[Detection]:
+    """Every keyword occurrence, case-insensitively, as a flagged detection."""
+    lowered = data.lower()
+    for word in _KEYWORDS:
+        for hit in _occurrences(lowered, word):
+            yield Detection(hit, _chip_text(data[hit : hit + len(word)]), len(word), flagged=True)
+
+
+def _occurrences(data: bytes, phrase: bytes) -> Iterator[int]:
+    """Where ``phrase`` sits in ``data``, every occurrence, left to right."""
+    start = 0
     while (hit := data.find(phrase, start)) != -1:
-        positions.append(hit)
+        yield hit
         start = hit + 1
-    return positions
 
 
-def _flag_label(flag: bytes) -> str:
-    return clip(flag.decode("ascii", "replace"), _CHIP_LABEL)
+def _chip_text(phrase: bytes) -> str:
+    return clip(phrase.decode("ascii", "replace"), 20)

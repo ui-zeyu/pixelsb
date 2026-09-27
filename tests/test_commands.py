@@ -4,6 +4,7 @@ import pytest
 
 from pixelsb.domain import commands
 from pixelsb.domain.models import (
+    ARNOLD_PARAM_LIMIT,
     ArnoldMask,
     BitChoice,
     BitsMask,
@@ -149,7 +150,6 @@ def test_a_half_typed_line_names_no_operation() -> None:
         ("thr 99999999", "超出"),
         ("xor", "需要一个数值"),
         ("inv 3", "不需要参数"),
-        ("crop 2", "不需要参数"),
         ("b.9", "只有 8 位"),
         ("x.0", "没有 x 这样的通道"),
         ("x", "没有 x 这样的通道"),
@@ -242,11 +242,10 @@ def test_the_cat_maps_line_takes_three_integers() -> None:
         ("arnold", "需要三个整数"),
         ("arnold 1 2", "收到 2 个"),
         ("arnold 1 2 3 4", "单独一行"),
-        ("arnold 0 1 2", "次数要在 1..4096"),
-        ("arnold 4097 1 2", "次数要在 1..4096"),
+        ("arnold 0 1 2", f"次数要在 1..{ARNOLD_PARAM_LIMIT}"),
+        (f"arnold {ARNOLD_PARAM_LIMIT + 1} 1 2", f"次数要在 1..{ARNOLD_PARAM_LIMIT}"),
         ("arnold 1 x 2", "整数看不懂"),
         ("arnold 1 0x100000000 2", "±2147483647"),
-        ("fft 3", "不需要参数"),
     ],
 )
 def test_a_broken_verb_line_says_what_is_wrong(text: str, message: str) -> None:

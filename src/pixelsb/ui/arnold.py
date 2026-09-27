@@ -1,24 +1,28 @@
-"""The cat-map brute force, as a sidebar page: thumbnails sorted by plausibility.
+"""The cat-map brute force, as a sidebar page: thumbnails, seated as they arrive.
 
 A scrambled picture is judged by eye, so the gallery's candidates are
 thumbnails, not lines of text: the search runs the transform over the canvas's
-own pixels in a worker thread and fills the grid as candidates arrive. Each
-thumbnail carries the heuristic's smoothness score — the restored photo is
-smooth, a wrong parameter set leaves confetti — and the grid seats the
-smoothest first. Clicking one writes it into the stack as an ordinary 猫脸变换
+own pixels in a worker thread and seats each candidate the moment it lands, so
+the restored picture shows up while the sweep is still running. Each thumbnail
+carries the heuristic's smoothness score — the restored photo is smooth, a wrong
+parameter set leaves confetti — and the grid is laid out smoothest first once
+the sweep ends. Clicking one writes it into the stack as an ordinary 猫脸变换
 operation; the page rewrites the layer it last wrote, so clicking through
-candidates never piles up transforms.
+candidates never piles up transforms, and the results it is clicking through
+stay on the page until a new picture arrives.
 """
 
 from collections.abc import Iterator
-from typing import override
+from functools import partial
+from typing import cast, override
 
 import numpy as np
 from numpy.typing import NDArray
-from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QImage, QPixmap, QResizeEvent
 from PySide6.QtWidgets import (
     QGridLayout,
+    QHBoxLayout,
     QLabel,
     QPushButton,
     QScrollArea,
@@ -30,21 +34,30 @@ from PySide6.QtWidgets import (
 
 from pixelsb.domain.models import (
     ARNOLD_PARAM_LIMIT,
-    ARNOLD_TIMES_MAX,
+    COLOR_SLOTS,
+    GRAY_SLOTS,
+    LoadedImage,
+    Raster,
     SampleArray,
     SamplePlane,
+    plane_or_none,
 )
+from pixelsb.domain.samples import scale_to_byte
 from pixelsb.domain.stack import arnold_image
-from pixelsb.ui import painting, text
-from pixelsb.ui.controls import drain
+from pixelsb.ui import painting, text, theme
+from pixelsb.ui.controls import drain, section_title
+from pixelsb.ui.worker import Stoppable, shutdown
 
 _THUMB = 96  # a candidate's thumbnail, square
-_THUMB_COLUMNS = 3
 _SPIN_WIDTH = 104  # wide enough for every digit ±2147483647 can ask for
 
 
-class _BruteWorker(QThread):
-    """The sweep over a parameter cube, one thumbnail per candidate."""
+class _BruteWorker(Stoppable):
+    """The sweep over a parameter cube, one thumbnail per candidate.
+
+    ``jobs`` is consumed lazily, so a wide range costs the page nothing until
+    each candidate is actually transformed, and ``stop`` answers between them.
+    """
 
     found = Signal(int, int, int, float, QImage)
     reached = Signal(int)
@@ -53,16 +66,16 @@ class _BruteWorker(QThread):
         self,
         samples: SampleArray,
         planes: tuple[SamplePlane, ...],
-        jobs: list[tuple[int, int, int]],
+        jobs: Iterator[tuple[int, int, int]],
+        total: int,
         parent: QWidget | None,
     ) -> None:
         super().__init__(parent)
         self._samples = samples
         self._planes = planes
         self._jobs = jobs
-        self.total = len(jobs)
+        self.total = total
         self.count = 0
-        self._stopping = False
 
     @override
     def run(self) -> None:
@@ -75,26 +88,36 @@ class _BruteWorker(QThread):
             self.count += 1
             self.reached.emit(self.count)
 
-    def stop(self) -> None:
-        self._stopping = True
+
+def _picture_indexes(planes: tuple[SamplePlane, ...]) -> tuple[int, ...]:
+    """Which planes make the picture's color: the triplet, or one gray plane.
+
+    Chosen by name the way the canvas chooses them, so a palette image shows
+    the colors it looks up — taking the first three channels as RGB is what
+    painted such thumbnails cyan.
+    """
+    red, green, blue = (plane_or_none(planes, name) for name in COLOR_SLOTS)
+    if red is not None and green is not None and blue is not None:
+        return red.index, green.index, blue.index
+    gray = next(
+        (plane for name in GRAY_SLOTS if (plane := plane_or_none(planes, name)) is not None),
+        planes[0],
+    )
+    return (gray.index,)
 
 
 def _as_rgb(samples: SampleArray, planes: tuple[SamplePlane, ...]) -> NDArray[np.uint8]:
-    """The picture as HxWx3 bytes at the canvas's own channel scale.
+    """The picture as HxWx3 bytes, at the canvas's own channel scale.
 
-    Three or more channels give their first three to the RGB; fewer mean gray,
-    so the one channel repeats — an alpha plane must never dress itself up as a
-    color channel, which is what turned gray-plus-alpha thumbnails teal.
+    A gray picture repeats its one plane, so an alpha plane must never dress
+    itself up as a color channel, which is what turned gray-plus-alpha thumbnails
+    teal.
     """
-    if samples.shape[2] >= 3:
-        scaled = [
-            samples[:, :, index].astype(np.float64) * (255.0 / planes[index].maximum)
-            for index in range(3)
-        ]
-    else:
-        gray = samples[:, :, 0].astype(np.float64) * (255.0 / planes[0].maximum)
-        scaled = [gray, gray, gray]
-    return np.stack([channel.clip(0.0, 255.0).astype(np.uint8) for channel in scaled], axis=-1)
+    indexes = _picture_indexes(planes)
+    scaled = [scale_to_byte(samples[:, :, index], planes[index].maximum) for index in indexes]
+    if len(scaled) == 1:
+        scaled = scaled * 3
+    return np.stack(scaled, axis=-1)
 
 
 def _smoothness(rgb: NDArray[np.uint8]) -> float:
@@ -126,24 +149,31 @@ class ArnoldPanel(QWidget):
     """One sidebar page sweeping the cat map's parameter cube over the canvas.
 
     The page follows the canvas: whatever the recipe stack currently shows is
-    what the sweep runs on, and a new picture clears the grid. A run is started
-    by hand, can be stopped, and seats its candidates smoothest first.
+    what the sweep runs on. A run is started by hand, can be stopped, fills the
+    grid while it runs, and seats what it found smoothest first once it is done.
     """
 
     picked = Signal(int, int, int)
 
     def __init__(self) -> None:
         super().__init__()
-        self._samples: SampleArray | None = None
-        self._planes: tuple[SamplePlane, ...] = ()
+        self._image: LoadedImage | None = None
+        self._raster: Raster | None = None
         self._worker: _BruteWorker | None = None
         self._ranges: tuple[tuple[QSpinBox, QSpinBox], ...] = ()
         self._entries: list[tuple[float, int, int, int, QImage]] = []
-        self._source = QLabel()
-        self._source.setObjectName("note")
-        self._source.setWordWrap(True)
+        self._buttons: list[QToolButton] = []
+        self._commands: dict[QToolButton, tuple[int, int, int]] = {}
+        self._chosen: tuple[int, int, int] | None = None
+        self._cell = _THUMB  # the width one thumbnail's column needs
+        self._seats = 1  # how many of them a row holds at the page's width
+        self._square = False
+        self._built = False  # a resize before the page is built has nothing to seat
         self._progress = QLabel()
         self._progress.setObjectName("note")
+        self._status = QLabel()
+        self._status.setObjectName("note")
+        self._status.setWordWrap(True)
         # One row per parameter, so the page stays narrow enough for the rail's
         # column: the ranges are wide, the page need not be.
         rows = QGridLayout()
@@ -151,12 +181,14 @@ class ArnoldPanel(QWidget):
         rows.setVerticalSpacing(6)
         for row, (label, low, high, first, last) in enumerate(
             (
-                (text.ARNOLD_TIMES, 1, ARNOLD_TIMES_MAX, 1, 5),
+                (text.ARNOLD_TIMES, 1, ARNOLD_PARAM_LIMIT, 1, 5),
                 (text.ARNOLD_A, -ARNOLD_PARAM_LIMIT, ARNOLD_PARAM_LIMIT, 1, 5),
                 (text.ARNOLD_B, -ARNOLD_PARAM_LIMIT, ARNOLD_PARAM_LIMIT, 1, 5),
             )
         ):
-            rows.addWidget(QLabel(label), row, 0)
+            name = QLabel(label)
+            name.setObjectName("note")
+            rows.addWidget(name, row, 0)
             pair: list[QSpinBox] = []
             for column, value in enumerate((first, last)):
                 box = QSpinBox()
@@ -164,77 +196,110 @@ class ArnoldPanel(QWidget):
                 box.setFixedWidth(_SPIN_WIDTH)
                 box.setValue(value)
                 pair.append(box)
-                rows.addWidget(box, row, 1 + column)
+                rows.addWidget(box, row, 1 + 2 * column)
+            dash = QLabel(text.RANGE_DASH, self)
+            dash.setObjectName("note")
+            dash.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            rows.addWidget(dash, row, 2)
             self._ranges += ((pair[0], pair[1]),)
-        self._go = QPushButton(text.ARNOLD_START)
-        self._go.setObjectName("ghost")
-        self._go.clicked.connect(self._on_start)
-        self._halt = QPushButton(text.ARNOLD_STOP)
-        self._halt.setObjectName("ghost")
-        self._halt.clicked.connect(self._on_stop)
-        rows.addWidget(self._go, 3, 0)
-        rows.addWidget(self._halt, 3, 1)
-        rows.addWidget(self._progress, 3, 2, 1, 2)
+        # All the page's spare width goes past the row, so the ranges hug the left.
+        rows.setColumnStretch(4, 1)
+        self._run = QPushButton(text.ARNOLD_START)
+        self._run.setFixedHeight(theme.CONTROL_HEIGHT)
+        self._run.clicked.connect(self._toggle_run)
+        buttons = QHBoxLayout()
+        buttons.setContentsMargins(0, 0, 0, 0)
+        buttons.setSpacing(8)
+        buttons.addWidget(self._run)
+        buttons.addWidget(self._progress, 1)
         self._grid = QGridLayout()
         self._grid.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         host = QWidget()
         host.setLayout(self._grid)
-        holder = QScrollArea()
-        holder.setWidgetResizable(True)
-        holder.setFrameShape(QScrollArea.Shape.NoFrame)
-        holder.setWidget(host)
-        holder.setMinimumHeight(_THUMB * 2 + 60)
-        note = QLabel(text.ARNOLD_SOURCE)
-        note.setObjectName("note")
-        note.setWordWrap(True)
+        self._holder = QScrollArea()
+        self._holder.setWidgetResizable(True)
+        self._holder.setFrameShape(QScrollArea.Shape.NoFrame)
+        self._holder.setWidget(host)
+        self._holder.setMinimumHeight(_THUMB * 2 + 60)
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(8)
-        layout.addWidget(note)
-        layout.addWidget(self._source)
+        layout.addWidget(section_title(text.SECTION_ARNOLD))
         layout.addLayout(rows)
-        layout.addWidget(holder, 1)
+        layout.addLayout(buttons)
+        layout.addWidget(self._status)
+        layout.addWidget(self._holder, 1)
+        self._built = True
         self._set_running(False)
 
-    def set_source(self, samples: SampleArray | None, planes: tuple[SamplePlane, ...]) -> None:
-        """Point the page at the canvas's pixels; a new picture clears the grid."""
-        if samples is self._samples and planes == self._planes:
+    def set_source(self, image: LoadedImage | None, raster: Raster | None) -> None:
+        """Point the page at the canvas's picture; only a new image clears the grid.
+
+        The stack moving under the page is the ordinary case — picking a thumbnail
+        rewrites it — and the gallery keeps its results then: the user is still
+        clicking through one picture's brute force. Starting a new run sweeps the
+        picture as the stack shows it now.
+        """
+        if image is self._image and raster is self._raster:
             return
-        self._stop_run()
-        self._samples = samples
-        self._planes = planes
-        self._clear_grid()
-        square = samples is not None and samples.shape[0] == samples.shape[1]
-        self._go.setEnabled(square)
+        if image is not self._image:
+            self._stop_run()
+            self._clear_grid()
+            self._chosen = None
+        self._image = image
+        self._raster = raster
+        samples = None if raster is None else raster.samples
+        self._square = samples is not None and samples.shape[0] == samples.shape[1]
+        self._set_running(self._worker is not None)
         if samples is None:
-            self._source.setText(text.NO_IMAGE)
-        elif square:
-            self._source.setText(
-                text.arnold_source(samples.shape[0], samples.shape[1], samples.shape[2])
-            )
+            self._status.setText(text.NO_IMAGE)
+            self._restyle_status(warn=False)
+        elif self._square:
+            self._status.setText("")
         else:
-            self._source.setText(text.arnold_not_square(samples.shape[1], samples.shape[0]))
+            self._status.setText(text.arnold_not_square(samples.shape[1], samples.shape[0]))
+            self._restyle_status(warn=True)
+
+    @override
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        """A wider rail fits more thumbnails in a row, so the grid is laid out again."""
+        super().resizeEvent(event)
+        if self._built and self._columns() != self._seats:
+            self._fill_grid()
 
     def shutdown(self) -> None:
         """Stop the sweep before the window goes away, so the thread joins."""
         self._stop_run()
 
     def _on_start(self) -> None:
-        if self._samples is None or self._worker is not None:
+        raster = self._raster
+        if raster is None or self._worker is not None:
             return
-        jobs = list(self._jobs())
-        if not jobs:
+        total = self._job_count()
+        if not total:
             return
         self._clear_grid()
-        self._worker = _BruteWorker(self._samples, self._planes, jobs, self)
+        self._seats = self._columns()
+        self._worker = _BruteWorker(raster.samples, raster.planes, self._jobs(), total, self)
         self._worker.found.connect(self._on_found)
         self._worker.reached.connect(self._on_reached)
-        self._worker.finished.connect(self._on_done)
+        self._worker.finished.connect(partial(self._on_done, self._worker))
         self._set_running(True)
         self._worker.start()
 
-    def _on_stop(self) -> None:
+    def _job_count(self) -> int:
+        """How many candidates the ranges ask for, without building them."""
+        count = 1
+        for low, high in self._ranges:
+            count *= max(high.value() - low.value() + 1, 0)
+        return count
+
+    def _toggle_run(self) -> None:
+        """The one button runs the sweep, or stops the run it is sweeping."""
         if self._worker is not None:
             self._worker.stop()
+        else:
+            self._on_start()
 
     def _jobs(self) -> Iterator[tuple[int, int, int]]:
         (times_from, times_to), (a_from, a_to), (b_from, b_to) = self._ranges
@@ -244,16 +309,36 @@ class ArnoldPanel(QWidget):
                     yield times, a, b
 
     def _on_found(self, times: int, a: int, b: int, score: float, image: QImage) -> None:
+        """One candidate lands: it goes up right away, the order is settled at the end."""
         self._entries.append((score, times, a, b, image))
+        button = self._button(times, a, b, score, image)
+        if button.sizeHint().width() > self._cell:
+            # A wider caption fits fewer thumbnails to a row, so the grid is laid
+            # out again — a handful of times in a sweep, as the numbers grow.
+            self._cell = button.sizeHint().width()
+            self._fill_grid()
+        else:
+            self._seat(button, (times, a, b))
 
     def _on_reached(self, done: int) -> None:
         total = self._worker.total if self._worker is not None else done
         self._progress.setText(text.arnold_progress(done, total))
 
-    def _on_done(self) -> None:
-        worker, self._worker = self._worker, None
-        if worker is not None and worker.count < worker.total:
-            self._progress.setText(text.arnold_cancelled(worker.count))
+    def _on_done(self, worker: _BruteWorker) -> None:
+        """The sweep ended and seats its candidates in the heuristic's order.
+
+        The worker names itself, so a run the page already dropped — stopping and
+        starting again, or a new picture — settles nothing here.
+        """
+        if worker is not self._worker:
+            return
+        self._worker = None
+        self._progress.setText(
+            text.arnold_cancelled(worker.count)
+            if worker.count < worker.total
+            else text.arnold_done(worker.count)
+        )
+        worker.deleteLater()
         self._fill_grid()
         self._set_running(False)
 
@@ -263,32 +348,116 @@ class ArnoldPanel(QWidget):
         The score only decides the seating; the tooltip carries it, and the eye
         still makes the call.
         """
-        drain(self._grid)
+        self._drain_grid()
+        self._seats = self._columns()
         for score, times, a, b, image in sorted(self._entries, reverse=True):
-            button = QToolButton()
-            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
-            button.setIcon(QPixmap.fromImage(image))
-            button.setIconSize(image.size())
-            button.setText(text.arnold_caption(times, a, b))
-            button.setToolTip(text.arnold_pick_tip(times, a, b, score))
-            button.setCursor(Qt.CursorShape.PointingHandCursor)
-            button.clicked.connect(
-                lambda _checked=False, t=times, a=a, b=b: self.picked.emit(t, a, b)
-            )
-            count = self._grid.count()
-            self._grid.addWidget(button, count // _THUMB_COLUMNS, count % _THUMB_COLUMNS)
+            self._seat(self._button(times, a, b, score, image), (times, a, b))
+        self._mark_chosen()
+
+    def _columns(self) -> int:
+        """How many thumbnails fit one row of the page as it is now.
+
+        The rail's width is the user's to change, so the grid is laid out from it
+        rather than from a fixed count, and a wide sidebar shows a wide gallery.
+        A column is as wide as the widest thumbnail on the page: the buttons
+        carry the command under the picture, and that caption is the wide part.
+        """
+        spacing = max(self._grid.horizontalSpacing(), 0)
+        return max(1, (self._holder.viewport().width() + spacing) // (self._cell + spacing))
+
+    def _button(self, times: int, a: int, b: int, score: float, image: QImage) -> QToolButton:
+        button = QToolButton()
+        button.setObjectName("galleryCard")
+        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
+        button.setIcon(QPixmap.fromImage(image))
+        button.setIconSize(image.size())
+        button.setText(text.arnold_caption(times, a, b))
+        button.setToolTip(text.arnold_pick_tip(times, a, b, score))
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.clicked.connect(partial(self._pick, times, a, b))
+        return button
+
+    def _pick(self, times: int, a: int, b: int) -> None:
+        """One card is the user's choice: mark it, then write it into the stack."""
+        self._chosen = (times, a, b)
+        self._mark_chosen()
+        self.picked.emit(times, a, b)
+
+    def _mark_chosen(self) -> None:
+        """Restyle the cards so the chosen one reads as chosen."""
+        for button, command in self._commands.items():
+            wanted = command == self._chosen
+            if button.property("chosen") != wanted:
+                button.setProperty("chosen", wanted)
+                theme.repolish(button)
+
+    def move_selection(self, down: int, right: int) -> bool:
+        """One seat over, the edges holding: True when the page has one to move to.
+
+        The canvas's arrow shortcuts stand down on this page: here the arrows
+        browse candidates, and each one they land on is applied, so browsing is
+        seeing. Starting from nothing chooses the first card.
+        """
+        if self._worker is not None or not self._commands:
+            return False
+        seats: dict[tuple[int, int], QToolButton] = {}
+        for index in range(self._grid.count()):
+            item = self._grid.itemAt(index)
+            widget = None if item is None else item.widget()
+            if isinstance(widget, QToolButton):
+                row, column, _, _ = cast(
+                    tuple[int, int, int, int], self._grid.getItemPosition(index)
+                )
+                seats[row, column] = widget
+        here = next(
+            (seat for seat, widget in seats.items() if self._commands.get(widget) == self._chosen),
+            None,
+        )
+        if here is None:
+            target = min(seats)
+        else:
+            row, column = here
+            row = min(max(row + down, 0), max(seat_row for seat_row, _ in seats))
+            columns_of_row = [seat_column for seat_row, seat_column in seats if seat_row == row]
+            column = min(max(column + right, 0), max(columns_of_row))
+            if (row, column) not in seats:  # the short last row
+                column = max(columns_of_row) if right < 0 else min(columns_of_row)
+            target = (row, column)
+        widget = seats[target]
+        if self._commands.get(widget) == self._chosen:
+            return False
+        widget.click()
+        return True
+
+    def _seat(self, button: QToolButton, command: tuple[int, int, int]) -> None:
+        """Put one thumbnail after the ones already up, wrapping at the row's width."""
+        self._buttons.append(button)
+        self._commands[button] = command
+        count = len(self._buttons) - 1
+        self._grid.addWidget(button, count // self._seats, count % self._seats)
+
+    def _drain_grid(self) -> None:
+        drain(self._grid)
+        self._buttons = []
+        self._commands = {}
 
     def _clear_grid(self) -> None:
-        drain(self._grid)
+        """Nothing on the page: no candidates, no thumbnails, and a fresh row width."""
+        self._drain_grid()
         self._entries = []
+        self._cell = _THUMB
         self._progress.setText("")
 
     def _set_running(self, running: bool) -> None:
-        self._go.setEnabled(not running and self._samples is not None)
-        self._halt.setEnabled(running)
+        """The button names the action a click would take now."""
+        self._run.setText(text.ARNOLD_STOP if running else text.ARNOLD_START)
+        self._run.setEnabled(self._square or running)
+
+    def _restyle_status(self, *, warn: bool) -> None:
+        """A non-square canvas is a warning; no image at all is just a note."""
+        self._status.setObjectName("warnNote" if warn else "note")
+        theme.repolish(self._status)
 
     def _stop_run(self) -> None:
         worker, self._worker = self._worker, None
-        if worker is not None:
-            worker.stop()
-            worker.wait(2000)
+        shutdown(worker)

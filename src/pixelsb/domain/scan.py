@@ -18,16 +18,13 @@ from pixelsb.domain.models import (
 
 # The channel sets worth sweeping: each channel alone, and the packed orders a
 # flag hunt usually means. A set naming a channel the image lacks drops out.
-# Index is what a palette image actually stores, so it gets swept on its own.
 _COMBOS: tuple[tuple[str, ...], ...] = (
     ("R",),
     ("G",),
     ("B",),
     ("A",),
     ("L",),
-    ("Index",),
     ("L", "A"),
-    ("Index", "A"),
     ("R", "G", "B"),
     ("B", "G", "R"),
     ("R", "G", "B", "A"),
@@ -55,7 +52,7 @@ class ScanHit:
     """One candidate's verdict: what its stream turned out to be.
 
     ``label`` names a format the stream was recognized as, ``flags`` lists the
-    flag-shaped strings in it, and ``preview`` is the stream's first bytes as
+    flag keywords it carries, and ``preview`` is the stream's first bytes as
     printable text — the eye's own check on whether the model's read is real.
     Both label and flags empty means nothing showed up.
     """

@@ -63,6 +63,7 @@ QLabel#muted, QLabel#note, QLabel#zoomLabel, QLabel#sectionTitle {{ color: {TEXT
 QLabel#sectionTitle {{ font-size: 11px; font-weight: 600; }}
 QLabel#note {{ font-size: 11px; }}
 QLabel#note[warn="true"] {{ color: {WARNING}; }}
+QLabel#note[hot="true"] {{ color: {DANGER}; font-weight: 600; }}
 QLabel#zoomLabel {{ font-size: 12px; }}
 QLabel#infoName {{ font-size: 13px; font-weight: 600; }}
 QLabel#infoLine {{ font-size: 12px; }}
@@ -215,6 +216,8 @@ QToolButton#railButton {{
 }}
 QToolButton#railButton:hover {{ background: {HOVER}; color: {TEXT}; }}
 QToolButton#railButton:checked {{ background: {HOVER}; color: {ACCENT}; }}
+QToolButton#galleryCard {{ border: 2px solid transparent; border-radius: 6px; }}
+QToolButton#galleryCard[chosen="true"] {{ border-color: {ACCENT}; background: {HOVER}; }}
 QSplitter::handle {{ background: transparent; }}
 QSplitter::handle:horizontal {{ width: 9px; }}
 

@@ -3,9 +3,7 @@
 from pathlib import Path
 
 import numpy as np
-import pytest
 from PySide6.QtCore import QPoint, Qt
-from PySide6.QtWidgets import QCheckBox
 from pytestqt.qtbot import QtBot
 
 from pixelsb.domain.models import (
@@ -86,31 +84,6 @@ def test_the_base_row_reads_the_file_that_is_open(qtbot: QtBot) -> None:
     assert _rows(panel)[-1][2] == "5×7 · 模式 RGB · 单帧"
 
 
-def test_a_shadowed_bits_mask_says_so(qtbot: QtBot) -> None:
-    lower = BitsMask(frozenset({BitChoice("R", 0)}))
-    panel = _panel(qtbot, lower, BitsMask(frozenset({BitChoice("G", 0)})))
-    panel._select(0)
-    assert panel._note.text() == text.MASK_BITS_SHADOWED
-    panel._select(1)
-    assert panel._note.text() == text.LAYER_BITS_NOTE
-
-
-def test_a_switched_off_bits_mask_shadows_nothing(qtbot: QtBot) -> None:
-    image = make_image(np.zeros((2, 2, 3), dtype=np.uint16), planes_rgb())
-    state = ViewerState(
-        image=image,
-        layers=(
-            Layer(BitsMask(frozenset({BitChoice("R", 0)}))),
-            Layer(BitsMask(frozenset({BitChoice("G", 0)})), enabled=False),
-        ),
-    )
-    panel = LayerPanel()
-    qtbot.addWidget(panel)
-    panel.set_state(state, board_of(state))
-    panel._select(0)
-    assert panel._note.text() == text.LAYER_BITS_NOTE
-
-
 def test_the_rows_name_what_each_mask_holds(qtbot: QtBot) -> None:
     panel = _panel(
         qtbot,
@@ -162,26 +135,12 @@ def test_a_new_mask_takes_the_selection(qtbot: QtBot) -> None:
     assert asked == [ThresholdMask(150)]
     _show(panel, InvertMask(), ThresholdMask(150))  # what the window does with it next
     assert panel.selected == 1
-    assert panel._note.text() == text.LAYER_COMMAND_NOTE
 
 
-def test_a_bits_layer_points_at_the_extract_panel(qtbot: QtBot) -> None:
-    panel = _panel(qtbot, BitsMask(frozenset({BitChoice("R", 0)})))
-    assert panel._note.text() == text.LAYER_BITS_NOTE
-    panel._select(None)
-    assert panel._note.text() == text.LAYER_BASE_NOTE
-
-
-def test_a_region_mask_points_at_the_filter_box(qtbot: QtBot) -> None:
-    panel = _panel(qtbot, RegionMask("R > 0"))
-    assert panel._note.text() == text.LAYER_REGION_NOTE
-
-
-def test_the_base_row_explains_itself_and_cannot_be_removed(qtbot: QtBot) -> None:
+def test_the_base_row_cannot_be_removed_or_moved(qtbot: QtBot) -> None:
     panel = _panel(qtbot, InvertMask())
     panel._select(None)
     assert panel._rows[None]._check is None  # the image has no switch to flick
-    assert panel._note.text() == text.LAYER_BASE_NOTE
     asked: list[object] = []
     panel.remove_requested.connect(asked.append)
     panel.move_requested.connect(lambda layer, step: asked.append((layer, step)))
@@ -242,8 +201,6 @@ def test_a_broken_region_mask_is_flagged_on_its_own_row(qtbot: QtBot) -> None:
     panel = _panel(qtbot, InvertMask(), RegionMask("R >= "))
     row = panel._rows[1]
     assert row._detail.text().startswith(text.WARNING_MARK)
-    assert panel._note.text().startswith("语法错误")
-    assert panel._note.property("warn") is True
     assert panel._rows[0]._detail.text() == "inv"  # the healthy row keeps its own line
 
 
@@ -329,11 +286,3 @@ def test_a_rows_own_parts_pick_it_too(qtbot: QtBot) -> None:
     qtbot.mouseClick(row.switch, Qt.MouseButton.LeftButton)
     assert panel.selected == 1
     assert not row.switch.isChecked()  # the switch still does its own job
-
-
-@pytest.mark.parametrize("mask", [InvertMask(), GrayscaleMask(), CropMask()])
-def test_the_parameterless_masks_show_their_own_line(qtbot: QtBot, mask: Mask) -> None:
-    panel = _panel(qtbot, mask)
-    assert panel._note.text() == text.mask_info(mask).tip
-    assert panel._note.property("warn") is False
-    assert isinstance(panel._rows[0].switch, QCheckBox)

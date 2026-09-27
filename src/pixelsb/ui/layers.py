@@ -2,9 +2,8 @@
 
 The list reads top down, so the last mask applied is the first row, and the image
 itself is the bottom row — it cannot be moved, removed, or switched off. A row
-says what its mask holds; where a mask is edited is a sentence on the note line:
-the value masks and the region mask in the filter box's command line, the bits in
-the extract panel's grid.
+says what its mask holds; the row a command failed on carries the ⚠ mark, and
+the message itself lives in the status bar.
 """
 
 from collections.abc import Callable
@@ -24,19 +23,13 @@ from PySide6.QtWidgets import (
 )
 
 from pixelsb.domain.models import (
-    BitsMask,
     Layer,
-    Mask,
     Raster,
-    RegionMask,
     SamplePlane,
-    ThresholdMask,
     ViewerState,
-    XorMask,
 )
-from pixelsb.domain.transitions import bits_shadowed
 from pixelsb.ui import text, theme
-from pixelsb.ui.controls import drain, hairline, section_title
+from pixelsb.ui.controls import drain, section_title
 
 _CHECK_COLUMN = 21  # the switch column, so the image's own row lines up with the rest
 _PANEL_MIN_WIDTH = 240  # what the layer list needs to read a row
@@ -64,18 +57,11 @@ class LayerPanel(QWidget):
         self._rows_layout = QVBoxLayout()
         self._rows_layout.setContentsMargins(0, 0, 0, 0)
         self._rows_layout.setSpacing(1)
-        self._note = _label(self, "", "note")
-        self._note.setWordWrap(True)
-        self._note.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(8)
         layout.addLayout(self._header())
         layout.addWidget(self._card())
-        layout.addSpacing(6)
-        layout.addWidget(hairline())
-        layout.addSpacing(6)
-        layout.addWidget(self._note, 0, Qt.AlignmentFlag.AlignTop)
         layout.addStretch(1)
 
     @property
@@ -88,7 +74,6 @@ class LayerPanel(QWidget):
         self._failures = {} if raster is None else {f.index: f.message for f in raster.failures}
         self._keep_selection()
         self._sync_rows()
-        self._sync_editor()
         self._mark_selected()
 
     # --- the list ----------------------------------------------------------
@@ -202,7 +187,6 @@ class LayerPanel(QWidget):
     def _select(self, index: int | None) -> None:
         self._selected = index
         self._mark_selected()
-        self._sync_editor()
         self.selection_changed.emit()
 
     def _mark_selected(self) -> None:
@@ -236,36 +220,6 @@ class LayerPanel(QWidget):
         """The blank space around the list deselects, like the image's own row."""
         event.accept()
         self._select(None)
-
-    # --- the note ----------------------------------------------------------
-
-    def _selected_mask(self) -> Mask | None:
-        index = self._selected
-        if index is None or not 0 <= index < len(self._state.layers):
-            return None
-        return self._state.layers[index].mask
-
-    def _sync_editor(self) -> None:
-        failure = self._failure()
-        self._note.setText(failure or self._note_text(self._selected_mask()))
-        _restyle(self._note, "warn", bool(failure))
-
-    def _note_text(self, mask: Mask | None) -> str:
-        """What the note says: where a mask is edited, or what it does."""
-        if bits_shadowed(self._state.layers, self._selected):
-            return text.MASK_BITS_SHADOWED
-        if mask is None:
-            return text.LAYER_BASE_NOTE
-        if isinstance(mask, RegionMask):
-            return text.LAYER_REGION_NOTE
-        if isinstance(mask, BitsMask):
-            return text.LAYER_BITS_NOTE
-        if isinstance(mask, (ThresholdMask, XorMask)):
-            return text.LAYER_COMMAND_NOTE
-        return text.mask_info(mask).tip
-
-    def _failure(self) -> str:
-        return "" if self._selected is None else self._failures.get(self._selected, "")
 
 
 class _Card(QFrame):

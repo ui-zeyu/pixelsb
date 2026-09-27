@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 from PIL import Image
 from PySide6.QtCore import QPoint, QPointF, Qt
-from PySide6.QtGui import QNativeGestureEvent, QPointingDevice
+from PySide6.QtGui import QImage, QNativeGestureEvent, QPointingDevice
 from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QPushButton, QToolButton
 from pytestqt.qtbot import QtBot
 
@@ -38,11 +38,20 @@ from pixelsb.domain.transitions import (
 )
 from pixelsb.io.loading import image_from_pixels
 from pixelsb.ui import painting, text, theme
-from pixelsb.ui.arnold import _as_rgb
+from pixelsb.ui.arnold import ArnoldPanel, _as_rgb
 from pixelsb.ui.main_window import MainWindow
 from pixelsb.ui.side_panels import Panel
 from pixelsb.ui.text import readout_text
-from tests.support import bits_of, button, make_image, mask_of, masks, planes_of, planes_rgba
+from tests.support import (
+    bits_of,
+    button,
+    doctored_png,
+    make_image,
+    mask_of,
+    masks,
+    planes_of,
+    planes_rgba,
+)
 
 
 def test_open_bit_plane_and_detail_text(qtbot: QtBot, rgb_png: Path) -> None:
@@ -1028,13 +1037,29 @@ def test_the_file_info_menu_raises_the_info_page(qtbot: QtBot, rgb_png: Path) ->
     qtbot.addWidget(window)
     window.show()
     window.open_path(rgb_png)
-    assert window._panels.current is Panel.INFO  # the file-info page leads the rail
-    window._panels.set_current(Panel.EXTRACT)
-    assert window._panels.current is Panel.EXTRACT
+    assert window._panels.current is Panel.EXTRACT  # the extract page leads the rail
     window._show_info()
     assert window._panels.current is Panel.INFO
     assert window.info_panel.isVisible()
     assert "rgb.png" in window.info_panel._name.text()
+
+
+def test_the_command_digits_raise_their_page(qtbot: QtBot, rgb_png: Path) -> None:
+    """⌘1 to ⌘5 walk the rail, whatever page is up when the chord lands."""
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.open_path(rgb_png)
+    pages = (
+        (Qt.Key.Key_1, Panel.EXTRACT),
+        (Qt.Key.Key_2, Panel.SCAN),
+        (Qt.Key.Key_3, Panel.ARNOLD),
+        (Qt.Key.Key_4, Panel.HISTOGRAM),
+        (Qt.Key.Key_5, Panel.INFO),
+    )
+    for key, panel in pages:
+        qtbot.keyClick(window, key, Qt.KeyboardModifier.ControlModifier)
+        assert window._panels.current is panel
 
 
 def test_open_loaded_shows_a_rendered_image_in_the_canvas(qtbot: QtBot, rgb_png: Path) -> None:
@@ -1118,7 +1143,8 @@ def test_the_scan_page_applies_a_candidate_to_the_stack(qtbot: QtBot, rgb_png: P
     state = window.store.state
     assert state.layers
     assert isinstance(state.layers[-1].mask, BitsMask)
-    assert state.extract_order == row.data(0, Qt.ItemDataRole.UserRole).order
+    hit = row.data(0, Qt.ItemDataRole.UserRole)
+    assert state.extract_order == hit.candidate.order
 
 
 def test_the_info_page_offers_size_repairs_for_a_doctored_ihdr(
@@ -1127,13 +1153,9 @@ def test_the_info_page_offers_size_repairs_for_a_doctored_ihdr(
     window = MainWindow()
     qtbot.addWidget(window)
     window.show()
-    path = tmp_path / "doctored.png"
-    Image.fromarray(np.zeros((1, 5, 3), dtype=np.uint8)).save(path)
-    data = bytearray(path.read_bytes())
-    at = data.find(b"IHDR") + 4
-    data[at : at + 8] = (10).to_bytes(4, "big") + (10).to_bytes(4, "big")
-    path.write_bytes(bytes(data))
+    path = doctored_png(tmp_path / "doctored.png")
     window.open_path(path)
+    window._panels.set_current(Panel.INFO)
     window.info_panel._render()
     image = window.store.state.image
     assert image is not None
@@ -1160,6 +1182,7 @@ def test_the_info_page_lists_gif_frame_geometries(qtbot: QtBot, tmp_path: Path) 
     path = tmp_path / "moved.gif"
     base.save(path, save_all=True, append_images=[moved], duration=[50, 70], loop=0)
     window.open_path(path)
+    window._panels.set_current(Panel.INFO)
     window.info_panel._render()
     assert window.info_panel._frames_card.isVisibleTo(window.info_panel)
     assert _cells(window.info_panel._frames_layout)[4:] == [
@@ -1174,6 +1197,22 @@ def test_the_info_page_lists_gif_frame_geometries(qtbot: QtBot, tmp_path: Path) 
     ]
 
 
+def test_the_arnold_run_button_names_the_action_a_click_takes(qtbot: QtBot, rgb_png: Path) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.open_path(rgb_png)  # 2x2: square, so the page accepts it
+    window._panels.set_current(Panel.ARNOLD)
+    panel = window.arnold_panel
+    assert panel._run.text() == text.ARNOLD_START
+    panel._toggle_run()
+    qtbot.waitUntil(lambda: panel._worker is not None)
+    assert panel._run.text() == text.ARNOLD_STOP
+    panel._toggle_run()
+    qtbot.waitUntil(lambda: panel._worker is None, timeout=10000)
+    assert panel._run.text() == text.ARNOLD_START
+
+
 def test_the_arnold_gallery_picks_a_layer(qtbot: QtBot, rgb_png: Path) -> None:
     window = MainWindow()
     qtbot.addWidget(window)
@@ -1181,7 +1220,8 @@ def test_the_arnold_gallery_picks_a_layer(qtbot: QtBot, rgb_png: Path) -> None:
     window.open_path(rgb_png)  # 2x2: square, so the page accepts it
     window._panels.set_current(Panel.ARNOLD)
     panel = window.arnold_panel
-    assert panel._go.isEnabled()
+    assert panel._run.isEnabled()
+    assert panel._run.text() == text.ARNOLD_START
     panel._ranges[0][1].setValue(1)
     panel._ranges[1][1].setValue(1)
     panel._ranges[2][1].setValue(1)
@@ -1192,6 +1232,91 @@ def test_the_arnold_gallery_picks_a_layer(qtbot: QtBot, rgb_png: Path) -> None:
     assert window.store.state.layers[-1].mask == ArnoldMask(2, 1, 3)
     panel.picked.emit(1, 1, 1)
     assert [layer.mask for layer in window.store.state.layers] == [ArnoldMask(1, 1, 1)]
+    # Picking rewrites the stack under the page; its own results stay up while the
+    # user clicks through them, and only a new picture clears the grid.
+    assert panel._grid.count() == 1
+
+
+def test_the_gallery_marks_the_picked_card(qtbot: QtBot, rgb_png: Path) -> None:
+    """Clicking a thumbnail marks it chosen; the mark follows the next click."""
+
+    def card(panel: ArnoldPanel, command: tuple[int, int, int]) -> QToolButton:
+        return next(widget for widget, want in panel._commands.items() if want == command)
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.open_path(rgb_png)
+    window._panels.set_current(Panel.ARNOLD)
+    panel = window.arnold_panel
+    thumb = QImage(4, 4, QImage.Format.Format_RGB888)
+    panel._on_found(1, 1, 1, 0.9, thumb)
+    panel._on_found(2, 1, 1, 0.1, thumb)
+    panel._fill_grid()
+    assert panel._grid.count() == 2
+    card(panel, (2, 1, 1)).click()
+    assert [widget.property("chosen") for widget in panel._commands] == [False, True]
+    card(panel, (1, 1, 1)).click()
+    assert [widget.property("chosen") for widget in panel._commands] == [True, False]
+
+
+def test_the_arrows_walk_the_gallery_cards(qtbot: QtBot, rgb_png: Path) -> None:
+    """Arrow keys move the choice card by card, applying what they land on."""
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.open_path(rgb_png)
+    window._panels.set_current(Panel.ARNOLD)
+    panel = window.arnold_panel
+    thumb = QImage(4, 4, QImage.Format.Format_RGB888)
+    for times in range(1, 10):
+        panel._on_found(times, 1, 1, 1.0 - times / 10.0, thumb)  # seat times in order
+    panel._fill_grid()
+    assert panel.move_selection(0, 0)
+    assert panel._chosen == (1, 1, 1)  # nothing chosen yet: the first card, in reading order
+    assert window.store.state.layers[-1].mask == ArnoldMask(1, 1, 1)
+    assert panel.move_selection(0, 1)
+    assert panel._chosen == (2, 1, 1)  # one seat right, and applied
+    assert window.store.state.layers[-1].mask == ArnoldMask(2, 1, 1)
+    assert panel.move_selection(1, 0)
+    assert panel._chosen == (2 + panel._seats, 1, 1)  # a row down, same seat
+    while panel.move_selection(0, -1) or panel.move_selection(-1, 0):
+        pass  # walk back to the first card, one row or one seat at a time
+    assert panel._chosen == (1, 1, 1)
+    assert panel.move_selection(0, -1) is False  # the left edge holds, nothing re-applies
+
+
+def test_the_gallery_seats_a_candidate_the_moment_it_lands(qtbot: QtBot, rgb_png: Path) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.open_path(rgb_png)
+    window._panels.set_current(Panel.ARNOLD)
+    panel = window.arnold_panel
+    thumb = QImage(4, 4, QImage.Format.Format_RGB888)
+    panel._on_found(1, 1, 1, 0.10, thumb)
+    assert panel._grid.count() == 1  # up while the sweep is still running
+    panel._on_found(2, 1, 1, 0.90, thumb)
+    assert panel._grid.count() == 2
+    panel._fill_grid()  # the heuristic's order takes over once the run ends
+    assert _grid_tips(panel._grid)[0].startswith("arnold 2 1 1")
+
+
+def test_a_wide_page_holds_more_than_three_thumbnails_to_a_row(qtbot: QtBot, rgb_png: Path) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.open_path(rgb_png)
+    window._panels.set_current(Panel.ARNOLD)
+    window.resize(1600, 900)
+    window._splitter.setSizes([288, 400, 900])  # the user widening the rail themselves
+    panel = window.arnold_panel
+    qtbot.waitUntil(lambda: panel._holder.viewport().width() > 600)
+    thumb = QImage(4, 4, QImage.Format.Format_RGB888)
+    for times in range(1, 10):
+        panel._on_found(times, 1, 1, 0.5, thumb)
+    assert panel._grid.count() == 9
+    assert panel._seats > 3  # a row is laid out from the page's width, not a fixed three
 
 
 def _buttons(row: QHBoxLayout) -> list[QPushButton]:
@@ -1216,6 +1341,17 @@ def _cells(layout: QGridLayout) -> list[str]:
     return texts
 
 
+def _grid_tips(layout: QGridLayout) -> list[str]:
+    """The tooltips of a grid table's buttons, in the order the grid seats them."""
+    tips = []
+    for index in range(layout.count()):
+        item = layout.itemAt(index)
+        widget = None if item is None else item.widget()
+        assert isinstance(widget, QToolButton)
+        tips.append(widget.toolTip())
+    return tips
+
+
 def test_gallery_thumbnails_read_gray_as_gray() -> None:
     """A gray-and-alpha picture must not let the alpha channel pose as green."""
     planes = (
@@ -1228,3 +1364,16 @@ def test_gallery_thumbnails_read_gray_as_gray() -> None:
     assert (
         rgb[..., 0].tolist() == rgb[..., 1].tolist() == rgb[..., 2].tolist() == [[40, 40], [40, 40]]
     )
+
+
+def test_gallery_thumbnails_take_the_color_trio_and_leave_alpha_out() -> None:
+    """A four-channel picture's thumbnails are its colors; alpha never joins them."""
+    planes = (
+        SamplePlane("R", 0, 8, SampleOrigin.PALETTE),
+        SamplePlane("G", 1, 8, SampleOrigin.PALETTE),
+        SamplePlane("B", 2, 8, SampleOrigin.PALETTE),
+        SamplePlane("A", 3, 8, SampleOrigin.PALETTE),
+    )
+    samples = np.zeros((2, 2, 4), dtype=np.uint16)
+    samples[..., 0], samples[..., 1], samples[..., 2], samples[..., 3] = 10, 200, 30, 255
+    assert _as_rgb(samples, planes).tolist() == [[[10, 200, 30], [10, 200, 30]]] * 2

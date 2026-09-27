@@ -111,7 +111,7 @@ class ExtractPanel(QWidget):
         layout.addSpacing(14)
         layout.addWidget(hairline())
         layout.addSpacing(14)
-        layout.addWidget(section_title(text.SECTION_EXTRACT))
+        layout.addWidget(self._extract_header())
         layout.addWidget(self._order_row())
         layout.addWidget(self._extract_search)
         layout.addWidget(self._extract_view, 1)
@@ -184,6 +184,22 @@ class ExtractPanel(QWidget):
 
     # --- the stream --------------------------------------------------------
 
+    def _extract_header(self) -> QWidget:
+        """The section title with 保存 on its right, like the bit grid's presets."""
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(10)
+        header.addWidget(section_title(text.SECTION_EXTRACT))
+        header.addStretch(1)
+        self._save_button = QPushButton(text.EXTRACT_SAVE)
+        self._save_button.setObjectName("ghost")
+        self._save_button.setToolTip(text.EXTRACT_SAVE_TIP)
+        self._save_button.setFixedHeight(theme.CONTROL_HEIGHT)
+        self._save_button.setEnabled(False)
+        self._save_button.clicked.connect(self.save_requested.emit)
+        header.addWidget(self._save_button)
+        return _row_host(header)
+
     def _order_row(self) -> QWidget:
         """The three order controls, held to one band above the dump they describe."""
         row = QWidget()
@@ -197,13 +213,6 @@ class ExtractPanel(QWidget):
         layout.addWidget(self._bit_order)
         layout.addWidget(self._scan)
         layout.addStretch(1)
-        self._save_button = QPushButton(text.EXTRACT_SAVE)
-        self._save_button.setObjectName("ghost")
-        self._save_button.setToolTip(text.EXTRACT_SAVE_TIP)
-        self._save_button.setFixedHeight(theme.CONTROL_HEIGHT)
-        self._save_button.setEnabled(False)
-        self._save_button.clicked.connect(self.save_requested.emit)
-        layout.addWidget(self._save_button)
         return row
 
     def _on_channel_order(self, index: int) -> None:
@@ -383,6 +392,13 @@ def _stacked(first: QWidget, second: QWidget) -> QWidget:
     column.setSpacing(6)
     column.addWidget(first)
     column.addWidget(second)
+    return host
+
+
+def _row_host(layout: QHBoxLayout) -> QWidget:
+    """A header row's host widget, so it can sit in a QVBoxLayout."""
+    host = QWidget()
+    host.setLayout(layout)
     return host
 
 

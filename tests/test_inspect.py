@@ -11,7 +11,8 @@ from PIL import Image
 from PIL.ExifTags import IFD
 from PIL.TiffImagePlugin import IFDRational
 
-from pixelsb.domain.container import BlockRole, PngHeader, SizeHint, render_blocks, scan_container
+from pixelsb.domain.container import BlockRole, PngHeader, SizeHint, scan_container
+from pixelsb.domain.png_render import render_blocks
 from pixelsb.io.inspect import exif_entries, inspect_container
 from tests.support import chunk as _chunk
 

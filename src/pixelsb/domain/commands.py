@@ -29,7 +29,6 @@ from typing import assert_never
 
 from pixelsb.domain.models import (
     ARNOLD_PARAM_LIMIT,
-    ARNOLD_TIMES_MAX,
     ArnoldMask,
     BitChoice,
     BitsMask,
@@ -44,7 +43,7 @@ from pixelsb.domain.models import (
     XorMask,
     level_ceiling,
 )
-from pixelsb.domain.predicate import _with_bit_attributes, condition_error
+from pixelsb.domain.predicate import condition_error, with_bit_attributes
 from pixelsb.domain.selection import all_bits, channel_members, whole
 
 # A verb at the head of a line: the word itself, so a word that merely contains
@@ -91,7 +90,7 @@ def parse(text: str, planes: tuple[SamplePlane, ...]) -> Mask | None:
     if _VERB.search(line):  # a verb the head test did not claim is a verb out of place
         raise CommandError(_VERB_APART)
     try:
-        tree = ast.parse(_with_bit_attributes(line), mode="eval").body
+        tree = ast.parse(with_bit_attributes(line), mode="eval").body
     except SyntaxError:
         return None
     part = _combine(tree, planes)
@@ -270,8 +269,8 @@ def _arnold_mask(argument: str | None) -> ArnoldMask:
     if len(words) != 3:
         raise CommandError(f"arnold 需要三个整数：arnold 1 2 3（收到 {len(words)} 个）")
     times, a, b = (_signed(word) for word in words)
-    if not 1 <= times <= ARNOLD_TIMES_MAX:
-        raise CommandError(f"次数要在 1..{ARNOLD_TIMES_MAX}：arnold {argument}")
+    if not 1 <= times <= ARNOLD_PARAM_LIMIT:
+        raise CommandError(f"次数要在 1..{ARNOLD_PARAM_LIMIT}：arnold {argument}")
     if abs(a) > ARNOLD_PARAM_LIMIT or abs(b) > ARNOLD_PARAM_LIMIT:
         raise CommandError(f"a、b 要在 ±{ARNOLD_PARAM_LIMIT} 内：arnold {argument}")
     return ArnoldMask(times, a, b)
@@ -281,14 +280,13 @@ def _integer(word: str, complaint: str) -> int:
     """An integer with an optional sign: decimal, or hexadecimal with a ``0x``.
 
     ``complaint`` is the error a malformed word raises — the verbs word theirs
-    differently for thresholds and cat-map parameters.
+    differently for thresholds and cat-map parameters. ``int`` itself reads the
+    sign and, at base 16, the ``0x`` prefix.
     """
-    digits = word.lstrip("+-")
     try:
-        value = int(digits, 16) if digits.lower().startswith("0x") else int(digits, 10)
+        return int(word, 16) if "0x" in word.lower() else int(word, 10)
     except ValueError:
         raise CommandError(complaint) from None
-    return -value if word.startswith("-") else value
 
 
 def _signed(word: str) -> int:

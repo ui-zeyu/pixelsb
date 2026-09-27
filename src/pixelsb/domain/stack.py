@@ -86,21 +86,24 @@ def apply_mask(raster: Raster, mask: Mask) -> Raster:
 
 
 def arnold_indices(size: int, times: int, a: int, b: int) -> tuple[IndexArray, IndexArray]:
-    """The cat map's destination grids after ``times`` steps: ``out[ny, nx] = in``.
+    """The cat map's destination grids after ``times`` steps: ``(rows, columns)`` of
+    the source cell each destination reads.
 
-    The map is linear, so ``times`` steps are one power of its 2 by 2 matrix: the
-    power is raised by repeated squaring — twelve multiplies for 4096 steps,
-    however large ``times`` grows — and the grids are then built in a single
-    pass. The coefficients are reduced mod ``size`` before they meet an axis,
-    so even the large parameters a brute force finds stay inside int64
-    arithmetic.
+    The matrix acts on ``(row, column)`` coordinates, the order the common
+    arnold_encode/arnold_decode scripts write their loops in — ``a`` multiplies
+    the row on the encode's second line, ``b`` the column on its first — so the
+    parameters a challenge's script names go here unchanged. The map is linear,
+    so ``times`` steps are one power of its 2 by 2 matrix: the power is raised by
+    repeated squaring, and the grids are then built in a single pass. The
+    coefficients are reduced mod ``size`` before they meet an axis, so even the
+    large parameters a brute force finds stay inside int64 arithmetic.
     """
     m00, m01, m10, m11 = _matrix_power((a * b + 1, -b, -a, 1), times, size)
-    columns = np.arange(size, dtype=np.int64)[None, :]
     rows = np.arange(size, dtype=np.int64)[:, None]
-    new_x = (m00 * columns + m01 * rows) % size
-    new_y = (m10 * columns + m11 * rows) % size
-    return new_y.astype(np.intp), new_x.astype(np.intp)
+    columns = np.arange(size, dtype=np.int64)[None, :]
+    new_row = (m00 * rows + m01 * columns) % size
+    new_column = (m10 * rows + m11 * columns) % size
+    return new_row.astype(np.intp), new_column.astype(np.intp)
 
 
 def _matrix_power(
@@ -134,9 +137,7 @@ def arnold_image(samples: SampleArray, times: int, a: int, b: int) -> SampleArra
     if samples.shape[0] != samples.shape[1]:
         raise ValueError("cat map needs a square picture")
     source_y, source_x = arnold_indices(samples.shape[0], times, a, b)
-    out = np.empty_like(samples)
-    out[source_y, source_x] = samples
-    return out
+    return _scattered(samples, source_y, source_x)
 
 
 def _arnold(raster: Raster, times: int, a: int, b: int) -> Raster:
@@ -177,7 +178,7 @@ def _spectrum(raster: Raster) -> SampleArray:
 
     A channel with no bit selected keeps its samples: the canvas paints none of
     it, so a spectrum there would be work nobody sees. That is the dial for the
-    planes a spectrum does not help — alpha and palette indexes — and it is the
+    planes a spectrum does not help — alpha above all — and it is the
     bits mask below this one that works it, like any other stacked mask.
     """
     painted = {choice.plane for choice in raster.selection}

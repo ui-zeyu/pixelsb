@@ -48,7 +48,7 @@ _GRID_AXES = ("left", "top")
 _BITS = "bits"
 # A bit index is a digit after the dot, which Python's grammar has no attribute
 # for, so ``R.3`` is compiled as ``R._3``: _BIT_MARK is the underscore that turns
-# the digits into an attribute name (see :func:`_with_bit_attributes`).
+# the digits into an attribute name (see :func:`with_bit_attributes`).
 _BIT_MARK = "_"
 _BIT_TOKEN = re.compile(r"\.\d+\Z")
 # A literal outside this range cannot mean anything a field could hold.
@@ -113,7 +113,7 @@ def _value_key(plane: str, attribute: str) -> str:
     return f"{plane}.{attribute}"
 
 
-def _with_bit_attributes(expression: str) -> str:
+def with_bit_attributes(expression: str) -> str:
     """``R.3`` written as ``R._3``: the attribute form the grammar accepts.
 
     A digit cannot follow a dot in Python's grammar, so a bit index only parses
@@ -178,7 +178,7 @@ class Filter:
 def compile_filter(expression: str, planes: tuple[SamplePlane, ...]) -> Filter:
     """Compile ``expression`` against the planes' field names."""
     try:
-        tree = ast.parse(_with_bit_attributes(expression), mode="eval")
+        tree = ast.parse(with_bit_attributes(expression), mode="eval")
     except SyntaxError as exc:
         raise PredicateError(f"语法错误：{exc.msg}") from exc
     names = field_names(planes)

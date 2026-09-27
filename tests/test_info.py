@@ -11,10 +11,11 @@ from PySide6.QtWidgets import QLabel, QPushButton
 from pytestqt.qtbot import QtBot
 
 from pixelsb.domain.models import LoadedImage
-from pixelsb.io.loading import image_from_pixels, load_image
+from pixelsb.io.loading import image_from_pixels, load_image, openable_repairs
 from pixelsb.ui import text
 from pixelsb.ui.info import InfoPanel
 from tests.support import chunk as _chunk
+from tests.support import doctored_png
 
 _ZIP_START = b"PK\x03\x04"
 
@@ -196,15 +197,6 @@ def test_a_hard_scanline_chain_still_renders(qtbot: QtBot, tmp_path: Path) -> No
     assert len(rendered) == 1
 
 
-def test_a_failed_render_says_so_without_a_dialog(qtbot: QtBot, tmp_path: Path) -> None:
-    panel = _panel(qtbot, _census_png(tmp_path, name="lace.png", interlace=1))
-    rendered: list[LoadedImage] = []
-    panel.render_requested.connect(rendered.append)
-    panel._on_block_rendered(1, True)  # the IDAT: interlaced data is declined
-    assert rendered == []
-    assert text.RENDER_FAILED in panel._canvas_note.text()
-
-
 def test_the_radio_renders_and_the_block_name_dumps(qtbot: QtBot, tmp_path: Path) -> None:
     """The two controls have one job each: the radio draws, the name shows bytes."""
     panel = _panel(qtbot, _fake_idat_png(tmp_path))  # rows: IHDR, IDAT, fake IDAT, IEND
@@ -300,6 +292,28 @@ def test_a_file_without_a_stream_claims_no_stream(qtbot: QtBot, tmp_path: Path) 
     panel = _panel(qtbot, path)
     assert panel._canvas_note.text() == text.original_note()
     assert panel._name_buttons == {}
+
+
+def test_the_repair_button_writes_a_sound_png(qtbot: QtBot, tmp_path: Path) -> None:
+    """Declared 10x10, data for 5x1: the button's copy opens as-is, CRC and all.
+
+    The patch is the loader's own, so the rewritten IHDR carries a fresh
+    checksum — a copy that is a broken PNG by anyone's reading would be a
+    strange thing for the repair row to hand out.
+    """
+    path = tmp_path / "doctored.png"
+    doctored_png(path, ramp=True)
+    panel = _panel(qtbot, path)
+    emitted: list[Path] = []
+    panel.open_requested.connect(emitted.append)
+    panel._open_repaired(openable_repairs(path)[0])
+    written = emitted[0]
+    image = load_image(written)  # the copy needs no repair of its own
+    assert (image.width, image.height) == (5, 1)
+    copy = written.read_bytes()
+    payload = copy.find(b"IHDR") + 4
+    stored = int.from_bytes(copy[payload + 13 : payload + 17], "big")
+    assert stored == zlib.crc32(copy[payload - 4 : payload + 13]) & 0xFFFFFFFF
 
 
 def test_a_stitched_tail_is_dumped_and_guessed(qtbot: QtBot, tmp_path: Path) -> None:

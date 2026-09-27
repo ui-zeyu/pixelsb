@@ -34,14 +34,10 @@ def test_a_signature_outranks_the_model_s_text_guess() -> None:
     assert found.engine == "filetype"
 
 
-def test_a_printable_stream_without_a_signature_stays_text() -> None:
-    found = classify(b"flag{just_text}\n")
-    assert found == Classification("txt", "text/plain", "magika")
-
-
 def test_the_model_s_text_subtypes_are_normalized_to_plain_text() -> None:
     """A short flag reads as a template to the model; what survives is "text"."""
     assert classify(b"flag{ok}") == Classification("txt", "text/plain", "magika")
+    assert classify(b"flag{just_text}\n") == Classification("txt", "text/plain", "magika")
     assert classify(b"flag{b3d7bed5-e8da-4d9c-848c-e5d332d63bcd}") == Classification(
         "txt", "text/plain", "magika"
     )

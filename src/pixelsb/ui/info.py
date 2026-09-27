@@ -1,7 +1,6 @@
 """The file-info page of the sidebar: the file, the container census, the EXIF."""
 
 import os
-import struct
 import tempfile
 from collections.abc import Sequence
 from dataclasses import replace
@@ -26,13 +25,14 @@ from PySide6.QtWidgets import (
 )
 
 from pixelsb.domain.classify import StreamClassifier
-from pixelsb.domain.container import Block, BlockRole, ContainerReport, SizeHint, render_blocks
+from pixelsb.domain.container import Block, BlockRole, ContainerReport, SizeHint
 from pixelsb.domain.detect import Detection, detect_patterns
 from pixelsb.domain.extract import BYTES_PER_ROW, filter_extract, format_extract
 from pixelsb.domain.models import ExtractEncoding, FrameGeometry, LoadedImage
+from pixelsb.domain.png_render import render_blocks
 from pixelsb.io.classify import stream_classifier
 from pixelsb.io.inspect import exif_entries, inspect_container
-from pixelsb.io.loading import frame_geometries, image_from_pixels, openable_repairs
+from pixelsb.io.loading import frame_geometries, image_from_pixels, openable_repairs, patched_ihdr
 from pixelsb.ui import text, theme
 from pixelsb.ui.controls import drain, hairline, section_title
 from pixelsb.ui.extract_view import ExtractView, dump_font
@@ -245,17 +245,16 @@ class InfoPanel(QWidget):
         self._sizes_row.addStretch(1)
 
     def _open_repaired(self, hint: SizeHint) -> None:
-        """Write a copy with the IHDR's width and height rewritten, and open it."""
+        """Write a copy with the IHDR's width and height rewritten, and open it.
+
+        The patch is the loader's own, CRC and all: a copy with a stale checksum
+        would be a broken PNG by anyone's reading, whatever this Pillow accepts.
+        """
         report = self._report
         if report is None or report.header is None or not self._file_data:
             return
         header = next(block for block in report.blocks if block.label == "IHDR")
-        at = header.payload_at
-        patched = (
-            self._file_data[:at]
-            + struct.pack(">II", hint.width, hint.height)
-            + self._file_data[at + 8 :]
-        )
+        patched = patched_ihdr(self._file_data, header.payload_at, hint)
         handle, name = tempfile.mkstemp(
             prefix=f"pixelsb-{hint.width}x{hint.height}-", suffix=".png"
         )

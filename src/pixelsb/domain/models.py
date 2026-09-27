@@ -18,12 +18,15 @@ MAX_ZOOM = 128.0
 # The widest level a value mask can name, whatever the image's planes are; the
 # useful ceiling for one image is the widest of its own planes (level_ceiling).
 MAX_LEVEL = 0xFFFF
-# The cat map's parameter bounds: a brute force finds large a and b, but past
-# int32 they stop fitting the arithmetic any canvas would run them in.
-ARNOLD_TIMES_MAX = 4096
+# The cat map's one parameter bound: a challenge script's coefficients are int32,
+# and that keeps the product a*b+1 inside int64 arithmetic. `times` only costs
+# log-times multiplies, so it could go higher, but no challenge asks for more
+# steps than this and one bound for all three is one thing to remember.
 ARNOLD_PARAM_LIMIT = 0x7FFF_FFFF
 # The color trio a picture is composed from, in the order the channels carry it.
 COLOR_SLOTS = ("R", "G", "B")
+# A gray plane standing in for the whole image, when the color trio is absent.
+GRAY_SLOTS = ("L",)
 
 
 class SampleOrigin(StrEnum):
@@ -117,10 +120,7 @@ class LoadedImage:
     frame_delays: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
-        if self.samples.dtype != np.uint16 or self.samples.ndim != 3:
-            raise ValueError("samples must be a uint16 array of shape (height, width, planes)")
-        samples = np.ascontiguousarray(self.samples)
-        samples.setflags(write=False)
+        samples = _freeze_samples(self.samples)
         object.__setattr__(self, "samples", samples)
         if self.width < 1 or self.height < 1:
             raise ValueError("image has no pixels")
@@ -263,8 +263,8 @@ class ArnoldMask:
     b: int = 1
 
     def __post_init__(self) -> None:
-        if not 1 <= self.times <= ARNOLD_TIMES_MAX:
-            raise ValueError(f"cat map times must be within 1..{ARNOLD_TIMES_MAX}")
+        if not 1 <= self.times <= ARNOLD_PARAM_LIMIT:
+            raise ValueError(f"cat map times must be within 1..{ARNOLD_PARAM_LIMIT}")
         if abs(self.a) > ARNOLD_PARAM_LIMIT or abs(self.b) > ARNOLD_PARAM_LIMIT:
             raise ValueError(f"cat map parameters must be within ±{ARNOLD_PARAM_LIMIT}")
 
@@ -326,10 +326,7 @@ class Raster:
     failures: tuple[MaskFailure, ...] = ()
 
     def __post_init__(self) -> None:
-        if self.samples.dtype != np.uint16 or self.samples.ndim != 3:
-            raise ValueError("samples must be a uint16 array of shape (height, width, planes)")
-        samples = np.ascontiguousarray(self.samples)
-        samples.setflags(write=False)
+        samples = _freeze_samples(self.samples)
         object.__setattr__(self, "samples", samples)
         if samples.shape[2] != len(self.planes):
             raise ValueError("sample channels do not match the planes")
@@ -388,6 +385,19 @@ class Raster:
         if self.live is None:
             return int(band.sum() * span.sum())
         return int(self.live[np.ix_(band, span)].sum())
+
+
+def _freeze_samples(samples: SampleArray) -> SampleArray:
+    """The sample array as every raster and image carries it: contiguous, read-only.
+
+    The check runs before the flags change, so an invalid array is refused
+    without touching the caller's own.
+    """
+    if samples.dtype != np.uint16 or samples.ndim != 3:
+        raise ValueError("samples must be a uint16 array of shape (height, width, planes)")
+    frozen = np.ascontiguousarray(samples)
+    frozen.setflags(write=False)
+    return frozen
 
 
 def _index_of(index: IndexArray | None, value: int, extent: int) -> int | None:

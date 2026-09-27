@@ -134,12 +134,12 @@ def test_identifier_errors_name_the_problem() -> None:
 
 
 def test_a_bit_index_is_marked_up_for_the_parser() -> None:
-    assert predicate._with_bit_attributes("R.3 == 1") == "R._3 == 1"
-    assert predicate._with_bit_attributes("R.0\nB.1") == "R._0\nB._1"
+    assert predicate.with_bit_attributes("R.3 == 1") == "R._3 == 1"
+    assert predicate.with_bit_attributes("R.0\nB.1") == "R._0\nB._1"
     # Nothing to mark: a float after a keyword or a space is left alone.
-    assert predicate._with_bit_attributes("R and .5") == "R and .5"
-    assert predicate._with_bit_attributes("left > .5") == "left > .5"
-    assert predicate._with_bit_attributes("R .5") == "R .5"
+    assert predicate.with_bit_attributes("R and .5") == "R and .5"
+    assert predicate.with_bit_attributes("left > .5") == "left > .5"
+    assert predicate.with_bit_attributes("R .5") == "R .5"
 
 
 def test_identifiers_are_case_insensitive() -> None:
@@ -295,20 +295,15 @@ def test_grid_args_can_be_named_or_expressions() -> None:
 
 
 def test_grid_errors_are_clear() -> None:
-    # Argument count/name errors surface at compile time; step and anchor
-    # errors surface at evaluation, like rect's scalar check.
+    # Argument count/name errors surface at compile time, and a non-scalar
+    # anchor at evaluation; the negative-anchor and step rules are swept whole
+    # by the property tests.
     with pytest.raises(PredicateError, match="4 个参数"):
         compile_filter("grid(0, 0, 1)", planes_rgb())
     with pytest.raises(PredicateError, match="参数名只能是"):
         compile_filter("grid(x=0, y=0, step_x=1, stride=1)", planes_rgb())
     with pytest.raises(PredicateError, match="缺少参数"):
         compile_filter("grid(x=0, y=0, step_x=1)", planes_rgb())
-    with pytest.raises(PredicateError, match="步长"):
-        _match("grid(0, 0, 0, 1)")
-    with pytest.raises(PredicateError, match="步长"):
-        _match("grid(0, 0, -1, 1)")
-    with pytest.raises(PredicateError, match="起点"):
-        _match("grid(-1, 0, 1, 1)")
     with pytest.raises(PredicateError, match="标量"):
         _match("grid(left, 0, 1, 1)")
 

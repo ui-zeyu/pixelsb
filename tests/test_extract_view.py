@@ -23,7 +23,7 @@ def test_findings_name_the_type_and_build_one_chip_per_detection(qtbot: QtBot) -
     view = _view(qtbot, b"flag{ok} " + _PNG)
     view.set_findings("类型 image/png · magic", detect_patterns(b"flag{ok} " + _PNG))
     chips = [button.text() for button in view.findChildren(QPushButton)]
-    assert "flag{ok} @ 0x0" in chips
+    assert "flag @ 0x0" in chips
     assert "PNG @ 0x9" in chips
     assert view.hex_pane.extraSelections()
 
@@ -45,7 +45,7 @@ def test_a_chip_click_selects_the_detection_bytes_in_the_dump(qtbot: QtBot) -> N
         button for button in view.findChildren(QPushButton) if button.text().startswith("flag")
     )
     chip.click()
-    assert view.hex_pane.textCursor().selectedText() == "66 6c 61 67 7b 6f 6b 7d"
+    assert view.hex_pane.textCursor().selectedText() == "66 6c 61 67"
 
 
 def test_a_detection_filtered_out_of_the_dump_has_nothing_to_jump_to(qtbot: QtBot) -> None:

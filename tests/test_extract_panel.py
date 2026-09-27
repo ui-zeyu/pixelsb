@@ -336,6 +336,20 @@ def test_the_grid_says_when_the_mask_in_hand_is_shadowed(qtbot: QtBot, extract_p
     assert panel._bits_editor._shadow_note.isHidden()
 
 
+def test_a_switched_off_bits_mask_shadows_nothing(qtbot: QtBot, extract_png: Path) -> None:
+    state = replace(
+        _state(extract_png, BitsMask(frozenset({BitChoice("R", 0)}))),
+        layers=(
+            Layer(BitsMask(frozenset({BitChoice("R", 0)}))),
+            Layer(BitsMask(frozenset({BitChoice("G", 0)})), enabled=False),
+        ),
+    )
+    panel = ExtractPanel()
+    qtbot.addWidget(panel)
+    _show(panel, state, bits_layer=0)
+    assert panel._bits_editor._shadow_note.isHidden()
+
+
 def test_a_deep_channel_keeps_its_grid_wide_enough_for_every_bit(qtbot: QtBot) -> None:
     """Sixteen columns do not fit the panel: the grid scrolls rather than squeezing."""
     planes = (SamplePlane("L", 0, 16, SampleOrigin.RAW),)
@@ -440,8 +454,8 @@ def test_a_kept_channel_order_the_list_cannot_offer_leads_the_list(
     assert requested == [("R", "G", "B", "A")]
 
 
-def test_the_grid_rows_are_alpha_first_without_the_index(qtbot: QtBot, tmp_path: Path) -> None:
-    """A palette image's grid reads A, R, G, B — the stored index stays out."""
+def test_the_grid_rows_are_alpha_first(qtbot: QtBot, tmp_path: Path) -> None:
+    """A palette image's grid reads A, R, G, B."""
     rng = np.random.default_rng(2)
     indexes = (rng.random((6, 6)) * 8).astype(np.uint8)
     image = Image.fromarray(indexes, mode="P")
@@ -451,4 +465,3 @@ def test_the_grid_rows_are_alpha_first_without_the_index(qtbot: QtBot, tmp_path:
     panel = _panel(qtbot, path)
     matrix = panel._bits_editor._matrix
     assert list(matrix._row_boxes) == ["A", "R", "G", "B"]
-    assert "Index" not in matrix._row_boxes

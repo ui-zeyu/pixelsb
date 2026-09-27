@@ -5,6 +5,7 @@ from numpy.typing import NDArray
 
 from pixelsb.domain.models import (
     COLOR_SLOTS,
+    GRAY_SLOTS,
     ChannelArray,
     IndexArray,
     Raster,
@@ -18,8 +19,6 @@ from pixelsb.domain.selection import bits_for, mask_of
 
 _CHECKER_DARK = 232
 _CHECKER_LIGHT = 255
-# A gray plane standing in for the whole image, in the order they are tried.
-_GRAY_SLOTS = ("L", "Index")
 
 
 def bit_plane(
@@ -111,7 +110,7 @@ def _painted(raster: Raster) -> tuple[RgbArray, ChannelArray | None]:
     scaled = _scaled_planes(raster)
     alpha = scaled.get("A")
     colors = [scaled.get(slot) for slot in COLOR_SLOTS]
-    gray = next((scaled[slot] for slot in _GRAY_SLOTS if slot in scaled), None)
+    gray = next((scaled[slot] for slot in GRAY_SLOTS if slot in scaled), None)
     if any(channel is not None for channel in colors):
         blank = np.zeros((raster.height, raster.width), dtype=np.uint8)
         painted = np.stack([blank if channel is None else channel for channel in colors], axis=-1)
@@ -128,7 +127,7 @@ def _painted(raster: Raster) -> tuple[RgbArray, ChannelArray | None]:
 def _scaled_planes(raster: Raster) -> dict[str, ChannelArray]:
     """One scaled byte array per plane the selection touches."""
     return {
-        plane.name: _scale_to_byte(*_masked_channel(raster.samples[:, :, plane.index], bits))
+        plane.name: scale_to_byte(*_masked_channel(raster.samples[:, :, plane.index], bits))
         for plane in raster.planes
         if (bits := bits_for(raster.selection, plane.name))
     }
@@ -154,7 +153,7 @@ def _masked_channel(
     return channel & np.uint16(mask), mask
 
 
-def _scale_to_byte(value: NDArray[np.uint16], maximum: int) -> ChannelArray:
+def scale_to_byte(value: NDArray[np.uint16], maximum: int) -> ChannelArray:
     """Map the masked range 0..maximum onto 0..255."""
     if maximum <= 0:
         return np.zeros(value.shape, dtype=np.uint8)

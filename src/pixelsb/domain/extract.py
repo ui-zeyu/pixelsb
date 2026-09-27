@@ -70,21 +70,69 @@ def extract_bytes(raster: Raster, order: ExtractOrder = DEFAULT_ORDER) -> bytes:
     low end of it. Pixels the region masks dropped are skipped, and the ones that
     survive keep their bit order and are re-packed densely.
     """
-    selection = raster.selection
-    if not selection:
-        return b""
-    # Select the surviving pixels first: expanding every bit plane of a large
-    # image just to discard most of it is slow and allocation heavy.
-    rows = _pixel_rows(raster, order.scan)
-    columns = [
-        _bit_column(rows, plane.index, bit)
-        for plane in ordered_planes(raster.planes, order)
-        for bit in bits_for(selection, plane.name)
-    ]
-    if not columns:
-        return b""
-    stream = np.stack(columns, axis=-1)
-    return np.packbits(stream.reshape(-1), bitorder=_PACKBIT_ORDER[order.bit_order]).tobytes()
+    return StreamSource(raster).stream(raster.selection, order)
+
+
+class StreamSource:
+    """The groundwork one sweep's streams share: the pixel rows and bit columns.
+
+    A sweep asks for many streams over the same pixels, in the candidates'
+    orders. The pixel rows are gathered once per scan order — the pixels the
+    region masks kept only, so every stream reads exactly what the extract
+    panel would show for the same recipe — and a bit plane's column is computed
+    the first time a candidate asks for it, so a candidate costs only the
+    assembly of its own columns into bytes.
+    """
+
+    def __init__(self, raster: Raster) -> None:
+        self._planes = raster.planes
+        self._samples = raster.samples
+        self._live = raster.live
+        self._rows: dict[ScanOrder, SampleArray] = {}
+        self._columns: dict[tuple[ScanOrder, int, int], NDArray[np.uint8]] = {}
+
+    def stream(
+        self,
+        selection: frozenset[BitChoice],
+        order: ExtractOrder = DEFAULT_ORDER,
+    ) -> bytes:
+        """The bytes ``selection`` packs here, read in ``order``."""
+        if not selection:
+            return b""
+        scan = order.scan
+        rows = self._pixel_rows(scan)
+        columns = [
+            self._bit_column(rows, scan, plane.index, bit)
+            for plane in ordered_planes(self._planes, order)
+            for bit in bits_for(selection, plane.name)
+        ]
+        if not columns:
+            return b""
+        packed = np.stack(columns, axis=-1)
+        return np.packbits(packed.reshape(-1), bitorder=_PACKBIT_ORDER[order.bit_order]).tobytes()
+
+    def _pixel_rows(self, scan: ScanOrder) -> SampleArray:
+        """The pixels one scan order reads, gathered the first time it is asked."""
+        rows = self._rows.get(scan)
+        if rows is None:
+            rows = _gathered_rows(self._samples, self._live, scan)
+            self._rows[scan] = rows
+        return rows
+
+    def _bit_column(
+        self,
+        rows: SampleArray,
+        scan: ScanOrder,
+        index: int,
+        bit: int,
+    ) -> NDArray[np.uint8]:
+        """One bit plane of one channel, computed the first time it is asked."""
+        key = (scan, index, bit)
+        column = self._columns.get(key)
+        if column is None:
+            column = _bit_column(rows, index, bit)
+            self._columns[key] = column
+        return column
 
 
 def ordered_planes(
@@ -131,15 +179,17 @@ def order_choices(
     return tuple(permutations(used))
 
 
-def _pixel_rows(raster: Raster, scan: ScanOrder) -> SampleArray:
+def _gathered_rows(
+    samples: SampleArray,
+    live: NDArray[np.bool_] | None,
+    scan: ScanOrder,
+) -> SampleArray:
     """The pixels to read, in scan order: rows first (XY) or columns first (YZ).
 
     A transposed view reads the same cells with the axes swapped, and what the
     region masks kept travels with it, so the surviving pixels keep column order.
     The reshape of that view is the one copy this order costs.
     """
-    samples = raster.samples
-    live = raster.live
     if scan is ScanOrder.YZ:
         samples = samples.transpose(1, 0, 2)
         live = None if live is None else live.T

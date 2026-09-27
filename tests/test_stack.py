@@ -233,16 +233,21 @@ def test_the_stack_starts_from_every_lowest_bit_when_it_is_asked_to() -> None:
 
 
 def _encode(samples: np.ndarray, times: int, a: int, b: int) -> np.ndarray:
-    """The forward cat map, the way a challenge would have scrambled the picture."""
+    """The forward cat map as the common arnold_encode scripts write it.
+
+    The matrix acts on ``(row, column)`` — ``a`` multiplies the row on the
+    second line, ``b`` the column on the first — and the app's recovery has to
+    read the same parameters in the same order to undo it.
+    """
     size = samples.shape[0]
-    columns = np.arange(size, dtype=np.int64)[None, :]
     rows = np.arange(size, dtype=np.int64)[:, None]
+    columns = np.arange(size, dtype=np.int64)[None, :]
     out = samples
     for _ in range(times):
-        new_x = (columns + b * rows) % size
-        new_y = (a * columns + (a * b + 1) * rows) % size
+        new_row = (rows + b * columns) % size
+        new_column = (a * rows + (a * b + 1) * columns) % size
         moved = np.empty_like(out)
-        moved[new_y, new_x] = out
+        moved[new_row, new_column] = out
         out = moved
     return out
 
@@ -261,6 +266,24 @@ def test_the_cat_maps_grids_name_every_cell_exactly_once() -> None:
     assert len(landed) == 36
 
 
+def test_the_cat_map_matches_the_arnold_decode_scripts() -> None:
+    """The parameters a challenge's own script takes decode the same picture here.
+
+    Transcribed straight from the loop every writeup ships: the new coordinates
+    are computed over ``(row, column)`` and the destination cell takes the
+    source's pixel. Huge int32 coefficients included.
+    """
+    rng = np.random.default_rng(9)
+    samples = rng.integers(0, 4, (8, 8, 3)).astype(np.uint16)
+    size = 8
+    rows = np.arange(size, dtype=np.int64)[:, None]
+    columns = np.arange(size, dtype=np.int64)[None, :]
+    for a, b in ((1, 2), (-3, 5), (0x729E, 0x6F6C53)):
+        script = np.zeros_like(samples)
+        script[((a * b + 1) * rows - b * columns) % size, (-a * rows + columns) % size] = samples
+        assert np.array_equal(arnold_image(samples, 1, a, b), script)
+
+
 def test_the_cat_maps_grids_match_composing_the_map_step_by_step() -> None:
     """Repeated squaring raises the map's matrix; the answer is the one composed."""
     rng = np.random.default_rng(7)
@@ -268,16 +291,17 @@ def test_the_cat_maps_grids_match_composing_the_map_step_by_step() -> None:
         size = int(rng.integers(2, 12))
         times = int(rng.integers(1, 40))
         a, b = int(rng.integers(-100, 100)), int(rng.integers(-100, 100))
-        columns = np.arange(size, dtype=np.int64)[None, :]
         rows = np.arange(size, dtype=np.int64)[:, None]
-        # The recovery map [[ab+1, -b], [-a, 1]], applied one step at a time.
-        x, y = (a * b + 1) * columns - b * rows, -a * columns + rows
-        x, y = x % size, y % size
+        columns = np.arange(size, dtype=np.int64)[None, :]
+        # The recovery map [[ab+1, -b], [-a, 1]], applied to (row, column) one
+        # step at a time, which is the arnold_decode script's own order.
+        row, column = (a * b + 1) * rows - b * columns, -a * rows + columns
+        row, column = row % size, column % size
         for _step in range(times - 1):
-            x, y = ((a * b + 1) * x - b * y) % size, (-a * x + y) % size
-        source_y, source_x = arnold_indices(size, times, a, b)
-        assert np.array_equal(source_x, x)
-        assert np.array_equal(source_y, y)
+            row, column = ((a * b + 1) * row - b * column) % size, (-a * row + column) % size
+        source_row, source_column = arnold_indices(size, times, a, b)
+        assert np.array_equal(source_row, row)
+        assert np.array_equal(source_column, column)
 
 
 def test_the_cat_map_mask_needs_the_whole_square() -> None:

@@ -3,7 +3,7 @@
 from collections.abc import Callable
 from functools import partial
 from pathlib import Path
-from typing import override
+from typing import cast, override
 
 from PySide6.QtCore import QEvent, QObject, Qt, QTimer
 from PySide6.QtGui import (
@@ -21,6 +21,8 @@ from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -36,6 +38,7 @@ from PySide6.QtWidgets import (
     QStatusBar,
     QTextEdit,
     QToolBar,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -95,11 +98,13 @@ from pixelsb.domain.transitions import (
 )
 from pixelsb.io.loading import ImageLoadError, load_frame, load_image
 from pixelsb.io.writing import save_image
-from pixelsb.ui import text, theme
+from pixelsb.ui import keymap, text, theme
 from pixelsb.ui.arnold import ArnoldPanel
 from pixelsb.ui.canvas import CanvasMode, ImageCanvas
 from pixelsb.ui.controls import RETURN_KEYS
 from pixelsb.ui.extract_panel import ExtractPanel
+from pixelsb.ui.extract_view import dump_font
+from pixelsb.ui.histogram_panel import HistogramPanel
 from pixelsb.ui.info import InfoPanel
 from pixelsb.ui.layers import LayerPanel
 from pixelsb.ui.painting import lighten_clear_button
@@ -115,7 +120,6 @@ _TEXT_INPUTS = (QLineEdit, QAbstractSpinBox, QPlainTextEdit, QTextEdit, QComboBo
 _CANVAS_MIN_WIDTH = 260
 _LEFT_MIN_WIDTH = 240
 _LEFT_WIDTH = 288
-_NUDGE_STEP = 8  # a shift-arrow moves this many pixels instead of one
 _FORMAT_ITEMS = tuple(
     (fmt.value, label)
     for fmt, label in (
@@ -124,22 +128,7 @@ _FORMAT_ITEMS = tuple(
         (DisplayFormat.BINARY, text.BINARY),
     )
 )
-# Keys the canvas never sees: what each one does is the whole table's story.
-_ARROW_KEYS = {
-    Qt.Key.Key_Left: (-1, 0),
-    Qt.Key.Key_Right: (1, 0),
-    Qt.Key.Key_Up: (0, -1),
-    Qt.Key.Key_Down: (0, 1),
-}
-_FOCUS_BIT_KEYS = {Qt.Key.Key_BracketLeft: -1, Qt.Key.Key_BracketRight: 1}
-_ZOOM_KEYS = {Qt.Key.Key_Plus: 1, Qt.Key.Key_Equal: 1, Qt.Key.Key_Minus: -1}
-_COMMAND_MODIFIERS = (
-    Qt.KeyboardModifier.ControlModifier
-    | Qt.KeyboardModifier.MetaModifier
-    | Qt.KeyboardModifier.AltModifier
-)
-_CHANNEL_LETTERS = ("R", "G", "B", "A", "L")
-_ORDERED_LETTERS = tuple(str(index) for index in range(1, 10))
+# Key presses are read by :mod:`pixelsb.ui.keymap`; the window only executes them.
 
 
 class MainWindow(QMainWindow):
@@ -274,8 +263,14 @@ class MainWindow(QMainWindow):
         self._lsb_action.triggered.connect(_drop_checked(partial(self.apply, select_lsbs)))
 
         help_menu = self.menuBar().addMenu(text.HELP_MENU)
-        help_action = help_menu.addAction(text.SHORTCUTS)
-        help_action.triggered.connect(_drop_checked(self._show_shortcuts))
+        shortcuts_action = help_menu.addAction(text.SHORTCUTS)
+        shortcuts_action.triggered.connect(
+            _drop_checked(partial(self._show_help, text.SHORTCUTS, text.SHORTCUT_HELP))
+        )
+        command_action = help_menu.addAction(text.COMMAND_HELP_TITLE)
+        command_action.triggered.connect(
+            _drop_checked(partial(self._show_help, text.COMMAND_HELP_TITLE, text.COMMAND_HELP))
+        )
 
     def _build_toolbar(self) -> None:
         toolbar = QToolBar("view")
@@ -439,13 +434,17 @@ class MainWindow(QMainWindow):
         self.scan_panel.apply_requested.connect(self._on_scan_applied)
         self.arnold_panel = ArnoldPanel()
         self.arnold_panel.picked.connect(self._on_arnold_picked)
+        self.histogram_panel = HistogramPanel()
         self._panels = SidePanels()
-        self._panels.add(Panel.INFO, text.PANEL_INFO, text.PANEL_INFO_TIP, self.info_panel)
         self._panels.add(
             Panel.EXTRACT, text.PANEL_EXTRACT, text.PANEL_EXTRACT_TIP, self.extract_panel
         )
         self._panels.add(Panel.SCAN, text.PANEL_SCAN, text.PANEL_SCAN_TIP, self.scan_panel)
         self._panels.add(Panel.ARNOLD, text.PANEL_ARNOLD, text.PANEL_ARNOLD_TIP, self.arnold_panel)
+        self._panels.add(
+            Panel.HISTOGRAM, text.PANEL_HISTOGRAM, text.PANEL_HISTOGRAM_TIP, self.histogram_panel
+        )
+        self._panels.add(Panel.INFO, text.PANEL_INFO, text.PANEL_INFO_TIP, self.info_panel)
 
         left = QScrollArea()
         left.setObjectName("layerArea")
@@ -496,43 +495,39 @@ class MainWindow(QMainWindow):
         return active is None or active is self
 
     def _handle_key(self, event: QKeyEvent) -> bool:
-        key = event.key()
-        modifiers = event.modifiers()
-        if modifiers & _COMMAND_MODIFIERS:
-            if key == Qt.Key.Key_C:
+        command = keymap.key_command(
+            cast("Qt.Key", event.key()),
+            event.modifiers(),
+            event.text(),
+            auto_repeat=event.isAutoRepeat(),
+        )
+        if command is None:
+            return False
+        match command:
+            case keymap.Copy():
                 self._copy()
-                return True
-            return False
-        if (arrows := _ARROW_KEYS.get(key)) is not None:
-            step = _NUDGE_STEP if modifiers & Qt.KeyboardModifier.ShiftModifier else 1
-            self._nudge(arrows[0] * step, arrows[1] * step)
-            return True
-        if (bit_step := _FOCUS_BIT_KEYS.get(key)) is not None:
-            self.apply(partial(step_focus_bit, delta=bit_step, layer=self._bits_layer()))
-            return True
-        if (direction := _ZOOM_KEYS.get(key)) is not None:
-            self._zoom_by(direction)
-            return True
-        if key == Qt.Key.Key_0:
-            self._fit()
-            return True
-        return self._handle_text_key(event)
-
-    def _handle_text_key(self, event: QKeyEvent) -> bool:
-        if event.isAutoRepeat():
-            return False
-        label = event.text().upper()
-        if label == "F":
-            self.apply(cycle_format)
-            return True
-        layer = self._bits_layer()
-        if label in _CHANNEL_LETTERS:
-            self.apply(partial(select_lsb, name=label, layer=layer))
-            return True
-        if label in _ORDERED_LETTERS:
-            self.apply(partial(select_lsb_at, position=int(label) - 1, layer=layer))
-            return True
-        return False
+            case keymap.Cursor(dx=dx, dy=dy, step=step):
+                # On the gallery page the arrows browse its candidates instead.
+                if self._panels.current is Panel.ARNOLD and self.arnold_panel.move_selection(
+                    dy, dx
+                ):
+                    return True
+                self._nudge(dx * step, dy * step)
+            case keymap.FocusBit(delta=delta):
+                self.apply(partial(step_focus_bit, delta=delta, layer=self._bits_layer()))
+            case keymap.Zoom(step=step):
+                self._zoom_by(step)
+            case keymap.Fit():
+                self._fit()
+            case keymap.CycleFormat():
+                self.apply(cycle_format)
+            case keymap.ChannelLsb(name=name):
+                self.apply(partial(select_lsb, name=name, layer=self._bits_layer()))
+            case keymap.OrderedLsb(position=position):
+                self.apply(partial(select_lsb_at, position=position, layer=self._bits_layer()))
+            case keymap.Page(panel=panel):
+                self._panels.set_current(panel)
+        return True
 
     def _apply(self, state: ViewerState) -> None:
         raster = self._resolve(state)
@@ -740,12 +735,9 @@ class MainWindow(QMainWindow):
         self._zoom_slider.blockSignals(True)
         self._zoom_slider.setValue(slider_position(state.zoom))
         self._zoom_slider.blockSignals(False)
-        self.scan_panel.set_image(image)
-        raster = self._raster
-        self.arnold_panel.set_source(
-            None if raster is None else raster.samples,
-            () if raster is None else raster.planes,
-        )
+        self.scan_panel.set_source(image, self._raster)
+        self.arnold_panel.set_source(image, self._raster)
+        self.histogram_panel.set_source(image, self._raster)
 
     # --- the scan page and the cat-map gallery ------------------------------
 
@@ -1054,8 +1046,21 @@ class MainWindow(QMainWindow):
         if selected:
             self.open_path(Path(selected))
 
-    def _show_shortcuts(self) -> None:
-        QMessageBox.information(self, text.SHORTCUTS, text.SHORTCUT_HELP)
+    def _show_help(self, title: str, body: str) -> None:
+        """The reference text in its own view: scrollable, selectable, monospaced."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle(title)
+        dialog.resize(620, 520)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(12, 12, 12, 12)
+        view = QPlainTextEdit(body)
+        view.setReadOnly(True)
+        view.setFont(dump_font())
+        layout.addWidget(view, 1)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+        buttons.accepted.connect(dialog.accept)
+        layout.addWidget(buttons)
+        dialog.exec()
 
     def _report_with_dialog(self, message: str) -> None:
         QMessageBox.warning(self, text.OPEN_FAILED, message)

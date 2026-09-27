@@ -29,8 +29,8 @@ def load_image(path: Path) -> LoadedImage:
 def load_frame(path: Path, index: int) -> LoadedImage:
     """Load one frame of a (possibly multi-frame) image.
 
-    Samples are native-endian uint16. Palette indexes stay separate from the
-    colors they look up, and 16-bit values keep their numeric samples. A PNG
+    Samples are native-endian uint16. A palette picture carries the colors its
+    palette looks up, and 16-bit values keep their numeric samples. A PNG
     whose declared size does not fit its own data — the doctored-IHDR trick —
     is retried under the geometries its byte count implies, closest to the
     declared aspect first; the file on disk stays exactly as it was, and the
@@ -57,6 +57,25 @@ def load_frame(path: Path, index: int) -> LoadedImage:
         raise ImageLoadError(str(exc)) from exc
 
 
+def _repair_hints(path: Path) -> tuple[bytes, int, tuple[SizeHint, ...]] | None:
+    """A doctored PNG's bytes, its IHDR payload offset, and the sizes to try.
+
+    ``None`` when the file cannot be read, is no PNG, or hides no size
+    candidates; the two callers each turn that into their own failure.
+    """
+    try:
+        data = Path(path).read_bytes()
+    except OSError:
+        return None
+    report = scan_container(data)
+    if report.header is None or not report.sizes:
+        return None
+    header_at = next((block.payload_at for block in report.blocks if block.label == "IHDR"), None)
+    if header_at is None:
+        return None
+    return data, header_at, report.sizes
+
+
 def _repaired_png(path: Path, index: int) -> LoadedImage | None:
     """The image a doctored IHDR was hiding, read under its own geometry.
 
@@ -64,20 +83,13 @@ def _repaired_png(path: Path, index: int) -> LoadedImage | None:
     accepts wins, and a file whose data fits nothing comes back as failure, as
     it always did. The bytes on disk are never touched.
     """
-    try:
-        report = scan_container(path.read_bytes())
-    except OSError:
+    found = _repair_hints(path)
+    if found is None:
         return None
-    if report.header is None:
-        return None
-    header_at = next((block.payload_at for block in report.blocks if block.label == "IHDR"), None)
-    if header_at is None:
-        return None
-    data = path.read_bytes()
-    for hint in report.sizes:
-        patched = _patched_ihdr(data, header_at, hint)
+    data, header_at, hints = found
+    for hint in hints:
         try:
-            with Image.open(io.BytesIO(patched)) as image:
+            with Image.open(io.BytesIO(patched_ihdr(data, header_at, hint))) as image:
                 if index and index >= max(int(getattr(image, "n_frames", 1) or 1), 1):
                     continue
                 image.seek(index)
@@ -95,20 +107,14 @@ def openable_repairs(path: Path) -> tuple[SizeHint, ...]:
     sufficient: rows can carry filter bytes no renderer accepts, so every hint
     is proved by a real decode before it earns a button.
     """
-    try:
-        report = scan_container(Path(path).read_bytes())
-    except OSError:
+    found = _repair_hints(path)
+    if found is None:
         return ()
-    if report.header is None or not report.sizes:
-        return ()
-    header_at = next((block.payload_at for block in report.blocks if block.label == "IHDR"), None)
-    if header_at is None:
-        return ()
-    data = Path(path).read_bytes()
+    data, header_at, hints = found
     good: list[SizeHint] = []
-    for hint in report.sizes:
+    for hint in hints:
         try:
-            with Image.open(io.BytesIO(_patched_ihdr(data, header_at, hint))) as image:
+            with Image.open(io.BytesIO(patched_ihdr(data, header_at, hint))) as image:
                 image.load()
         except Exception:
             continue
@@ -116,7 +122,7 @@ def openable_repairs(path: Path) -> tuple[SizeHint, ...]:
     return tuple(good)
 
 
-def _patched_ihdr(data: bytes, header_at: int, hint: SizeHint) -> bytes:
+def patched_ihdr(data: bytes, header_at: int, hint: SizeHint) -> bytes:
     """The file's bytes with the IHDR's width and height replaced, CRC and all.
 
     A patched chunk with the old checksum would be thrown out by the very
@@ -269,36 +275,13 @@ def _gray16(image: Image.Image) -> Decoded:
 
 
 def _palette(image: Image.Image) -> Decoded:
-    """The index is its own plane; the colors it looks up are four more."""
-    rgba = np.asarray(image.convert("RGBA"))
-    index = np.asarray(image)
-    return (
-        _stack(index, rgba[..., 0], rgba[..., 1], rgba[..., 2], rgba[..., 3]),
-        _planes(
-            ("Index", 8, SampleOrigin.RAW),
-            ("R", 8, SampleOrigin.PALETTE),
-            ("G", 8, SampleOrigin.PALETTE),
-            ("B", 8, SampleOrigin.PALETTE),
-            ("A", 8, SampleOrigin.PALETTE),
-        ),
-    )
+    """The colors the palette looks up, with the alpha channel beside them."""
+    return _rgba_channels(image), _rgba_planes(SampleOrigin.PALETTE, SampleOrigin.PALETTE)
 
 
 def _palette_alpha(image: Image.Image) -> Decoded:
-    raw = np.asarray(image)
-    if raw.ndim != 3 or raw.shape[2] < 2:
-        raise ImageLoadError(f"expected PA samples, got shape {raw.shape}")
-    rgba = np.asarray(image.convert("RGBA"))
-    return (
-        _stack(raw[..., 0], rgba[..., 0], rgba[..., 1], rgba[..., 2], raw[..., 1]),
-        _planes(
-            ("Index", 8, SampleOrigin.RAW),
-            ("R", 8, SampleOrigin.PALETTE),
-            ("G", 8, SampleOrigin.PALETTE),
-            ("B", 8, SampleOrigin.PALETTE),
-            ("A", 8, SampleOrigin.RAW),
-        ),
-    )
+    """The looked-up colors, over the alpha the file itself carries."""
+    return _rgba_channels(image), _rgba_planes(SampleOrigin.PALETTE, SampleOrigin.RAW)
 
 
 def _with_color_key(image: Image.Image, decoded: Decoded) -> Decoded:
@@ -330,15 +313,22 @@ def _with_color_key(image: Image.Image, decoded: Decoded) -> Decoded:
 
 def _converted(image: Image.Image) -> Decoded:
     """Anything else is decoded to RGBA, and the status bar says so."""
+    return _rgba_channels(image), _rgba_planes(SampleOrigin.CONVERTED, SampleOrigin.CONVERTED)
+
+
+def _rgba_channels(image: Image.Image) -> SampleArray:
+    """The picture as four uint16 planes, read out of its RGBA form."""
     rgba = np.asarray(image.convert("RGBA"), dtype=np.uint8)
-    return (
-        _stack(rgba[..., 0], rgba[..., 1], rgba[..., 2], rgba[..., 3]),
-        _planes(
-            ("R", 8, SampleOrigin.CONVERTED),
-            ("G", 8, SampleOrigin.CONVERTED),
-            ("B", 8, SampleOrigin.CONVERTED),
-            ("A", 8, SampleOrigin.CONVERTED),
-        ),
+    return _stack(rgba[..., 0], rgba[..., 1], rgba[..., 2], rgba[..., 3])
+
+
+def _rgba_planes(rgb_origin: SampleOrigin, alpha_origin: SampleOrigin) -> tuple[SamplePlane, ...]:
+    """The plane table of a four-channel picture, whose alpha may decode its own way."""
+    return _planes(
+        ("R", 8, rgb_origin),
+        ("G", 8, rgb_origin),
+        ("B", 8, rgb_origin),
+        ("A", 8, alpha_origin),
     )
 
 

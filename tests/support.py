@@ -5,6 +5,7 @@ import zlib
 from pathlib import Path
 
 import numpy as np
+from PIL import Image
 from PySide6.QtWidgets import QPushButton, QWidget
 
 from pixelsb.domain.models import (
@@ -111,3 +112,23 @@ def chunk(label: bytes, payload: bytes) -> bytes:
 def button(pair: QWidget, label: str) -> QPushButton:
     """The button of a segmented pair, by the text on it."""
     return next(widget for widget in pair.findChildren(QPushButton) if widget.text() == label)
+
+
+def doctored_png(path: Path, *, ramp: bool = False, declared: tuple[int, int] = (10, 10)) -> Path:
+    """A PNG declared ``declared`` whose data really fills 5x1: the repair row's case.
+
+    ``ramp`` puts nonzero bytes into the scanline, so a re-read under any other
+    geometry meets invalid filter bytes: only the true 5x1 survives a decode,
+    which is what the loader-repair cases want; plain zeros keep every
+    candidate decodable, which is what the size-button rows want.
+    """
+    pixels = np.zeros((1, 5, 3), dtype=np.uint8)
+    if ramp:
+        pixels[0, :, 0] = np.arange(5, dtype=np.uint8) * 40
+    Image.fromarray(pixels).save(path)
+    data = bytearray(path.read_bytes())
+    at = data.find(b"IHDR") + 4
+    width, height = declared
+    data[at : at + 8] = width.to_bytes(4, "big") + height.to_bytes(4, "big")
+    path.write_bytes(bytes(data))
+    return path

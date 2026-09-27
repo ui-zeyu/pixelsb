@@ -12,6 +12,7 @@ from pixelsb.io.loading import (
     load_frame,
     load_image,
 )
+from tests.support import doctored_png
 
 
 def test_image_from_pixels_keeps_a_fourth_channel() -> None:
@@ -88,7 +89,7 @@ def test_la_keeps_luminance_and_alpha(tmp_path: Path) -> None:
     assert [plane.origin for plane in loaded.planes] == [SampleOrigin.RAW, SampleOrigin.RAW]
 
 
-def test_palette_index_is_separate_from_the_looked_up_color(tmp_path: Path) -> None:
+def test_palette_image_loads_the_looked_up_colors(tmp_path: Path) -> None:
     image = Image.new("P", (2, 1))
     palette = [0] * 768
     palette[0:6] = [255, 0, 0, 0, 0, 255]
@@ -99,12 +100,10 @@ def test_palette_index_is_separate_from_the_looked_up_color(tmp_path: Path) -> N
     path = tmp_path / "palette.png"
     image.save(path)
     loaded = load_image(path)
-    assert loaded.plane("Index").origin is SampleOrigin.RAW
+    assert [plane.name for plane in loaded.planes] == ["R", "G", "B", "A"]
     assert loaded.plane("R").origin is SampleOrigin.PALETTE
-    assert int(loaded.samples[0, 0, loaded.plane("Index").index]) == 1
-    assert int(loaded.samples[0, 0, loaded.plane("R").index]) == 0
-    assert int(loaded.samples[0, 0, loaded.plane("B").index]) == 255
-    assert int(loaded.samples[0, 1, loaded.plane("A").index]) == 0
+    assert loaded.samples[0, 0].tolist() == [0, 0, 255, 255]  # index 1, the blue it looks up
+    assert loaded.samples[0, 1].tolist() == [255, 0, 0, 0]  # index 0: the red, under the color key
 
 
 def test_sixteen_bit_png_and_big_endian_tiff_keep_numeric_samples(tmp_path: Path) -> None:
@@ -144,7 +143,7 @@ def test_gif_reports_every_frame_and_decodes_the_first(tmp_path: Path) -> None:
     assert loaded.frame_count == 3
     assert loaded.frame_index == 0
     assert loaded.frame_delays == (40, 50, 60)
-    assert int(loaded.samples[0, 0, loaded.plane("Index").index]) == 0
+    assert loaded.samples[0, 0].tolist() == [0, 0, 0, 255]  # the palette color, looked up
 
 
 def test_load_frame_decodes_the_frame_it_is_asked_for(tmp_path: Path) -> None:
@@ -220,17 +219,11 @@ def test_frame_geometries_of_a_still_image_is_empty(tmp_path: Path) -> None:
 
 def test_a_doctored_ihdr_opens_under_the_geometry_its_data_fills(tmp_path: Path) -> None:
     """Declared 10x10, data for 5x1: the loader repairs in memory, the file stays put."""
-    path = tmp_path / "doctored.png"
-    pixels = np.zeros((1, 5, 3), dtype=np.uint8)
-    pixels[0, :, 0] = np.arange(5, dtype=np.uint8) * 40
-    Image.fromarray(pixels).save(path)
-    data = bytearray(path.read_bytes())
-    at = data.find(b"IHDR") + 4
-    data[at : at + 8] = (10).to_bytes(4, "big") + (10).to_bytes(4, "big")
-    path.write_bytes(bytes(data))
+    path = doctored_png(tmp_path / "doctored.png", ramp=True)
+    data = path.read_bytes()
     image = load_image(path)
     assert (image.width, image.height) == (5, 1)
-    assert path.read_bytes() == bytes(data)  # the file on disk is exactly as it was
+    assert path.read_bytes() == data  # the file on disk is exactly as it was
 
 
 def test_a_small_declared_size_still_loads_as_declared(tmp_path: Path) -> None:

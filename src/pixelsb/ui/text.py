@@ -49,7 +49,10 @@ PANEL_SCAN = "⌕"
 PANEL_SCAN_TIP = "扫描"
 PANEL_ARNOLD = "猫"
 PANEL_ARNOLD_TIP = "猫脸变换爆破"
+PANEL_HISTOGRAM = "▥"
+PANEL_HISTOGRAM_TIP = "直方图与卡方"
 SHORTCUTS = "快捷键"
+COMMAND_HELP_TITLE = "命令语法"
 ORIGINAL = "原图"
 ALL_LSB = "全部最低位"
 ZOOM_IN = "+"
@@ -62,20 +65,20 @@ CHANNEL_TIP = "勾选整条通道"
 COLUMN_TIP = "勾选整列"
 PLANE_PREV = "◀"
 PLANE_NEXT = "▶"
-PLANE_PREV_TIP = "上一个位平面（按 R7…R0、G7… 的顺序反向切换，到头循环）"
-PLANE_NEXT_TIP = "下一个位平面（按 R7…R0、G7… 的顺序切换，到头循环）"
+PLANE_PREV_TIP = "上一位平面"
+PLANE_NEXT_TIP = "下一位平面"
 CHANNEL_PREV = "▲"
 CHANNEL_NEXT = "▼"
-CHANNEL_PREV_TIP = "上一个通道的整条通道（R → G → B 循环）"
-CHANNEL_NEXT_TIP = "下一个通道的整条通道（R → G → B 循环）"
+CHANNEL_PREV_TIP = "上一条通道"
+CHANNEL_NEXT_TIP = "下一条通道"
 EXTRACT_SEARCH_TIP = "搜索十六进制或 ASCII"
 EXTRACT_OFFSET = "偏移"
-EXTRACT_ENCODING_TIP = "点击切换右侧文本的解读编码：ASCII、UTF-8、UTF-16LE、UTF-16BE"
-ORDER_CHANNEL_TIP = "通道顺序：每个像素里先读哪条通道的位（StegSolve 的 RGB、BGR 等排列）"
-ORDER_BIT_MSB_TIP = "位序：先出现的位放进字节最高位；整条 8 位通道全选时得到按位反转的字节"
-ORDER_BIT_LSB_TIP = "位序：先出现的位放进字节最低位；整条 8 位通道全选时得到的正是原始字节值"
-ORDER_SCAN_XY_TIP = "扫描顺序：先横后纵，一行走完再换下一行"
-ORDER_SCAN_YZ_TIP = "扫描顺序：先纵后横，一列走完再换下一列"
+EXTRACT_ENCODING_TIP = "切换右列文本的编码"
+ORDER_CHANNEL_TIP = "像素内先读哪条通道的位"
+ORDER_BIT_MSB_TIP = "先出现的位放在字节高位"
+ORDER_BIT_LSB_TIP = "先出现的位放在字节低位"
+ORDER_SCAN_XY_TIP = "先横后纵"
+ORDER_SCAN_YZ_TIP = "先纵后横"
 EXTRACT_ENCODINGS: tuple[tuple[ExtractEncoding, str], ...] = (
     (ExtractEncoding.ASCII, "ASCII"),
     (ExtractEncoding.UTF8, "UTF-8"),
@@ -85,30 +88,42 @@ EXTRACT_ENCODINGS: tuple[tuple[ExtractEncoding, str], ...] = (
 EXTRACT_ENCODING_LABELS: dict[ExtractEncoding, str] = dict(EXTRACT_ENCODINGS)
 FILTER_PLACEHOLDER = "命令：b.0、r or g、thr 128、b > r and b > g、rect(0, 0, 10, 10)"
 FILTER_ERROR = "命令错误："
-FILTER_TIP = (
-    "命令输入：一行写一个操作，第一个词决定它是哪一类。"
-    "选中一条操作时框里就是它的命令，改完回车原地替换（种类也可以换）；"
-    "框为空时输入会在最上面添加；点击配方空白处取消选中后框也是空的。"
-    "打字过程中不预演，回车才应用；回车后框里写成这条命令的标准写法，与配方里那条一致。"
-    "操作命令：thr 数值、xor 数值、inv、gray、crop，要单独一行。"
-    "位选择：整行只有通道与位 token（b.0 只看 B 的 0 位、b 看整条通道、"
-    "a 是 alpha 通道、all 是全部位），它们之间可用 or、and、not，如 r or g.0、all and not r。"
-    "区域条件：其余文本（b > r、left < 10、rect(...)、B.0 == 1），"
-    "条件之间照常用 and / or / not。"
-    "and / or / not 只在同类之间使用：把位选择和区域条件写在一行会被拒绝，"
-    "分成两行写，操作之间的组合交给配方栈。"
-    "命令写在框正在编辑的那一条上（换种类也行）；框没有绑定操作时加到栈顶；"
-    "位网格与快捷键只写位选择那一层，不会改写别类操作；落栈后可以用 ▲ ▼ 再调。"
-    "数值写十进制（128）或带 0x 的十六进制（0x80），且不能超过这张图最宽通道的满值"
-    "（8 位 255、16 位 65535）。"
-    "区域字段：left、top、right、bottom 与各通道名（R、G、B…），"
-    "像素占据 [left, right) × [top, bottom)；"
-    "通道名是原始值，加 .bits 换成勾选位算出的值，加位号取该通道的某一位；"
-    "rect(x0, y0, x1, y1) 选中矩形，grid(x, y, step_x, step_y) 按步长取点，参数均可具名。"
-    "画布切到「选区」工具后拖动框选，回车把选区加为区域操作，Esc 取消预览。"
-    "⌘F 聚焦，回车应用，Shift+回车在栈顶再叠一条（不动手里这条），"
-    "Esc 先清空框里的文字、空框再按才删掉这一条并回到画布。"
-)
+FILTER_TIP = "回车应用 · ⇧回车另叠一条 · Esc 清空，空框再按删除这一条"
+COMMAND_HELP = """\
+命令输入：一行写一个操作，第一个词决定它是哪一类。
+选中一条操作时框里就是它的命令，改完回车原地替换（种类也可以换）；框为空时输入会在最上面添加。
+打字过程中不预演，回车才应用；回车后框里写成这条命令的标准写法，与配方里那条一致。
+
+操作命令（单独一行，不与别的内容组合）
+  thr 数值          值 > 阈值 压成满值或 0
+  xor 数值          每个通道与常数按位异或
+  inv               每个通道按满值取反
+  gray              三个颜色通道换成亮度
+  crop              画布收缩到命中像素的范围
+  fft               位选择勾到的通道换成对数幅度谱
+  arnold 次数 a b   猫映射逆变换重排像素（与常见脚本同名同序），要方图
+
+位选择（整行只有通道与位）
+  b      整条通道        b.0    只看这一位       all    全部位
+  or / and / not   并、交、补，如 r or g.0、all and not r
+
+区域条件（其余文本）
+  left top right bottom     像素占据 [left, right) × [top, bottom)
+  通道名                    原始值；加 .bits 是勾选位的值，加位号（R.3）是那一位
+  rect(x0, y0, x1, y1)      矩形，参数可具名 left= top= right= bottom=
+  grid(x, y, step_x, step_y)    从起点按步长取点
+  比较、算术、and / or / not 照常组合，如 b > r and b > g
+
+写法
+  数值：十进制 128，或 0x 十六进制；不能超过这张图最宽通道的满值（8 位 255、16 位 65535）
+  位选择和区域条件不能写在一行：分成两行，操作之间的组合由配方栈负责
+  命令写在框正在编辑的那一条上；框没有绑定操作时加到栈顶
+  位网格与快捷键只写位选择那一层，不会改写别类操作
+
+按键
+  ⌘F 聚焦命令框    回车应用    Shift+回车在栈顶再叠一条
+  Esc 先清空框里的文字；空框再按才删掉这一条并回到画布
+"""
 DECIMAL = "十进制"
 HEX = "十六进制"
 BINARY = "二进制"
@@ -117,11 +132,11 @@ FILTER_NO_MATCH = "过滤器未命中任何像素"
 MODE_MOVE = "移动"
 MODE_SELECT = "选区"
 MODE_MOVE_TIP = "拖动画布平移视图"
-MODE_SELECT_TIP = "拖动框选区域；回车把选区加为区域操作，Esc 取消"
-THRESHOLD_LEVEL_TIP = "阈值：0 到该图通道满值（8 位即 255），每个通道按 值 > 阈值 压成满值或 0"
-XOR_VALUE_TIP = "异或值：把每个通道与这个常数按位异或，置位的位被翻转（16 位通道可填到 0xFFFF）"
+MODE_SELECT_TIP = "拖动框选；回车加为区域操作，Esc 取消"
+THRESHOLD_LEVEL_TIP = "每个通道按 值 > 阈值 压成满值或 0"
+XOR_VALUE_TIP = "每个通道与这个常数按位异或"
 VIEW_EXPORT = "导出"
-VIEW_EXPORT_TIP = "把当前的位选择与值域操作的结果存为图像文件；区域操作的淡化是观看用的，不写进文件"
+VIEW_EXPORT_TIP = "当前画面存为图像文件（区域淡化只用于显示）"
 EXTRACT_SAVE = "保存"
 EXTRACT_SAVE_TIP = "把整条提取字节流写入文件"
 FRAME_PREV = "◀"
@@ -134,11 +149,11 @@ SECTION_FRAMES = "帧"
 SECTION_EXIF = "EXIF"
 INFO_NO_EXIF = "无 EXIF 信息"
 FRAME_HEADERS = ("帧", "尺寸", "偏移", "延时")
-SIZE_HINT_NOTE = "像素数据量与声明的宽高不符，这些宽高能正好放下这份数据，点击修补 IHDR 并打开："
-SIZE_OPEN_TIP = "按这个宽高改写 IHDR，写出一个修补后的文件并打开它"
+SIZE_HINT_NOTE = "声明的宽高放不下这些像素，可修补为："
+SIZE_OPEN_TIP = "按此宽高改写 IHDR 并打开修补后的文件"
 WARNING_MARK = "⚠"
-BLOCK_RENDER_TIP = "选中把这一块按所属的数据流渲染成像素"
-DUMP_TIP = "点击在下方查看这一块的十六进制转储（含块头与校验）"
+BLOCK_RENDER_TIP = "把这一块所在的流渲染到画布"
+DUMP_TIP = "查看这一块的十六进制转储"
 RENDER_FAILED = "无法渲染所选块"
 ANY_FILE = "所有文件 (*)"
 SAVE_FAILED = "无法保存"
@@ -216,12 +231,11 @@ CONVERTED_NOTE = "位平面来自转换后的数据"
 IMAGE_FILTER = (
     "图像 (*.png *.bmp *.gif *.tif *.tiff *.webp *.jpg *.jpeg *.ppm *.pgm *.pbm);;所有文件 (*)"
 )
-ZOOM_TIP = "拖动缩放。⌘滚轮、触控板捏合和 +、- 也可以"
+ZOOM_TIP = "⌘滚轮、捏合或 +、− 缩放"
 ZOOM_RESET_TIP = "按原始像素大小显示（1 倍）"
 FORMAT_TIP = "F 在十进制、十六进制、二进制之间切换"
-MATRIX_TIP = (
-    "勾选位来组合画面和数字。行首、列首的复选框选整行或整列。⌘、Ctrl 或 Shift 加单击＝只看这一位。"
-)
+MATRIX_TIP = "单击勾选；⌘、Ctrl 或 Shift 加单击只看这一位"
+
 SHORTCUT_HELP = """⌘O    打开
 方向键    移动光标 1 像素
 Shift+方向键    移动 8 像素
@@ -239,6 +253,7 @@ R G B A L    画面只看该通道的最低位
 1–9    按顺序只看该通道的最低位
 F    切换进制
 ⌘F    命令输入：b.0、thr 128、xor 0xFF、区域表达式
+⌘1–⌘5    切换右侧栏页面：提取 / 扫描 / 猫 / 直方图 / 文件信息
 ⌘C    复制读数"""
 
 ORIGIN_LABEL = {
@@ -249,57 +264,30 @@ ORIGIN_LABEL = {
 
 SECTION_LAYERS = "配方"
 LAYER_ADD = "＋"
-LAYER_ADD_TIP = (
-    "在最上面添加一个操作：越靠上的越晚生效。"
-    "要参数的（位选择、区域、阈值、异或）直接在命令输入里输入。"
-)
+LAYER_ADD_TIP = "添加操作；越靠上越晚生效，要参数的写进命令框"
 LAYER_UP = "▲"
-LAYER_UP_TIP = "把选中的操作上移一条，让它更晚生效"
+LAYER_UP_TIP = "上移（更晚生效）"
 LAYER_DOWN = "▼"
-LAYER_DOWN_TIP = "把选中的操作下移一条，让它更早生效"
+LAYER_DOWN_TIP = "下移（更早生效）"
 LAYER_REMOVE = "✕"
-LAYER_REMOVE_TIP = "删除选中的操作"
-LAYER_ENABLED_TIP = "开关这一条；关掉的操作不参与画面和提取"
+LAYER_REMOVE_TIP = "删除这一条"
+LAYER_ENABLED_TIP = "开关这一条"
 LAYER_BASE = "原图"
-LAYER_BASE_NOTE = (
-    "最底层：文件里的原始像素，始终生效，也不能删除。操作自下而上依次作用在它上面。"
-    "在命令输入里输入即可添加，如 b.0、thr 128、xor 0xFF。"
-)
-LAYER_REGION_NOTE = "区域操作的表达式在命令输入里编辑：选中这一条，框里就是它。"
-LAYER_BITS_NOTE = (
-    "位网格在右侧「提取」栏：在那里勾选位，或用「原图」「全部最低位」预设；"
-    "位选择也可以直接在命令输入里写，如 b.0、r or g。"
-)
-LAYER_COMMAND_NOTE = "参数在命令输入里改：选中这一条，框里就是它的命令，改完回车。"
-BITS_PRESET_TIP = "把这条操作的位选择换成整幅原图，或换成每个通道的最低位"
+BITS_PRESET_TIP = "换成整幅原图，或每通道的最低位"
 LAYER_ALL_BITS = "全部位"
 LAYER_NONE = "未选择"
 EMPTY_EXPRESSION = "（空表达式，不过滤）"
 
-MASK_BITS_TIP = (
-    "位选择：画面画哪些位、提取流里打包哪些位。勾在下方网格里选。"
-    "开了多层时只有最上面那一层算数：下面是它替换掉的位，可以关掉或删掉。"
-)
+MASK_BITS_TIP = "勾选画面与提取流用哪些位"
 MASK_BITS_SHADOWED = "上面还有开着的「位选择」操作：当前画面与提取用的是最上面那一条。"
-MASK_REGION_TIP = "区域：按表达式筛掉像素，没通过的像素画布淡化、提取流跳过。"
-MASK_CROP_TIP = "裁剪：把画布收缩到命中像素的范围，范围外不再显示。"
-MASK_INVERT_TIP = "反相：每个通道按所在通道的最大值取反，翻转黑白二维码或负片式隐藏图案。"
-MASK_GRAYSCALE_TIP = "灰度：三个颜色通道都换成像素亮度，弱化颜色干扰、凸显低对比度区域。"
-MASK_THRESHOLD_TIP = (
-    "阈值：每个通道按 值 > 阈值 压成满值或 0（阈值上限是该图通道的满值）；"
-    "放在灰度之上就是黑白二值化。"
-)
-MASK_XOR_TIP = "异或：每个通道与常数按位异或，翻转常数置位的那些位；16 位通道填到 0xFFFF。"
-MASK_FFT_TIP = (
-    "频谱：位选择勾到的每个通道换成它的对数幅度谱（直流居中，双重对数拉伸），"
-    "不想动的通道（如 A、Index）在 fft 下面的位选择里取消勾选即可。"
-    "中心亮团是整幅图的平均亮度，自然图像的能量向中心聚集；"
-    "离中心的对称亮点是周期性图案，频域盲水印的入口；阈值和裁剪可以照常接在后面。"
-)
-MASK_ARNOLD_TIP = (
-    "猫脸变换：按猫映射的逆变换重排像素（恢复方向），arnold 次数 a b——"
-    "出题方用正向变换加密时，同名参数即可还原。要方图，且作用在完整画幅上。"
-)
+MASK_REGION_TIP = "按表达式筛掉像素，没通过的淡化且不进提取流"
+MASK_CROP_TIP = "把画布收缩到命中像素的范围"
+MASK_INVERT_TIP = "每个通道按满值取反"
+MASK_GRAYSCALE_TIP = "三个颜色通道换成像素亮度"
+MASK_THRESHOLD_TIP = "每个通道按 值 > 阈值 压成满值或 0"
+MASK_XOR_TIP = "每个通道与常数按位异或"
+MASK_FFT_TIP = "勾到的每个通道换成对数幅度谱（直流居中）"
+MASK_ARNOLD_TIP = "猫映射逆变换重排像素；arnold 次数 a b，要方图"
 
 
 @dataclass(frozen=True, slots=True)
@@ -530,26 +518,27 @@ def status_view(state: ViewerState, raster: Raster | None) -> str:
 # --- the scan page and the cat-map gallery ----------------------------------
 
 SECTION_SWEEP = "扫描"
+SECTION_ARNOLD = "猫脸变换"
+SECTION_HISTOGRAM = "直方图"
+SECTION_CHI2 = "卡方"
+CHI2_TIP = "p 接近 1：这一位的值对像被交换过，即该位像被写入过"
 SWEEP_START = "开始扫描"
 SWEEP_STOP = "停止"
-SWEEP_NOTE = (
-    "按原图的字节扫描（不含配方），每个候选是一次提取，命中的排在前排；"
-    "点击一条就把它的位选择与提取顺序写进配方。"
-)
 SWEEP_COLUMNS = ("命令", "顺序", "预览", "结果")
 SWEEP_NOTHING = "—"
 
 
 def sweep_candidates(total: int) -> str:
-    return f"{total} 个候选，点击「开始扫描」" if total else "这张图没有可扫描的候选"
+    return f"{total} 个候选" if total else "无可扫描候选"
 
 
 def sweep_progress(done: int, total: int) -> str:
-    return f"扫描中 {done}/{total}"
+    return f"{done}/{total}"
 
 
 def sweep_done(flagged: int, total: int) -> str:
-    return f"完成：{flagged} 条带 flag / {total}，其余按类型猜测排在后面"
+    hits = f"命中 {flagged}" if flagged else "无命中"
+    return f"{hits} · {total} 个候选"
 
 
 def sweep_order(order: ExtractOrder) -> str:
@@ -567,19 +556,14 @@ def sweep_result(hit: ScanHit) -> str:
     return " · ".join(parts) if parts else SWEEP_NOTHING
 
 
-ARNOLD_SOURCE = "对当前画面的像素做爆破；候选是变换后的缩略图，点击就写成一条「猫脸变换」操作。"
-ARNOLD_NEEDS_SQUARE = "猫脸变换要方图：当前画面是 {width}×{height}。"
+ARNOLD_NEEDS_SQUARE = "需要方图：当前 {width}×{height}"
 ARNOLD_TIMES = "次数"
 ARNOLD_A = "a"
 ARNOLD_B = "b"
+RANGE_DASH = "–"
 ARNOLD_START = "开始"
 ARNOLD_STOP = "停止"
-ARNOLD_CANCELLED = "已停止，共 {count} 个候选"
-
-
-def arnold_source(width: int, height: int, channels: int) -> str:
-    """The gallery's source line: what pixels the search is running on."""
-    return f"当前画面 {width}×{height} · {channels} 通道"
+ARNOLD_CANCELLED = "已停止 · {count} 个候选"
 
 
 def arnold_not_square(width: int, height: int) -> str:
@@ -601,3 +585,12 @@ def arnold_progress(done: int, total: int) -> str:
 
 def arnold_cancelled(count: int) -> str:
     return ARNOLD_CANCELLED.format(count=count)
+
+
+def arnold_done(count: int) -> str:
+    return f"{count} 个候选"
+
+
+def chi2_detail(plane: str, bit: int, statistic: float, degrees: int) -> str:
+    """One cell's tooltip: the pair test's numbers behind the p it shows."""
+    return f"{plane} 位 {bit} · χ² {statistic:.0f} · 自由度 {degrees}"

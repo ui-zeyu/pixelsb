@@ -520,13 +520,14 @@ class ImageCanvas(QWidget):
 
     @override
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
-        if event.mimeData().hasUrls():
-            event.acceptProposedAction()
-            return
-        event.ignore()
+        self._accept_urls(event)
 
     @override
     def dragMoveEvent(self, event: QDragMoveEvent) -> None:
+        self._accept_urls(event)
+
+    def _accept_urls(self, event: QDragEnterEvent | QDragMoveEvent) -> None:
+        """Take a drag of files, and refuse every other kind."""
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
             return

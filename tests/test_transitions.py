@@ -220,11 +220,14 @@ def test_adding_nothing_adds_nothing() -> None:
     assert masks(state) == (InvertMask(),)
 
 
-def test_a_half_typed_line_changes_nothing() -> None:
-    """No prefix of a command may touch the stack: ``b>r and b.`` is not a filter."""
+def test_an_unread_or_half_typed_line_changes_nothing() -> None:
+    """No line touches the stack until it is finished, and a refused line never does."""
     state = add_layer(_open(), RegionMask("R > 0"))
     assert set_mask_text(state, "b>r and b.", layer=0) is state
     assert set_mask_text(state, "R >= ", layer=0) is state
+    with pytest.raises(commands.CommandError):
+        set_mask_text(state, "thr 1x", layer=0)
+    assert masks(state) == (RegionMask("R > 0"),)
 
 
 def test_writing_an_empty_text_drops_the_mask_it_edits() -> None:
@@ -232,13 +235,6 @@ def test_writing_an_empty_text_drops_the_mask_it_edits() -> None:
     assert masks(set_mask_text(state, "  ", layer=1)) == (InvertMask(),)
     empty = _open()
     assert set_mask_text(empty, "") is empty  # nothing to drop, nothing happens
-
-
-def test_a_command_the_box_cannot_read_changes_nothing() -> None:
-    state = add_layer(_open(), InvertMask())
-    with pytest.raises(commands.CommandError):
-        set_mask_text(state, "thr 1x", layer=0)
-    assert masks(state) == (InvertMask(),)
 
 
 def test_a_region_mask_can_be_edited_by_its_index_or_by_what_is_selected() -> None:
@@ -514,17 +510,16 @@ def test_an_arnold_line_on_a_nonsquare_image_is_refused_before_landing() -> None
         add_mask_text(state, text="arnold 1 1 1")
 
 
-def test_stepping_follows_the_grid_order_alpha_first_index_out() -> None:
+def test_stepping_follows_the_grid_order_alpha_first() -> None:
     planes = (
-        SamplePlane("Index", 0, 8, SampleOrigin.RAW),
-        SamplePlane("R", 1, 8, SampleOrigin.RAW),
-        SamplePlane("G", 2, 8, SampleOrigin.RAW),
-        SamplePlane("B", 3, 8, SampleOrigin.RAW),
-        SamplePlane("A", 4, 8, SampleOrigin.RAW),
+        SamplePlane("R", 0, 8, SampleOrigin.RAW),
+        SamplePlane("G", 1, 8, SampleOrigin.RAW),
+        SamplePlane("B", 2, 8, SampleOrigin.RAW),
+        SamplePlane("A", 3, 8, SampleOrigin.RAW),
     )
-    image = make_image(np.zeros((1, 1, 5), dtype=np.uint16), planes, path=Path("p.png"))
+    image = make_image(np.zeros((1, 1, 4), dtype=np.uint16), planes, path=Path("p.png"))
     state = open_image(ViewerState(), image)
-    # The grid's first row is alpha, so the first step lands on A7, not Index7.
+    # The grid's first row is alpha, so the first step lands on A7.
     assert bits_of(step_plane(state, 1)) == frozenset({BitChoice("A", 7)})
     # Whole channels walk the grid's rows: A → R → G → B → back to A, each
     # step taking every bit of the channel it lands on.
@@ -535,16 +530,14 @@ def test_stepping_follows_the_grid_order_alpha_first_index_out() -> None:
     for expected in ("A", "R", "G", "B", "A"):
         walked = step_channel(walked, 1)
         assert bits_of(walked) == all_channels[expected]
-    assert "Index" not in {choice.plane for choice in bits_of(walked)}
 
 
 def test_digit_positions_follow_the_grid_order() -> None:
     planes = (
-        SamplePlane("Index", 0, 8, SampleOrigin.RAW),
-        SamplePlane("R", 1, 8, SampleOrigin.RAW),
-        SamplePlane("A", 2, 8, SampleOrigin.RAW),
+        SamplePlane("R", 0, 8, SampleOrigin.RAW),
+        SamplePlane("A", 1, 8, SampleOrigin.RAW),
     )
-    image = make_image(np.zeros((1, 1, 3), dtype=np.uint16), planes, path=Path("p.png"))
+    image = make_image(np.zeros((1, 1, 2), dtype=np.uint16), planes, path=Path("p.png"))
     state = open_image(ViewerState(), image)
     assert bits_of(select_lsb_at(state, 0)) == frozenset({BitChoice("A", 0)})
     assert bits_of(select_lsb_at(state, 1)) == frozenset({BitChoice("R", 0)})

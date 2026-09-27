@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from pixelsb.domain.models import CropMask, LoadedImage, PixelCoord, Raster, RegionMask
-from tests.support import layers, make_image, planes_rgb, raster
+from tests.support import make_image, planes_rgb, raster
 
 
 def _image(height: int = 3, width: int = 4) -> LoadedImage:
@@ -85,11 +85,3 @@ def test_the_raster_refuses_row_and_column_indices_of_the_wrong_length() -> None
             selection=frozenset(),
             columns=np.arange(2, dtype=np.intp),
         )
-
-
-def test_a_layer_holds_its_mask_and_its_switch() -> None:
-    mask = RegionMask("R > 0")
-    (layer,) = layers(mask)
-    assert layer.mask == mask
-    assert layer.enabled
-    assert not layers(mask, enabled=False)[0].enabled

@@ -320,7 +320,7 @@ def step_channel(state: ViewerState, delta: int, *, layer: int | None = None) ->
 def select_lsb(state: ViewerState, name: str, *, layer: int | None = None) -> ViewerState:
     """Show one named channel's lowest bit."""
     image = state.image
-    if image is None or all(plane.name != name for plane in image.planes):
+    if image is None or plane_or_none(image.planes, name) is None:
         return state
     return select_only(state, name, 0, layer=layer)
 
