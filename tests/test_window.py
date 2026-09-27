@@ -1360,7 +1360,7 @@ def test_gallery_thumbnails_read_gray_as_gray() -> None:
     )
     samples = np.zeros((2, 2, 2), dtype=np.uint16)
     samples[..., 0] = 40
-    rgb = _as_rgb(samples, planes)
+    rgb = _as_rgb(samples, planes, (255, 255))
     assert (
         rgb[..., 0].tolist() == rgb[..., 1].tolist() == rgb[..., 2].tolist() == [[40, 40], [40, 40]]
     )
@@ -1376,4 +1376,38 @@ def test_gallery_thumbnails_take_the_color_trio_and_leave_alpha_out() -> None:
     )
     samples = np.zeros((2, 2, 4), dtype=np.uint16)
     samples[..., 0], samples[..., 1], samples[..., 2], samples[..., 3] = 10, 200, 30, 255
-    assert _as_rgb(samples, planes).tolist() == [[[10, 200, 30], [10, 200, 30]]] * 2
+    tops = (255, 255, 255, 255)
+    assert _as_rgb(samples, planes, tops).tolist() == [[[10, 200, 30], [10, 200, 30]]] * 2
+
+
+def test_the_gallery_sweeps_the_values_the_canvas_shows(qtbot: QtBot, tmp_path: Path) -> None:
+    """A bits selection carries into the sweep: the thumbnails show the view, in its scale.
+
+    R alternates 2 and 3; through an R bit-0 view the picture is a red-and-black
+    checkerboard, and a thumbnail that read the stored bytes would stay nearly
+    black — the mask's own range is what scales the view up to full brightness.
+    """
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    pixels = np.zeros((4, 4, 3), dtype=np.uint8)
+    pixels[..., 0] = np.array([2, 3] * 8).reshape(4, 4)
+    window.open_loaded(image_from_pixels(tmp_path / "bits.png", pixels))
+    window._panels.set_current(Panel.ARNOLD)
+    panel = window.arnold_panel
+    window._filter_edit.setText("r.0")
+    window._apply_filter_text()
+    for axis in panel._ranges:
+        axis[1].setValue(1)
+    panel._on_start()
+    qtbot.waitUntil(lambda: panel._worker is None, timeout=10000)
+    assert panel._grid.count() > 0
+    card = panel._grid.itemAt(0)
+    assert card is not None
+    button = card.widget()
+    assert isinstance(button, QToolButton)
+    image = button.icon().pixmap(96, 96).toImage()
+    brightest = max(
+        image.pixelColor(x, y).value() for x in range(image.width()) for y in range(image.height())
+    )
+    assert brightest >= 200  # the masked {0, 1} plane scales to the full byte range

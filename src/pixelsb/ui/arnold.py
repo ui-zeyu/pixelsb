@@ -42,7 +42,7 @@ from pixelsb.domain.models import (
     SamplePlane,
     plane_or_none,
 )
-from pixelsb.domain.samples import scale_to_byte
+from pixelsb.domain.samples import scale_to_byte, viewed_samples
 from pixelsb.domain.stack import arnold_image
 from pixelsb.ui import painting, text, theme
 from pixelsb.ui.controls import drain, section_title
@@ -55,8 +55,11 @@ _SPIN_WIDTH = 104  # wide enough for every digit ±2147483647 can ask for
 class _BruteWorker(Stoppable):
     """The sweep over a parameter cube, one thumbnail per candidate.
 
-    ``jobs`` is consumed lazily, so a wide range costs the page nothing until
-    each candidate is actually transformed, and ``stop`` answers between them.
+    ``samples`` are the values the canvas shows — the selection's bits where it
+    carries a plane — and ``tops`` are the ranges those values end at, so the
+    thumbnails scale the way the canvas does. ``jobs`` is consumed lazily, so a
+    wide range costs the page nothing until each candidate is actually
+    transformed, and ``stop`` answers between them.
     """
 
     found = Signal(int, int, int, float, QImage)
@@ -65,6 +68,7 @@ class _BruteWorker(Stoppable):
     def __init__(
         self,
         samples: SampleArray,
+        tops: tuple[int, ...],
         planes: tuple[SamplePlane, ...],
         jobs: Iterator[tuple[int, int, int]],
         total: int,
@@ -72,6 +76,7 @@ class _BruteWorker(Stoppable):
     ) -> None:
         super().__init__(parent)
         self._samples = samples
+        self._tops = tops
         self._planes = planes
         self._jobs = jobs
         self.total = total
@@ -83,7 +88,7 @@ class _BruteWorker(Stoppable):
             if self._stopping:
                 break
             decoded = arnold_image(self._samples, times, a, b)
-            rgb = _as_rgb(decoded, self._planes)
+            rgb = _as_rgb(decoded, self._planes, self._tops)
             self.found.emit(times, a, b, _smoothness(rgb), _thumbnail(rgb))
             self.count += 1
             self.reached.emit(self.count)
@@ -106,15 +111,17 @@ def _picture_indexes(planes: tuple[SamplePlane, ...]) -> tuple[int, ...]:
     return (gray.index,)
 
 
-def _as_rgb(samples: SampleArray, planes: tuple[SamplePlane, ...]) -> NDArray[np.uint8]:
-    """The picture as HxWx3 bytes, at the canvas's own channel scale.
+def _as_rgb(
+    samples: SampleArray, planes: tuple[SamplePlane, ...], tops: tuple[int, ...]
+) -> NDArray[np.uint8]:
+    """The picture as HxWx3 bytes, at the scale the canvas shows each plane.
 
     A gray picture repeats its one plane, so an alpha plane must never dress
     itself up as a color channel, which is what turned gray-plus-alpha thumbnails
     teal.
     """
     indexes = _picture_indexes(planes)
-    scaled = [scale_to_byte(samples[:, :, index], planes[index].maximum) for index in indexes]
+    scaled = [scale_to_byte(samples[:, :, index], tops[index]) for index in indexes]
     if len(scaled) == 1:
         scaled = scaled * 3
     return np.stack(scaled, axis=-1)
@@ -280,7 +287,8 @@ class ArnoldPanel(QWidget):
             return
         self._clear_grid()
         self._seats = self._columns()
-        self._worker = _BruteWorker(raster.samples, raster.planes, self._jobs(), total, self)
+        samples, tops = viewed_samples(raster)
+        self._worker = _BruteWorker(samples, tops, raster.planes, self._jobs(), total, self)
         self._worker.found.connect(self._on_found)
         self._worker.reached.connect(self._on_reached)
         self._worker.finished.connect(partial(self._on_done, self._worker))

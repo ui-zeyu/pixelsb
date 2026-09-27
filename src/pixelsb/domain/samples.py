@@ -124,6 +124,43 @@ def _painted(raster: Raster) -> tuple[RgbArray, ChannelArray | None]:
     return np.zeros((raster.height, raster.width, 3), dtype=np.uint8), None
 
 
+def viewed_channel(raster: Raster, plane: SamplePlane) -> tuple[NDArray[np.uint16], int]:
+    """One plane's values as the selection views them, and the top of that range.
+
+    A plane the selection carries bits of keeps those bits and zeroes the rest —
+    the values the canvas paints — and its range tops at the mask itself. A
+    plane the selection misses keeps its stored values, the rule fft follows
+    too. A region's dimming never enters: it hides nothing.
+    """
+    channel = raster.samples[:, :, plane.index]
+    bits = bits_for(raster.selection, plane.name)
+    if bits:
+        mask = mask_of(bits)
+        if mask != plane.maximum:
+            return channel & np.uint16(mask), mask
+    return channel, plane.maximum
+
+
+def viewed_samples(raster: Raster) -> tuple[SampleArray, tuple[int, ...]]:
+    """The whole canvas as the selection views it, with each plane's range top.
+
+    The array is shared with the raster until one plane needs masking, and the
+    tops tell a scaler where the values end: the mask for a carried plane, the
+    plane's own maximum otherwise.
+    """
+    tops: list[int] = []
+    viewed: SampleArray | None = None
+    for index, plane in enumerate(raster.planes):
+        channel, top = viewed_channel(raster, plane)
+        tops.append(top)
+        if top == plane.maximum:
+            continue
+        if viewed is None:
+            viewed = np.array(raster.samples)
+        viewed[:, :, index] = channel
+    return (raster.samples if viewed is None else viewed), tuple(tops)
+
+
 def _scaled_planes(raster: Raster) -> dict[str, ChannelArray]:
     """One scaled byte array per plane the selection touches."""
     return {

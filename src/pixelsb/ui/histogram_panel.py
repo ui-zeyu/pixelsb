@@ -1,10 +1,11 @@
 """The histogram page: every channel's value census, and the chi-square read.
 
-The chart draws the planes the canvas is showing — the pixels as the stack
-leaves them, a crop already taken away — overlaid in one log-scaled plot, where
-the shapes a stego tool leaves are spiky pairs and missing values rather than a
-smooth hill. Under it, one chi-square row per channel: the p of the value-pair
-test per bit, warning-tinted when a bit reads as written.
+The chart draws the planes the canvas is showing — the values the stack and
+the bits selection leave in view, a crop already taken away — overlaid in one
+log-scaled plot, where the shapes a stego tool leaves are spiky pairs and
+missing values rather than a smooth hill. Under it, one chi-square row per
+channel: the p of the value-pair test per shown bit, warning-tinted when a bit
+reads as written.
 """
 
 from dataclasses import dataclass
@@ -17,13 +18,12 @@ from PySide6.QtGui import QColor, QFontMetricsF, QPainter, QPaintEvent, QPen, QP
 from PySide6.QtWidgets import QGridLayout, QLabel, QVBoxLayout, QWidget
 
 from pixelsb.domain import histogram
-from pixelsb.domain.models import LoadedImage, Raster, SampleArray, SamplePlane
+from pixelsb.domain.models import BitChoice, LoadedImage, Raster, SampleArray, SamplePlane
 from pixelsb.ui import text, theme
 from pixelsb.ui.controls import drain, section_title
 from pixelsb.ui.extract_view import dump_font
 
 _BINS = 256  # display buckets; a 16-bit plane's 65536 counts fold into them
-_MAX_BITS = 8  # the chi-square columns, low bits first: where an LSB write lands
 _CHART_HEIGHT = 170
 _PAD_LEFT, _PAD_TOP, _PAD_RIGHT, _PAD_BOTTOM = 34.0, 10.0, 10.0, 16.0
 
@@ -44,7 +44,8 @@ class _PlaneData:
     name: str
     color: QColor
     shape: NDArray[np.float64]  # log10(1 + count) per display bin
-    top: int  # the plane's maximum, the x axis's end
+    top: int  # the plane's range's end, the x axis's candidate end
+    bits: tuple[int, ...]  # the source bits this row's cells read
     tails: tuple[tuple[float, int] | None, ...]  # per shown bit: (χ², df), or None
     p: tuple[float | None, ...]  # per shown bit: the tail's p
 
@@ -54,26 +55,24 @@ def _plane_color(name: str) -> QColor:
 
 
 def _plane_data(raster: Raster, plane: SamplePlane) -> _PlaneData:
-    counts = histogram.plane_counts(raster, plane)
-    shown = _max_bits(plane)
+    counts, top = histogram.plane_counts(raster, plane)
+    stored = histogram.stored_counts(raster, plane)
+    bits = histogram.shown_bits(raster, plane)
     tails: list[tuple[float, int] | None] = []
     p: list[float | None] = []
-    for bit in range(shown):
-        verdict = histogram.pair_chi_square(counts, bit)
+    for bit in bits:
+        verdict = histogram.pair_chi_square(stored, bit)
         tails.append(verdict)
         p.append(None if verdict is None else histogram.chi2_tail(*verdict))
     return _PlaneData(
         name=plane.name,
         color=_plane_color(plane.name),
-        shape=np.log10(_binned(counts) + 1.0),
-        top=plane.maximum,
+        shape=np.log10(_binned(counts[: top + 1]) + 1.0),
+        top=top,
+        bits=bits,
         tails=tuple(tails),
         p=tuple(p),
     )
-
-
-def _max_bits(plane: SamplePlane) -> int:
-    return min(plane.bit_depth, _MAX_BITS)
 
 
 def _binned(counts: NDArray[np.int64]) -> NDArray[np.float64]:
@@ -191,9 +190,11 @@ class HistogramPanel(QWidget):
         self._image: LoadedImage | None = None
         self._raster: Raster | None = None
         self._samples: SampleArray | None = None  # identity: what the numbers were read from
-        self._signature: tuple[tuple[str, int, int], ...] = ()
+        self._selection: frozenset[BitChoice] | None = None  # and which bits they were read through
+        self._signature: tuple[tuple[str, int, tuple[int, ...]], ...] = ()
         self._cells: dict[tuple[str, int], QLabel] = {}
         self._chart = _Chart()
+        self._chart.setToolTip(text.HISTOGRAM_TIP)
         self._empty = QLabel(text.NO_IMAGE)
         self._empty.setObjectName("note")
         self._grid_host = QWidget()
@@ -213,46 +214,55 @@ class HistogramPanel(QWidget):
         layout.addStretch(1)
 
     def set_source(self, image: LoadedImage | None, raster: Raster | None) -> None:
-        """Point the page at the canvas's picture; it recomputes when the samples move.
+        """Point the page at the canvas's picture; it recomputes when the view moves.
 
-        The counts and the pair test read the samples alone, so a bits or region
-        change — a new raster over the same array — keeps the read it already has.
+        The counts and the pair test read the samples and the bits selection —
+        the picture the canvas paints — so a bits change recounts, and only a
+        region change, whose dimming hides no pixels, keeps the read it has.
         """
         samples = None if raster is None else raster.samples
-        if image is self._image and samples is self._samples:
+        selection = None if raster is None else raster.selection
+        if image is self._image and samples is self._samples and selection == self._selection:
             self._raster = raster
             return
         self._image = image
         self._raster = raster
         self._samples = samples
-        planes = () if raster is None else raster.planes
-        signature = tuple((plane.name, plane.bit_depth, plane.maximum) for plane in planes)
+        self._selection = selection
+        planes: tuple[SamplePlane, ...] = ()
+        signature: tuple[tuple[str, int, tuple[int, ...]], ...] = ()
+        data: tuple[_PlaneData, ...] = ()
+        if raster is not None and raster.width > 0 and raster.height > 0:
+            planes = raster.planes
+            signature = tuple(
+                (plane.name, plane.bit_depth, histogram.shown_bits(raster, plane))
+                for plane in planes
+            )
+            data = tuple(_plane_data(raster, plane) for plane in planes)
         if signature != self._signature:
             self._signature = signature
-            self._build_grid(planes)
-        data = (
-            tuple(_plane_data(raster, plane) for plane in planes)
-            if raster is not None and raster.width > 0 and raster.height > 0
-            else ()
-        )
+            self._build_grid(raster, planes)
         self._chart.set_planes(data)
         self._update_cells(data)
         self._empty.setVisible(raster is None or not data)
 
-    def _build_grid(self, planes: tuple[SamplePlane, ...]) -> None:
-        """One row per plane, one column per shown bit; the bits head the columns."""
+    def _build_grid(self, raster: Raster | None, planes: tuple[SamplePlane, ...]) -> None:
+        """One row per plane; the columns sit at the bits the rows actually read."""
         drain(self._grid)
         self._cells = {}
-        shown = max((_max_bits(plane) for plane in planes), default=0)
-        for bit in range(shown):
+        shown = (
+            [histogram.shown_bits(raster, plane) for plane in planes] if raster is not None else []
+        )
+        width = max((bits[-1] for bits in shown if bits), default=-1)
+        for bit in range(width + 1):
             head = QLabel(str(bit))
             head.setObjectName("note")
             self._grid.addWidget(head, 0, 1 + bit)
-        for row, plane in enumerate(planes, start=1):
+        for row, (plane, bits) in enumerate(zip(planes, shown, strict=True), start=1):
             name = QLabel(plane.name)
             name.setObjectName("note")
             self._grid.addWidget(name, row, 0)
-            for bit in range(_max_bits(plane)):
+            for bit in bits:
                 cell = QLabel()
                 cell.setFont(dump_font())
                 self._cells[plane.name, bit] = cell
@@ -260,13 +270,12 @@ class HistogramPanel(QWidget):
         self._grid_host.setVisible(bool(planes))
 
     def _update_cells(self, data: tuple[_PlaneData, ...]) -> None:
-        """Fill the grid: the p per bit, tinted when the bit reads as written."""
+        """Fill the grid: the p per shown bit, tinted when the bit reads as written."""
         for plane in data:
-            for bit, p in enumerate(plane.p):
+            for bit, verdict, p in zip(plane.bits, plane.tails, plane.p, strict=True):
                 cell = self._cells.get((plane.name, bit))
                 if cell is None:
                     continue
-                verdict = plane.tails[bit]
                 cell.setText("—" if p is None or verdict is None else f"{p:.2f}")
                 cell.setToolTip(
                     ""

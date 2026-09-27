@@ -1,10 +1,12 @@
 """Channel histograms, and the chi-square read of a bit plane's value pairs.
 
-The histogram is the picture's value census: how many cells hold each stored
-value. The chi-square read judges one bit plane over it: values that differ
-only in that bit form a pair, and writing the bit trades pixels inside each
-pair — so a plane something was written into has pair counts sitting at their
-average, and the statistic collapses toward its degrees of freedom.
+The histogram is the picture's value census: how many cells hold each value
+the canvas shows — the samples as the stack leaves them, with a bits selection
+keeping its bits and zeroing the rest, and a crop already taken away. The
+chi-square read judges one bit plane over the stored values: values that
+differ only in that bit form a pair, and writing the bit trades pixels inside
+each pair — so a plane something was written into has pair counts sitting at
+their average, and the statistic collapses toward its degrees of freedom.
 """
 
 import math
@@ -13,14 +15,40 @@ import numpy as np
 from numpy.typing import NDArray
 
 from pixelsb.domain.models import Raster, SamplePlane
+from pixelsb.domain.samples import viewed_channel
+from pixelsb.domain.selection import bits_for
 
 _SERIES_TERMS = 200_000
 _FRACTION_TERMS = 200_000
 _TAIL_SIGMAS = 80.0  # past this many standard deviations the double has no digits left
+_MAX_SHOWN = 8  # the chi-square columns, the selection's choice or the low eight
 
 
-def plane_counts(raster: Raster, plane: SamplePlane) -> NDArray[np.int64]:
-    """One plane's value histogram: how many cells hold each stored value."""
+def shown_bits(raster: Raster, plane: SamplePlane) -> tuple[int, ...]:
+    """The bits the page reads for one plane: the selection's choice, or the low eight."""
+    chosen = bits_for(raster.selection, plane.name)
+    if chosen:
+        return chosen[:_MAX_SHOWN]
+    return tuple(range(min(plane.bit_depth, _MAX_SHOWN)))
+
+
+def plane_counts(raster: Raster, plane: SamplePlane) -> tuple[NDArray[np.int64], int]:
+    """The canvas's census of one plane, and the top of the range it spans.
+
+    The census reads what the canvas paints: the values :func:`viewed_channel`
+    views — the selection's bits with the rest zeroed, a plane the selection
+    misses stored as is, a crop already taken away.
+    """
+    channel, top = viewed_channel(raster, plane)
+    return np.bincount(channel.ravel(), minlength=top + 1).astype(np.int64), top
+
+
+def stored_counts(raster: Raster, plane: SamplePlane) -> NDArray[np.int64]:
+    """The file's own census of one plane, whatever the selection puts in view.
+
+    The pair test reads this one: its value pairs are defined over the stored
+    byte range, and a masked single-bit view leaves only one pair standing.
+    """
     channel = raster.samples[:, :, plane.index].ravel()
     return np.bincount(channel, minlength=plane.maximum + 1).astype(np.int64)
 

@@ -6,6 +6,7 @@ from pixelsb.domain.models import (
     BitsMask,
     CropMask,
     InvertMask,
+    Raster,
     RegionMask,
     SampleOrigin,
     SamplePlane,
@@ -15,6 +16,8 @@ from pixelsb.domain.samples import (
     composite_on_checkerboard,
     render_export,
     render_raster,
+    viewed_channel,
+    viewed_samples,
 )
 from tests.support import make_image, planes_rgb, planes_rgba, raster
 
@@ -127,3 +130,37 @@ def test_export_without_alpha_is_the_plain_picture() -> None:
     # A selection that leaves the alpha channel out keeps three channels too.
     colors = BitsMask(_selection(("R", 7), ("G", 7), ("B", 7)))
     assert render_export(raster(image, colors)).shape == (1, 1, 3)
+
+
+def test_viewed_channel_keeps_the_carried_bits_and_zeroes_the_rest() -> None:
+    samples = np.zeros((1, 2, 3), dtype=np.uint16)
+    samples[..., 0] = 0b1010
+    raster_built = Raster(samples=samples, planes=planes_rgb(), selection=_selection(("R", 1)))
+    channel, top = viewed_channel(raster_built, raster_built.planes[0])
+    assert channel.tolist() == [[2, 2]]  # 0b1010 & 0b10: bit 1 alone
+    assert top == 2  # the range ends at the mask, not the plane's maximum
+
+
+def test_viewed_channel_keeps_a_plane_the_selection_misses() -> None:
+    samples = np.zeros((1, 2, 3), dtype=np.uint16)
+    samples[..., 1] = 7
+    raster_built = Raster(samples=samples, planes=planes_rgb(), selection=_selection(("R", 0)))
+    channel, top = viewed_channel(raster_built, raster_built.planes[1])
+    assert channel.tolist() == [[7, 7]]  # untouched planes keep their stored values
+    assert top == 255
+
+
+def test_viewed_samples_shares_the_array_until_a_plane_needs_masking() -> None:
+    samples = np.zeros((1, 2, 3), dtype=np.uint16)
+    samples[..., 0] = 3
+    samples[..., 1] = 1
+    plain = Raster(samples=samples, planes=planes_rgb(), selection=frozenset())
+    viewed, tops = viewed_samples(plain)
+    assert viewed is plain.samples  # nothing restricted: no copy at all
+    assert tops == (255, 255, 255)
+    restricted = Raster(samples=samples, planes=planes_rgb(), selection=_selection(("G", 0)))
+    viewed, tops = viewed_samples(restricted)
+    assert viewed is not restricted.samples
+    assert tops == (255, 1, 255)
+    assert viewed[..., 1].tolist() == [[1, 1]]
+    assert viewed[..., 0].tolist() == [[3, 3]]  # the untouched plane rides along unchanged

@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from pixelsb.domain import histogram
-from pixelsb.domain.models import Raster
+from pixelsb.domain.models import BitChoice, Raster
 from tests.support import planes_rgb
 
 
@@ -20,10 +20,45 @@ def test_the_census_counts_every_cell_of_its_plane() -> None:
     samples = np.zeros((2, 3, 3), dtype=np.uint16)
     samples[:, :, 1] = 7
     raster_built = Raster(samples=samples, planes=planes_rgb(), selection=frozenset())
-    counts = histogram.plane_counts(raster_built, raster_built.planes[1])
+    counts, top = histogram.plane_counts(raster_built, raster_built.planes[1])
     assert counts.size == 256
     assert counts.sum() == 6
     assert counts[7] == 6
+    assert top == 255
+
+
+def test_the_census_keeps_only_the_bits_the_selection_carries() -> None:
+    """A restricted plane counts masked values: bit 0 alone, the rest read as zero."""
+    samples = np.zeros((2, 3, 3), dtype=np.uint16)
+    samples[:, :, 1] = np.array([1, 2, 3, 0, 1, 3]).reshape(2, 3)
+    raster_built = Raster(
+        samples=samples,
+        planes=planes_rgb(),
+        selection=frozenset({BitChoice("G", 0)}),
+    )
+    counts, top = histogram.plane_counts(raster_built, raster_built.planes[1])
+    assert top == 1
+    assert counts.tolist() == [2, 4]
+    assert histogram.shown_bits(raster_built, raster_built.planes[1]) == (0,)
+    assert histogram.shown_bits(raster_built, raster_built.planes[0]) == tuple(range(8))
+
+
+def test_the_census_spans_the_mask_and_the_pair_test_stays_on_stored_values() -> None:
+    """One carried bit at position 4: the chart counts 0 and 16, the test reads 0..255."""
+    samples = np.zeros((2, 3, 3), dtype=np.uint16)
+    samples[:, :, 0] = np.array([0, 16, 1, 17, 0, 16]).reshape(2, 3)
+    raster_built = Raster(
+        samples=samples,
+        planes=planes_rgb(),
+        selection=frozenset({BitChoice("R", 4)}),
+    )
+    counts, top = histogram.plane_counts(raster_built, raster_built.planes[0])
+    assert top == 16
+    assert counts.tolist() == [3] + [0] * 15 + [3]
+    stored = histogram.stored_counts(raster_built, raster_built.planes[0])
+    assert stored.size == 256
+    verdict = histogram.pair_chi_square(stored, 4)
+    assert verdict == (0.0, 1)  # pairs (0,16) and (1,17) both in balance
 
 
 def test_the_pair_test_joins_each_value_with_its_bit_partner() -> None:
