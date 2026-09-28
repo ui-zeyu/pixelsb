@@ -3,9 +3,9 @@
 A line names a single operation, and its first word says which kind it is:
 
 * **操作动词** — ``thr 128``, ``xor 0xFF``, ``inv``, ``gray``, ``crop``,
-  ``fft r g``, ``arnold 1 2 3``: the line is the verb and its argument, nothing
-  else. A verb is not a truth value, so it never joins an ``and``/``or``;
-  another operation is another line.
+  ``fft r g``, ``arnold 1 2 3``, ``comb xor b.png``: the line is the verb and
+  its argument, nothing else. A verb is not a truth value, so it never joins
+  an ``and``/``or``; another operation is another line.
 * **位选择** — channel atoms only: ``b`` (the channel whole), ``b.0`` (one bit),
   ``all``. They combine with ``or`` (union), ``and`` (intersection) and ``not``
   (complement) into the one selection the projection rebuilds the channels
@@ -26,8 +26,11 @@ instead — one line each, folded bottom up.
 """
 
 import ast
+import os
 import re
+from collections.abc import Callable
 from functools import reduce
+from pathlib import Path
 from typing import assert_never
 
 from pixelsb.domain.models import (
@@ -35,10 +38,13 @@ from pixelsb.domain.models import (
     ArnoldMask,
     BitChoice,
     BitsMask,
+    CombineMask,
+    CombineOp,
     CropMask,
     FftMask,
     GrayscaleMask,
     InvertMask,
+    LoadedImage,
     Mask,
     RegionMask,
     SamplePlane,
@@ -51,7 +57,7 @@ from pixelsb.domain.selection import all_bits, channel_members, whole
 
 # A verb at the head of a line: the word itself, so a word that merely contains
 # one — or follows a dot — is left to the expression grammar.
-_VERB = re.compile(r"(?i)(?P<verb>thr|xor|inv|gray|crop|fft|arnold)(?![\w.])")
+_VERB = re.compile(r"(?i)(?P<verb>thr|xor|inv|gray|crop|fft|arnold|comb)(?![\w.])")
 _CONNECTIVES = frozenset({"and", "or", "not"})
 
 _VALUE_MASKS: dict[str, type[ThresholdMask] | type[XorMask]] = {
@@ -66,14 +72,24 @@ _BARE_MASKS: dict[str, type[InvertMask] | type[GrayscaleMask] | type[CropMask] |
 }
 
 _ONE_OPERATION = "一行只写一个操作：位选择（b、b.0、all）和区域条件不能组合在一起，请分成两行"
-_VERB_APART = "操作命令要单独一行：thr、xor、inv、gray、crop、fft、arnold 不能和别的内容组合"
+_VERB_APART = "操作命令要单独一行：thr、xor、inv、gray、crop、fft、arnold、comb 不能和别的内容组合"
+
+# How a comb line reaches its file: the caller's loader, so the domain never reads.
+type Companion = Callable[[str], LoadedImage]
+
+_COMB_OPS = tuple(op.value for op in CombineOp)
 
 
 class CommandError(ValueError):
     """A command line that cannot be read as a mask."""
 
 
-def parse(text: str, planes: tuple[SamplePlane, ...]) -> Mask | None:
+def parse(
+    text: str,
+    planes: tuple[SamplePlane, ...],
+    *,
+    companion: Companion | None = None,
+) -> Mask | None:
     """The one operation the box's text names, or ``None`` when it names none yet.
 
     ``None`` means the line is not finished — mid-word, mid-operator, mid-call —
@@ -83,12 +99,13 @@ def parse(text: str, planes: tuple[SamplePlane, ...]) -> Mask | None:
     a list, an unknown function) is refused, and the typist's words stay put to
     be fixed. What the line *names* is the stack's business: a condition about a
     field this image lacks is complete, and lands as a layer that says so. A
-    line of channel atoms names the projection, whose bits it builds.
+    line of channel atoms names the projection, whose bits it builds. A ``comb``
+    line reaches its file through ``companion``, the loader the caller supplies.
     """
     line = text.strip()
     if not line:
         return None
-    mask = _verb_line(line, planes)
+    mask = _verb_line(line, planes, companion)
     if mask is not None:
         return mask
     if _VERB.search(line):  # a verb the head test did not claim is a verb out of place
@@ -105,8 +122,12 @@ def parse(text: str, planes: tuple[SamplePlane, ...]) -> Mask | None:
     return RegionMask(_expression_text(part))
 
 
-def text_of(mask: Mask, planes: tuple[SamplePlane, ...]) -> str:
-    """The command line that means this mask again, in the house style."""
+def text_of(mask: Mask, planes: tuple[SamplePlane, ...], *, base: Path | None = None) -> str:
+    """The command line that means this mask again, in the house style.
+
+    ``base`` is where the open picture lives: a combine spells its other file
+    relative to it, so the line names the folder the challenge ships in.
+    """
     match mask:
         case BitsMask(selection=selection):
             return _bits_line(planes, selection) or ""
@@ -126,10 +147,19 @@ def text_of(mask: Mask, planes: tuple[SamplePlane, ...]) -> str:
             if names is None:
                 return "fft"
             return "fft " + " ".join(name.lower() for name in names)
+        case CombineMask(op=op, other=other):
+            return f"comb {op.value} {_companion_word(other.path, base)}"
         case ArnoldMask(times=times, a=a, b=b):
             return f"arnold {times} {a} {b}"
         case _ as unknown:
             assert_never(unknown)
+
+
+def _companion_word(path: Path, base: Path | None) -> str:
+    """The other picture as the line spells it: a bare name beside the open file."""
+    if base is None:
+        return path.name
+    return os.path.relpath(path, base)
 
 
 def bits_text(planes: tuple[SamplePlane, ...], selection: frozenset[BitChoice]) -> str | None:
@@ -143,7 +173,11 @@ def bits_text(planes: tuple[SamplePlane, ...], selection: frozenset[BitChoice]) 
     return _bits_line(planes, selection)
 
 
-def _verb_line(line: str, planes: tuple[SamplePlane, ...]) -> Mask | None:
+def _verb_line(
+    line: str,
+    planes: tuple[SamplePlane, ...],
+    companion: Companion | None,
+) -> Mask | None:
     """The operation a line that opens with a verb names, or ``None`` for another kind."""
     match = _VERB.match(line)
     if match is None:
@@ -152,7 +186,7 @@ def _verb_line(line: str, planes: tuple[SamplePlane, ...]) -> Mask | None:
     verb = match["verb"].lower()
     taken = _parameter_words(verb, words)
     argument = " ".join(words[:taken]) if taken else None
-    mask = _verb_mask(verb, argument, level_ceiling(planes))
+    mask = _verb_mask(verb, argument, level_ceiling(planes), companion)
     if words[taken:]:  # the verb and its parameters are the whole line
         raise CommandError(_VERB_APART)
     return mask
@@ -163,13 +197,14 @@ def _parameter_words(verb: str, words: list[str]) -> int:
 
     A connective in the first word's place is a line trying to combine, so no
     parameter is taken and the leftover words refuse the line below. ``fft``
-    reads every word as a channel name, so ``fft r g`` stays one operation.
+    reads every word as a channel name, so ``fft r g`` stays one operation;
+    ``comb`` reads every word too, because a path may carry spaces.
     """
     if not words or words[0].lower() in _CONNECTIVES:
         return 0
     if verb == "arnold":
         return 3
-    return len(words) if verb == "fft" else 1
+    return len(words) if verb in {"fft", "comb"} else 1
 
 
 def _combine(node: ast.expr, planes: tuple[SamplePlane, ...]) -> ast.expr | frozenset[BitChoice]:
@@ -255,7 +290,12 @@ def _bits_line(
     return " or ".join(parts) or None
 
 
-def _verb_mask(verb: str, argument: str | None, ceiling: int) -> Mask:
+def _verb_mask(
+    verb: str,
+    argument: str | None,
+    ceiling: int,
+    companion: Companion | None,
+) -> Mask:
     if (kind := _VALUE_MASKS.get(verb)) is not None:
         if argument is None:
             raise CommandError(f"{verb} 需要一个数值：{verb} 128 或 {verb} 0xFF")
@@ -268,6 +308,8 @@ def _verb_mask(verb: str, argument: str | None, ceiling: int) -> Mask:
         return kind()
     if verb == "arnold":
         return _arnold_mask(argument)
+    if verb == "comb":
+        return _comb_mask(argument, companion)
     raise CommandError(f"看不懂的命令：{verb}")  # the verb pattern only lets these through
 
 
@@ -308,6 +350,29 @@ def _arnold_mask(argument: str | None) -> ArnoldMask:
     if abs(a) > ARNOLD_PARAM_LIMIT or abs(b) > ARNOLD_PARAM_LIMIT:
         raise CommandError(f"a、b 要在 ±{ARNOLD_PARAM_LIMIT} 内：arnold {argument}")
     return ArnoldMask(times, a, b)
+
+
+def _comb_mask(argument: str | None, companion: Companion | None) -> CombineMask:
+    """The combine's line: an operation word, then the other picture's path.
+
+    The path runs to the end of the line, spaces and all, and is resolved by
+    the caller's loader — beside the open file, or absolute. Whether the two
+    pictures fit together is judged where both are known, when the layer lands,
+    which is also why an unreadable file is refused here: the loader raises.
+    """
+    if argument is None:
+        raise CommandError("comb 需要一个操作和一张图：comb xor b.png")
+    op, _, rest = argument.partition(" ")
+    if op.lower() not in _COMB_OPS:
+        raise CommandError(
+            f"comb 的操作是 {'、'.join(_COMB_OPS)} 之一：comb xor b.png（收到：{op}）"
+        )
+    path = rest.strip()
+    if not path:
+        raise CommandError("comb 的最后是另一张图的路径：comb xor b.png")
+    if companion is None:
+        raise CommandError("comb 要读另一张图，这一行没有可用的文件来源")
+    return CombineMask(companion(path), CombineOp(op.lower()))
 
 
 def _integer(word: str, complaint: str) -> int:

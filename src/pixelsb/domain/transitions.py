@@ -11,6 +11,8 @@ from pixelsb.domain.models import (
     BitChoice,
     BitOrder,
     BitsMask,
+    CombineMask,
+    CombineOp,
     DisplayFormat,
     ExtractEncoding,
     ExtractOrder,
@@ -126,7 +128,13 @@ def clear_layers(state: ViewerState) -> ViewerState:
     return state if not state.layers else replace(state, layers=())
 
 
-def set_mask_text(state: ViewerState, text: str, *, layer: int | None = None) -> ViewerState:
+def set_mask_text(
+    state: ViewerState,
+    text: str,
+    *,
+    layer: int | None = None,
+    companion: commands.Companion | None = None,
+) -> ViewerState:
     """Write the command input's text as the one thing it names.
 
     A line of operations lands on the operation the box is editing — the layer
@@ -135,11 +143,12 @@ def set_mask_text(state: ViewerState, text: str, *, layer: int | None = None) ->
     one on top. A line of bits names the projection: it takes over the topmost
     one, or becomes it, whatever the box was editing. A line still being typed
     applies nothing. An empty text drops the layer the box is bound to.
+    ``companion`` is how a comb line reaches its second file.
     """
     if not text.strip():
         bound = filter_position(state.layers, layer)
         return state if bound is None else remove_layer(state, bound)
-    parsed = _parsed_line(state, text)
+    parsed = _parsed_line(state, text, companion)
     if parsed is None:  # not finished: the box keeps the line, the stack keeps its layers
         return state
     if isinstance(parsed, BitsMask):
@@ -150,7 +159,12 @@ def set_mask_text(state: ViewerState, text: str, *, layer: int | None = None) ->
     return _remasked(state, position, parsed)
 
 
-def add_mask_text(state: ViewerState, text: str) -> ViewerState:
+def add_mask_text(
+    state: ViewerState,
+    text: str,
+    *,
+    companion: commands.Companion | None = None,
+) -> ViewerState:
     """Write the command input's text as a new operation on top, stacking it.
 
     Shift+Enter's line: the operation in hand keeps its command and its place,
@@ -159,7 +173,7 @@ def add_mask_text(state: ViewerState, text: str) -> ViewerState:
     stacks — the view is one thing. A line still being typed, and an empty
     one, change nothing.
     """
-    parsed = _parsed_line(state, text)
+    parsed = _parsed_line(state, text, companion)
     if parsed is None:
         return state
     if isinstance(parsed, BitsMask):
@@ -167,18 +181,52 @@ def add_mask_text(state: ViewerState, text: str) -> ViewerState:
     return _appended(state, parsed)
 
 
-def _parsed_line(state: ViewerState, text: str) -> Mask | None:
+def _parsed_line(
+    state: ViewerState,
+    text: str,
+    companion: commands.Companion | None,
+) -> Mask | None:
     """What the line names, or ``None`` while it names nothing yet.
 
-    A mask this image cannot carry — the cat map wants a square — is refused
-    here rather than landed as a layer that could only report itself broken.
+    A mask this image cannot carry — the cat map wants a square, the combine's
+    two pictures do not fit — is refused here rather than landed as a layer
+    that could only report itself broken.
     """
-    parsed = commands.parse(text, _image(state).planes)
+    parsed = commands.parse(text, _image(state).planes, companion=companion)
     if parsed is None:
         return None
     if isinstance(parsed, ArnoldMask) and (image := _image(state)).width != image.height:
         raise commands.CommandError(f"猫脸变换要方图：这张是 {image.width}×{image.height}")
+    if isinstance(parsed, CombineMask):
+        _combinable(_image(state), parsed.other)
     return parsed
+
+
+def add_combine(state: ViewerState, op: CombineOp, other: LoadedImage) -> ViewerState:
+    """Another picture combined in on top: the add menu's landing.
+
+    The box and the dialog are judged by the same fit, so a picture the menu
+    picks is refused exactly as its comb line would be.
+    """
+    _combinable(_image(state), other)
+    return _appended(state, CombineMask(other, op))
+
+
+def _combinable(base: LoadedImage, other: LoadedImage) -> None:
+    """Whether two pictures can combine at all: one size, and planes to share."""
+    if base.width != other.width or base.height != other.height:
+        raise commands.CommandError(
+            f"合成要同尺寸的图：这张是 {base.width}×{base.height}，"
+            f"另一张是 {other.width}×{other.height}"
+        )
+    ours = {plane.name for plane in base.planes}
+    theirs = {plane.name for plane in other.planes}
+    if not ours & theirs:
+        ours_names = "、".join(plane.name for plane in base.planes)
+        theirs_names = "、".join(plane.name for plane in other.planes)
+        raise commands.CommandError(
+            f"两张图没有同名的通道：这张有 {ours_names}，另一张有 {theirs_names}"
+        )
 
 
 def apply_arnold(state: ViewerState, times: int, a: int, b: int) -> ViewerState:

@@ -179,20 +179,26 @@ def test_a_broken_region_mask_is_flagged_on_its_own_row(qtbot: QtBot) -> None:
     assert panel._rows[0]._detail.text() == "inv"  # the healthy row keeps its own line
 
 
-def test_the_add_menu_offers_only_the_parameterless_masks(qtbot: QtBot) -> None:
+def test_the_add_menu_offers_the_parameterless_masks_and_the_combine(qtbot: QtBot) -> None:
     """A mask with a parameter of its own is written in the filter box instead."""
     panel = _panel(qtbot)
     menu = panel._add_button.menu()
     panel._fill_menu()
-    labels = [action.text() for action in menu.actions()]
-    assert labels == [text.mask_info(mask).label for mask in text.mask_menu()]
-    assert set(labels) == {"反相", "灰度", "裁剪", "频谱"}
+    labels = [action.text() for action in menu.actions() if not action.isSeparator()]
+    assert labels == [text.mask_info(mask).label for mask in text.mask_menu()] + [
+        text.COMBINE_LABEL
+    ]
+    assert labels[:-1] == ["反相", "灰度", "裁剪", "频谱"]
     added: list[Mask] = []
     panel.add_requested.connect(added.append)
     menu.actions()[0].trigger()
     assert added == [InvertMask()]
     menu.actions()[2].trigger()
     assert added == [InvertMask(), CropMask()]
+    asked: list[bool] = []
+    panel.combine_requested.connect(lambda: asked.append(True))
+    menu.actions()[-1].trigger()
+    assert asked == [True]
 
 
 def test_a_panel_without_an_image_lists_the_base_row_only(qtbot: QtBot) -> None:

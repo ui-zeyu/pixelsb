@@ -1,5 +1,9 @@
 """The command input's language: one line names one operation, of one kind."""
 
+from collections.abc import Callable
+from pathlib import Path
+
+import numpy as np
 import pytest
 
 from pixelsb.domain import commands
@@ -8,10 +12,13 @@ from pixelsb.domain.models import (
     ArnoldMask,
     BitChoice,
     BitsMask,
+    CombineMask,
+    CombineOp,
     CropMask,
     FftMask,
     GrayscaleMask,
     InvertMask,
+    LoadedImage,
     Mask,
     RegionMask,
     SampleOrigin,
@@ -20,12 +27,25 @@ from pixelsb.domain.models import (
     XorMask,
 )
 from pixelsb.domain.selection import all_bits, channel_members
-from tests.support import planes_rgb
+from tests.support import make_image, planes_rgb
 
 _PLANES = planes_rgb()
 _PLANES_16 = (SamplePlane("L", 0, 16, SampleOrigin.RAW),)
 
 _WHOLE = {name: frozenset(channel_members(_PLANES, name)) for name in ("R", "G", "B")}
+
+_OTHER = make_image(np.zeros((2, 2, 3), dtype=np.uint16), planes_rgb(), path=Path("/chall/b.png"))
+
+
+def _reader() -> tuple[Callable[[str], LoadedImage], list[str]]:
+    """A loader that answers with the one other picture, and notes its words."""
+    words: list[str] = []
+
+    def companion(word: str) -> LoadedImage:
+        words.append(word)
+        return _OTHER
+
+    return companion, words
 
 
 def test_a_channel_and_a_bit_project_that_one_bit() -> None:
@@ -268,3 +288,67 @@ def test_the_cat_maps_line_takes_three_integers() -> None:
 def test_a_broken_verb_line_says_what_is_wrong(text: str, message: str) -> None:
     with pytest.raises(commands.CommandError, match=message):
         commands.parse(text, _PLANES)
+
+
+def test_comb_reads_the_other_picture_through_the_callers_loader() -> None:
+    companion, words = _reader()
+    parsed = commands.parse("comb xor b.png", _PLANES, companion=companion)
+    assert parsed == CombineMask(_OTHER, CombineOp.XOR)
+    assert words == ["b.png"]
+
+
+def test_a_combine_reads_back_as_the_line_that_named_it() -> None:
+    companion, _words = _reader()
+    parsed = commands.parse("comb xor b.png", _PLANES, companion=companion)
+    assert parsed is not None
+    line = commands.text_of(parsed, _PLANES)
+    assert line == "comb xor b.png"
+    assert commands.parse(line, _PLANES, companion=companion) == parsed
+
+
+def test_a_combine_names_its_file_relative_to_where_the_picture_lives() -> None:
+    deep = make_image(
+        np.zeros((2, 2, 3), dtype=np.uint16), planes_rgb(), path=Path("/chall/sub/b.png")
+    )
+
+    def companion(_word: str) -> LoadedImage:
+        return deep
+
+    parsed = commands.parse("comb xor sub/b.png", _PLANES, companion=companion)
+    assert parsed is not None
+    assert commands.text_of(parsed, _PLANES, base=Path("/chall")) == "comb xor sub/b.png"
+
+
+def test_a_comb_path_runs_to_the_end_of_the_line() -> None:
+    companion, words = _reader()
+    commands.parse("comb xor my folder/b.png", _PLANES, companion=companion)
+    assert words == ["my folder/b.png"]
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        ("comb", "需要一个操作和一张图"),
+        ("comb xor", "另一张图的路径"),
+        ("comb nope b.png", "操作是 xor 之一"),
+        ("comb 1 b.png", "操作是 xor 之一"),
+    ],
+)
+def test_a_broken_comb_line_says_what_is_missing(text: str, message: str) -> None:
+    companion, _words = _reader()
+    with pytest.raises(commands.CommandError, match=message):
+        commands.parse(text, _PLANES, companion=companion)
+
+
+def test_a_comb_line_without_a_file_source_is_refused() -> None:
+    with pytest.raises(commands.CommandError, match="文件来源"):
+        commands.parse("comb xor b.png", _PLANES)
+
+
+def test_comb_out_of_place_is_refused_like_the_other_verbs() -> None:
+    with pytest.raises(commands.CommandError, match="单独一行"):
+        commands.parse("b > r comb", _PLANES)
+
+
+def test_a_word_merely_containing_comb_is_no_verb() -> None:
+    assert commands.parse("combinator > 2", _PLANES) == RegionMask("combinator > 2")

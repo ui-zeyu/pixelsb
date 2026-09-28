@@ -1,5 +1,7 @@
 """The layer stack: what each mask does to the pixels, and in which order."""
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -7,6 +9,8 @@ from pixelsb.domain.models import (
     ArnoldMask,
     BitChoice,
     BitsMask,
+    CombineMask,
+    CombineOp,
     CropMask,
     FftMask,
     GrayscaleMask,
@@ -194,6 +198,48 @@ def test_xor_flips_the_bits_the_constant_sets() -> None:
     image = _image([[[0b1010, 0b0101, 0]]])
     folded = raster(image, XorMask(0b1100))
     assert folded.samples[0, 0].tolist() == [0b0110, 0b1001, 0b1100]
+
+
+def test_combining_xors_the_planes_two_pictures_share() -> None:
+    base = _image([[[10, 20, 30], [40, 50, 60]]])
+    other = make_image(np.full((1, 2, 3), 15, dtype=np.uint16), planes_rgb(), path=Path("b.png"))
+    combined = raster(base, CombineMask(other))
+    assert combined.samples[0, 0].tolist() == [10 ^ 15, 20 ^ 15, 30 ^ 15]
+    assert combined.samples[0, 1].tolist() == [40 ^ 15, 50 ^ 15, 60 ^ 15]
+    assert combined.planes == base.planes
+
+
+def test_a_combine_keeps_the_planes_only_one_side_carries() -> None:
+    base = make_image(np.array([[[10, 20, 30, 5]]], dtype=np.uint16), planes_rgba())
+    other = make_image(np.array([[[15, 15, 15]]], dtype=np.uint16), planes_rgb())
+    combined = raster(base, CombineMask(other))
+    assert combined.samples[0, 0].tolist() == [10 ^ 15, 20 ^ 15, 30 ^ 15, 5]
+    assert tuple(plane.name for plane in combined.planes) == ("R", "G", "B", "A")
+
+
+def test_a_combine_drops_the_planes_only_the_other_picture_has() -> None:
+    base = _image([[[10, 20, 30]]])
+    other = make_image(np.array([[[15, 15, 15, 250]]], dtype=np.uint16), planes_rgba())
+    combined = raster(base, CombineMask(other))
+    assert combined.samples[0, 0].tolist() == [10 ^ 15, 20 ^ 15, 30 ^ 15]
+    assert tuple(plane.name for plane in combined.planes) == ("R", "G", "B")
+
+
+def test_a_combine_meets_a_deeper_plane_at_its_own_depth() -> None:
+    base = make_image(np.array([[[200]]], dtype=np.uint16), planes_rgb()[:1])
+    deep = (SamplePlane("R", 0, 16, SampleOrigin.RAW),)
+    other = make_image(np.array([[[300]]], dtype=np.uint16), deep)
+    combined = raster(base, CombineMask(other))
+    assert combined.samples[0, 0, 0] == 200 ^ 300
+    assert combined.planes[0].bit_depth == 16
+
+
+def test_two_combines_of_one_picture_are_alike_and_others_are_not() -> None:
+    first = _image([[[10, 20, 30]]])
+    second = _image([[[1, 2, 3]]])
+    assert CombineMask(first) == CombineMask(first)
+    assert CombineMask(first, CombineOp.XOR) == CombineMask(first)
+    assert CombineMask(first) != CombineMask(second)
 
 
 def test_cropping_crops_to_the_pixels_that_are_left() -> None:

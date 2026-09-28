@@ -11,6 +11,8 @@ from pixelsb.domain.models import (
     BitChoice,
     BitOrder,
     BitsMask,
+    CombineMask,
+    CombineOp,
     DisplayFormat,
     ExtractEncoding,
     ExtractOrder,
@@ -28,6 +30,7 @@ from pixelsb.domain.models import (
 )
 from pixelsb.domain.selection import all_bits, channel_members
 from pixelsb.domain.transitions import (
+    add_combine,
     add_layer,
     add_mask_text,
     apply_arnold,
@@ -474,6 +477,42 @@ def test_an_arnold_line_on_a_nonsquare_image_is_refused_before_landing() -> None
         set_mask_text(state, text="arnold 1 1 1")
     with pytest.raises(commands.CommandError, match="方图"):
         add_mask_text(state, text="arnold 1 1 1")
+
+
+def test_a_comb_line_lands_the_other_picture_as_a_layer() -> None:
+    other = _image(path="b.png")
+    state = set_mask_text(_open(), "comb xor b.png", companion=lambda _word: other)
+    assert masks(state) == (CombineMask(other, CombineOp.XOR),)
+    # Shift+Enter stacks a second combine beside the first, chaining three pictures.
+    third = _image(path="c.png")
+    assert masks(add_mask_text(state, "comb xor c.png", companion=lambda _word: third)) == (
+        CombineMask(other, CombineOp.XOR),
+        CombineMask(third, CombineOp.XOR),
+    )
+
+
+def test_a_combine_of_unequal_sizes_is_refused_before_landing() -> None:
+    wide = make_image(np.zeros((2, 4, 3), dtype=np.uint16), _PLANES, path=Path("b.png"))
+    state = _open()
+    with pytest.raises(commands.CommandError, match="同尺寸"):
+        set_mask_text(state, "comb xor b.png", companion=lambda _word: wide)
+    with pytest.raises(commands.CommandError, match="同尺寸"):
+        add_combine(state, CombineOp.XOR, wide)
+    assert masks(state) == ()  # the refusal leaves the stack alone
+
+
+def test_a_combine_with_no_shared_plane_is_refused_before_landing() -> None:
+    gray = make_image(
+        np.zeros((2, 2, 1), dtype=np.uint16),
+        (SamplePlane("L", 0, 8, SampleOrigin.RAW),),
+        path=Path("b.png"),
+    )
+    state = _open()
+    with pytest.raises(commands.CommandError, match="同名的通道"):
+        set_mask_text(state, "comb xor b.png", companion=lambda _word: gray)
+    with pytest.raises(commands.CommandError, match="同名的通道"):
+        add_combine(state, CombineOp.XOR, gray)
+    assert masks(state) == ()
 
 
 def test_stepping_follows_the_grid_order_alpha_first() -> None:

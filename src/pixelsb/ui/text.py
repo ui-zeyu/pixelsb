@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
+from pathlib import Path
 
 from pixelsb.domain import commands
 from pixelsb.domain.classify import Classification
@@ -11,6 +12,7 @@ from pixelsb.domain.models import (
     ArnoldMask,
     BitChoice,
     BitsMask,
+    CombineMask,
     CropMask,
     ExtractEncoding,
     ExtractOrder,
@@ -101,6 +103,7 @@ COMMAND_HELP = """\
   crop              画布收缩到命中像素的范围
   fft               颜色与灰度通道换成对数幅度谱；fft r g 只做点名的通道
   arnold 次数 a b   猫映射逆变换重排像素（与常见脚本同名同序），要方的样本矩形
+  comb xor 路径     与另一张图逐通道异或；要同尺寸、有同名通道，路径相对当前图，也可写绝对路径
 
 位选择（整行只有通道与位；它是一道投影操作）
   b      整条通道        b.0    只看这一位       all    全部位
@@ -189,6 +192,10 @@ def open_failed(detail: str) -> str:
     return f"{OPEN_FAILED}：{detail}"
 
 
+def companion_failed(word: str, detail: str) -> str:
+    return f"{COMBINE_FAILED}（{word}）：{detail}"
+
+
 def save_failed(detail: str) -> str:
     return f"{SAVE_FAILED}：{detail}"
 
@@ -265,6 +272,10 @@ ORIGIN_LABEL = {
 SECTION_LAYERS = "配方"
 LAYER_ADD = "＋"
 LAYER_ADD_TIP = "添加操作；越靠上越晚生效，要参数的写进命令框"
+COMBINE_LABEL = "合成另一张图…"
+COMBINE_DIALOG = "选择要合成的另一张图"
+COMBINE_FAILED = "无法读取第二张图"
+MASK_COMBINE_TIP = "与另一张图逐通道异或：要同尺寸、有同名通道；comb xor b.png，路径相对当前图"
 LAYER_UP = "▲"
 LAYER_UP_TIP = "上移（更晚生效）"
 LAYER_DOWN = "▼"
@@ -305,6 +316,7 @@ MASK_INFO: dict[type[Mask], MaskInfo] = {
     ThresholdMask: MaskInfo("阈值", MASK_THRESHOLD_TIP),
     XorMask: MaskInfo("异或", MASK_XOR_TIP),
     FftMask: MaskInfo("频谱", MASK_FFT_TIP),
+    CombineMask: MaskInfo("合成", MASK_COMBINE_TIP),
     ArnoldMask: MaskInfo("猫脸变换", MASK_ARNOLD_TIP),
     BitsMask: MaskInfo("位选择", MASK_BITS_TIP),
 }
@@ -325,7 +337,12 @@ def mask_menu() -> tuple[Mask, ...]:
     return (InvertMask(), GrayscaleMask(), CropMask(), FftMask())
 
 
-def mask_detail(mask: Mask, planes: tuple[SamplePlane, ...]) -> str:
+def mask_detail(
+    mask: Mask,
+    planes: tuple[SamplePlane, ...],
+    *,
+    base: Path | None = None,
+) -> str:
     """A mask's parameters as the command line that means it, for the layer list."""
     match mask:
         case RegionMask(expression=expression):
@@ -333,7 +350,7 @@ def mask_detail(mask: Mask, planes: tuple[SamplePlane, ...]) -> str:
         case BitsMask(selection=selection):
             return commands.bits_text(planes, selection) or EMPTY_EXPRESSION
         case _:
-            return commands.text_of(mask, planes)
+            return commands.text_of(mask, planes, base=base)
 
 
 def layer_text(bits: frozenset[BitChoice] | None, planes: tuple[SamplePlane, ...]) -> str:

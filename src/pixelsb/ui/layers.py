@@ -39,6 +39,7 @@ class LayerPanel(QWidget):
     """The left sidebar: the mask stack, with a note about the selected mask."""
 
     add_requested = Signal(object)  # a Mask, added on top of the stack
+    combine_requested = Signal()  # the add menu's combine: the window picks the file
     remove_requested = Signal(int)  # the layer's place in the stack
     move_requested = Signal(int, int)  # that place, and which way (-1 or +1)
     enabled_requested = Signal(int, bool)
@@ -101,7 +102,11 @@ class LayerPanel(QWidget):
         return header
 
     def _fill_menu(self) -> None:
-        """Build the add list: only the masks that need no parameter belong here."""
+        """Build the add list: only the masks that need no parameter belong here.
+
+        The combine is the one parameterized entry: its file comes from a
+        dialog of its own, which the window owns, so it asks through a signal.
+        """
         menu = self._add_button.menu()
         menu.clear()
         if not self._planes():
@@ -113,6 +118,10 @@ class LayerPanel(QWidget):
             action.triggered.connect(
                 lambda _checked=False, mask=mask: self.add_requested.emit(mask)
             )
+        menu.addSeparator()
+        combine = menu.addAction(text.COMBINE_LABEL)
+        combine.setToolTip(text.MASK_COMBINE_TIP)
+        combine.triggered.connect(lambda _checked=False: self.combine_requested.emit())
 
     def _card(self) -> QFrame:
         card = _Card(self)
@@ -178,7 +187,11 @@ class LayerPanel(QWidget):
     def _row_detail(self, index: int, layer: Layer) -> str:
         """One mask's parameters, clipped by the label's own width."""
         image = self._state.image
-        detail = text.mask_detail(layer.mask, image.planes if image else ())
+        detail = text.mask_detail(
+            layer.mask,
+            image.planes if image else (),
+            base=image.path.parent if image else None,
+        )
         return f"{text.WARNING_MARK} {detail}" if index in self._failures else detail
 
     def _base_detail(self) -> str:

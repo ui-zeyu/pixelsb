@@ -49,6 +49,7 @@ from pixelsb.domain.models import (
     MIN_ZOOM,
     BitOrder,
     BitsMask,
+    CombineOp,
     DisplayFormat,
     ExtractEncoding,
     LoadedImage,
@@ -63,6 +64,7 @@ from pixelsb.domain.samples import render_export
 from pixelsb.domain.scan import ScanCandidate
 from pixelsb.domain.stack import resolve
 from pixelsb.domain.transitions import (
+    add_combine,
     add_layer,
     add_mask_text,
     apply_arnold,
@@ -142,6 +144,7 @@ class MainWindow(QMainWindow):
         self._box_edit_key: object = None  # the state the box's own line already covers
         self._box_authoring = False
         self._panel_sized = False
+        self._companions: dict[str, LoadedImage] = {}  # a comb line's file, read once
         self.setWindowTitle(text.APP_NAME)
         # Wide enough that the width limit leaves the census page's dump its
         # scrollbar margin on a typical screen, whatever the fonts resolve to.
@@ -419,6 +422,7 @@ class MainWindow(QMainWindow):
 
         self.layers_panel = LayerPanel()
         self.layers_panel.add_requested.connect(self._on_layer_added)
+        self.layers_panel.combine_requested.connect(self._on_combine_requested)
         self.layers_panel.remove_requested.connect(self._on_layer_removed)
         self.layers_panel.move_requested.connect(self._on_layer_moved)
         self.layers_panel.enabled_requested.connect(self._on_layer_enabled)
@@ -631,9 +635,14 @@ class MainWindow(QMainWindow):
             try:
                 self._box_authoring = True
                 transition = (
-                    partial(add_mask_text, text=expression)
+                    partial(add_mask_text, text=expression, companion=self._companion)
                     if new
-                    else partial(set_mask_text, text=expression, layer=self.layers_panel.selected)
+                    else partial(
+                        set_mask_text,
+                        text=expression,
+                        layer=self.layers_panel.selected,
+                        companion=self._companion,
+                    )
                 )
                 self.apply(transition)
                 state = self.store.state
@@ -663,8 +672,11 @@ class MainWindow(QMainWindow):
         """
         position = self._box_position()
         image = self.store.state.image
+        base = image.path.parent if image is not None else None
         if position is not None:
-            return text_of(self.store.state.layers[position].mask, image.planes if image else ())
+            return text_of(
+                self.store.state.layers[position].mask, image.planes if image else (), base=base
+            )
         if image is None:
             return ""
         projection = projection_bits(self.store.state)
@@ -683,12 +695,32 @@ class MainWindow(QMainWindow):
         image = self.store.state.image
         if image is None:
             return None
-        parsed = parse(line, image.planes)
+        parsed = parse(line, image.planes, companion=self._companion)
         if parsed is None:
             return None
         if isinstance(parsed, BitsMask):
             return bits_text(image.planes, parsed.selection)
-        return text_of(parsed, image.planes)
+        return text_of(parsed, image.planes, base=image.path.parent)
+
+    def _companion(self, word: str) -> LoadedImage:
+        """The second picture a comb line names: beside the open file, read once.
+
+        A relative word lands in the open picture's folder, where a challenge's
+        other files ship; the image is kept, so re-reading the line — the echo
+        after Enter reparses it — costs no second decode. A file that will not
+        open refuses the line, exactly as a malformed command does.
+        """
+        image = self.store.state.image
+        path = Path(word).expanduser()
+        if not path.is_absolute():
+            path = (image.path.parent if image is not None else Path.cwd()) / path
+        key = str(path)
+        if key not in self._companions:
+            try:
+                self._companions[key] = load_image(path)
+            except (ImageLoadError, OSError) as exc:
+                raise CommandError(text.companion_failed(word, str(exc))) from None
+        return self._companions[key]
 
     def _write_box(self, line: str) -> None:
         """Put a line in the box as the box's own doing, never as the typist's."""
@@ -795,6 +827,22 @@ class MainWindow(QMainWindow):
 
     def _on_layer_added(self, mask: Mask) -> None:
         self.apply(partial(add_layer, mask=mask))
+
+    def _on_combine_requested(self) -> None:
+        """The add menu's combine: pick the other picture, and the op lands on top."""
+        image = self.store.state.image
+        if image is None:
+            return
+        selected, _chosen = QFileDialog.getOpenFileName(
+            self, text.COMBINE_DIALOG, str(image.path.parent), text.ANY_FILE
+        )
+        if not selected:
+            return
+        try:
+            other = self._companion(selected)
+            self.apply(partial(add_combine, op=CombineOp.XOR, other=other))
+        except CommandError as exc:
+            self._reporter(str(exc))
 
     def _on_layer_removed(self, layer: int) -> None:
         self.apply(partial(remove_layer, layer=layer))

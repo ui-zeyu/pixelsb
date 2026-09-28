@@ -262,6 +262,30 @@ class FftMask:
     planes: tuple[str, ...] | None = None
 
 
+class CombineOp(StrEnum):
+    """What a combine does with the planes two pictures share."""
+
+    XOR = "xor"
+
+
+@dataclass(frozen=True, slots=True)
+class CombineMask:
+    """A second picture folded into this one, plane by shared plane.
+
+    Each plane the two pictures share is exclusive-ored with the other's plane
+    of the same name, at the wider of the two depths; a plane only one side
+    has keeps that side's samples, because the picture this raster names stays
+    the frame of reference. The other picture travels inside the mask as the
+    decoded, read-only image itself — its identity is what makes two combines
+    alike, and what makes a cache ask again when another file takes its place.
+    Whether the two fit together at all is the command's own business, judged
+    where both pictures are known, before the layer lands.
+    """
+
+    other: LoadedImage
+    op: CombineOp = CombineOp.XOR
+
+
 @dataclass(frozen=True, slots=True)
 class ArnoldMask:
     """The pixels rearranged by the inverse cat map, ``times`` times over.
@@ -294,6 +318,7 @@ type Mask = (
     | XorMask
     | CropMask
     | FftMask
+    | CombineMask
     | ArnoldMask
     | BitsMask
 )

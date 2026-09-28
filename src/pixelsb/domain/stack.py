@@ -21,6 +21,8 @@ from pixelsb.domain.models import (
     ArnoldMask,
     BitChoice,
     BitsMask,
+    CombineMask,
+    CombineOp,
     CropMask,
     FftMask,
     GrayscaleMask,
@@ -87,6 +89,8 @@ def apply_mask(raster: Raster, mask: Mask) -> Raster:
             return _cropped(raster)
         case FftMask(planes=planes):
             return replace(raster, samples=_spectrum(raster, planes))
+        case CombineMask(op=CombineOp.XOR, other=other):
+            return _combined(raster, other)
         case ArnoldMask(times=times, a=a, b=b):
             return _arnold(raster, times, a, b)
         case _ as unknown:
@@ -243,6 +247,31 @@ def _spectrum(raster: Raster, planes: tuple[str, ...] | None) -> SampleArray:
             np.rint(view * (plane.maximum / peak)).astype(np.uint16) if peak > 0.0 else 0
         )
     return out
+
+
+def _combined(raster: Raster, other: LoadedImage) -> Raster:
+    """The raster exclusive-ored with the other picture, plane by shared plane.
+
+    A plane the other picture lacks keeps its samples, and a plane only the
+    other picture has is dropped — this raster's picture stays the frame of
+    reference. Shared planes meet at the wider of their two depths, so an
+    8-bit and a 16-bit channel of one name combine in 16 bits. That the two
+    pictures fit together at all — one size, at least one shared plane — is
+    judged where both are known, before the layer lands.
+    """
+    channels: list[NDArray] = []
+    planes: list[SamplePlane] = []
+    for index, plane in enumerate(raster.planes):
+        mate = plane_or_none(other.planes, plane.name)
+        if mate is None:
+            channels.append(raster.samples[:, :, index])
+            planes.append(plane)
+            continue
+        channels.append(raster.samples[:, :, index] ^ other.samples[:, :, mate.index])
+        planes.append(
+            replace(plane, index=len(planes), bit_depth=max(plane.bit_depth, mate.bit_depth))
+        )
+    return replace(raster, samples=np.stack(channels, axis=-1), planes=tuple(planes))
 
 
 def match_span(live: NDArray[np.bool_]) -> tuple[IndexArray, IndexArray] | None:

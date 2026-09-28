@@ -7,7 +7,14 @@ import pytest
 from PIL import Image
 from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtGui import QImage, QNativeGestureEvent, QPointingDevice
-from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QPushButton, QToolButton
+from PySide6.QtWidgets import (
+    QFileDialog,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QToolButton,
+)
 from pytestqt.qtbot import QtBot
 
 from pixelsb.domain import geometry
@@ -17,6 +24,8 @@ from pixelsb.domain.models import (
     BitChoice,
     BitOrder,
     BitsMask,
+    CombineMask,
+    CombineOp,
     CropMask,
     DisplayFormat,
     ExtractEncoding,
@@ -347,6 +356,80 @@ def test_typing_is_never_rewritten_mid_sentence(qtbot: QtBot, rgb_png: Path) -> 
     matrix = window.extract_panel._bits_editor._matrix
     matrix.bit_clicked.emit("R", 7, True)  # an outside change is what rewrites the line
     assert edit.text() == "r.7"
+
+
+def test_a_comb_line_combines_the_two_pictures(qtbot: QtBot, rgb_png: Path) -> None:
+    """The second picture is an operation's parameter: everything downstream follows."""
+    other = Image.new("RGB", (2, 2), (15, 15, 15))
+    other.save(rgb_png.with_name("b.png"))
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.open_path(rgb_png)
+    window._filter_edit.setText("comb xor b.png")
+    window._apply_filter_text()
+    assert window._command_error == ""
+    state = window.store.state
+    picked = mask_of(state, CombineMask)
+    assert picked.op is CombineOp.XOR
+    assert picked.other.path == rgb_png.with_name("b.png")
+    raster = window._raster
+    assert raster is not None
+    assert raster.samples[0, 0].tolist() == [240, 15, 15]
+    assert raster.samples[1, 1].tolist() == [31, 47, 79]
+    # The row spells the file the way the box does: beside the open picture, by name.
+    assert window.layers_panel._rows[0]._detail.text() == "comb xor b.png"
+    window.layers_panel._select(0)
+    assert window._filter_edit.text() == "comb xor b.png"
+
+
+def test_a_comb_line_with_an_unreadable_file_is_refused_and_kept(
+    qtbot: QtBot, rgb_png: Path
+) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.open_path(rgb_png)
+    window._filter_edit.setText("comb xor missing.png")
+    window._apply_filter_text()
+    assert "无法读取第二张图" in window._command_error
+    assert window._filter_edit.styleSheet()  # the box marks the line it refused
+    assert window.store.state.layers == ()
+    assert window._filter_edit.text() == "comb xor missing.png"  # kept for fixing
+
+
+def test_a_comb_line_of_unequal_sizes_is_refused_before_landing(
+    qtbot: QtBot, rgb_png: Path
+) -> None:
+    Image.new("RGB", (3, 3)).save(rgb_png.with_name("big.png"))
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.open_path(rgb_png)
+    window._filter_edit.setText("comb xor big.png")
+    window._apply_filter_text()
+    assert "同尺寸" in window._command_error
+    assert window.store.state.layers == ()
+    assert window._filter_edit.text() == "comb xor big.png"
+
+
+def test_the_add_menu_combines_a_picked_picture(
+    qtbot: QtBot, monkeypatch: pytest.MonkeyPatch, rgb_png: Path
+) -> None:
+    """The dialog and the box are two doors into the same operation."""
+    other_path = rgb_png.with_name("b.png")
+    Image.new("RGB", (2, 2), (15, 15, 15)).save(other_path)
+    monkeypatch.setattr(
+        QFileDialog,
+        "getOpenFileName",
+        staticmethod(lambda *_args, **_kwargs: (str(other_path), "")),
+    )
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.open_path(rgb_png)
+    window.layers_panel.combine_requested.emit()
+    picked = mask_of(window.store.state, CombineMask)
+    assert picked.op is CombineOp.XOR
+    assert picked.other.path == other_path
+    assert window._filter_edit.text() == "comb xor b.png"
+    assert window.layers_panel._rows[0]._detail.text() == "comb xor b.png"
 
 
 def test_enter_writes_the_line_back_as_the_command_it_ran(qtbot: QtBot, rgb_png: Path) -> None:
