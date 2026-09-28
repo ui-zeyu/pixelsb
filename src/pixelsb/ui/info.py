@@ -40,7 +40,7 @@ from pixelsb.ui.extract_view import ExtractView, dump_font
 _MAX_BLOCKS = 64  # the census list stops here; huge files still scan in full
 _MAX_FRAMES = 400  # the frame table stops here; a long animation scrolls the page
 _CHUNK_HEADER = 8  # length plus type: the bytes in front of a chunk's payload
-_DUMP_MARGINS = 88  # the rail, the page's margins, and a little slack around the dump
+_DUMP_MARGINS = 104  # the rail, the page's margins, the scrollbar a tall page gains, and slack
 _DUMP_MAX_BYTES = 512  # the dump frame grows for this much data, then scrolls
 _DUMP_MIN_HEIGHT = 116
 _DUMP_MAX_HEIGHT = 236
