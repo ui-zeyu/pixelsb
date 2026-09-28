@@ -51,11 +51,11 @@ _DUMP_ROW_HEIGHT = 17
 class InfoPanel(QWidget):
     """One sidebar page reporting on the file behind the open image.
 
-    Three titled cards: 文件信息, 检查 (the census — anomalies above the block
+    Three titled cards: 文件信息, EXIF, and 检查 (the census — anomalies above the block
     list: a radio picks the block whose full chunk dumps below in the extract
     view's style, clicking a block name renders its whole stream as pixels,
     and a smuggled stream gets buttons for the geometries its own bytes
-    imply), and EXIF. The page leads the rail, and the census reads the whole
+    imply). The page leads the rail, and the census reads the whole
     file once per it; rendering a block swaps the canvas image but
     not the file being described, so the list, the selection, and the marks
     all stay.
@@ -133,6 +133,8 @@ class InfoPanel(QWidget):
                 self._planes,
             )
         )
+        self._exif_layout = QVBoxLayout()
+        rows.addWidget(_card(section_title(text.SECTION_EXIF), _layout_host(self._exif_layout)))
         rows.addWidget(
             _card(
                 section_title(text.SECTION_SCAN),
@@ -157,8 +159,6 @@ class InfoPanel(QWidget):
         # card frame would spend width the panel's own dump does not.
         rows.addWidget(self._dump_search)
         rows.addWidget(self._dump)
-        self._exif_layout = QVBoxLayout()
-        rows.addWidget(_card(section_title(text.SECTION_EXIF), _layout_host(self._exif_layout)))
         rows.addStretch(1)
         layout.addWidget(self._form, 1)
         self._form.setVisible(False)
