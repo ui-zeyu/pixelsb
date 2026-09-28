@@ -1,4 +1,4 @@
-from pixelsb.domain.detect import Detection, detect_patterns
+from pixelsb.domain.detect import MAX_DETECTIONS, Detection, detect_patterns, keyword_hits
 
 
 def test_magic_headers_are_found_at_their_offsets() -> None:
@@ -41,10 +41,23 @@ def test_empty_and_clean_streams_find_nothing() -> None:
 
 
 def test_a_pathological_stream_is_capped() -> None:
-    from pixelsb.domain.detect import MAX_DETECTIONS
-
     stream = b"GIF8" * (MAX_DETECTIONS * 4)
     assert len(detect_patterns(stream)) == MAX_DETECTIONS
+
+
+def test_keyword_hits_report_the_flags_without_the_signature_sweep() -> None:
+    """The sweep judges candidates by keywords alone, so that is all it asks for."""
+    stream = b"\x89PNG\r\n\x1a\n" + b"\x00" * 5 + b"prefix flag{ab} "
+    assert [(hit.label, hit.offset) for hit in keyword_hits(stream)] == [("flag", 20)]
+    assert keyword_hits(b"no findings here \x00\xff") == ()
+    assert keyword_hits(b"") == ()
+
+
+def test_keyword_hits_are_ordered_by_offset_and_capped() -> None:
+    stream = b"secret key " * (MAX_DETECTIONS * 4)
+    assert len(keyword_hits(stream)) == MAX_DETECTIONS
+    offsets = [hit.offset for hit in keyword_hits(stream)]
+    assert offsets == sorted(offsets)
 
 
 def test_a_stream_of_one_word_character_is_searched_instantly() -> None:

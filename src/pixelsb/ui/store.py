@@ -24,3 +24,14 @@ class Store:
         self._state = transition(self._state)
         for listener in tuple(self._listeners):
             listener(self._state)
+
+
+def compose(*transitions: Transition) -> Transition:
+    """One transition that runs each in order, so one gesture means one notify."""
+
+    def run(state: ViewerState) -> ViewerState:
+        for transition in transitions:
+            state = transition(state)
+        return state
+
+    return run

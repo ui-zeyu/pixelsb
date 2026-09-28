@@ -34,7 +34,7 @@ from PySide6.QtWidgets import QGridLayout, QLabel, QVBoxLayout, QWidget
 
 from pixelsb.domain import histogram
 from pixelsb.domain.models import LoadedImage, Raster, SampleArray, SamplePlane
-from pixelsb.domain.spectrum import log_magnitude
+from pixelsb.domain.spectrum import stretched
 from pixelsb.ui import text, theme
 from pixelsb.ui.controls import drain, section_title
 from pixelsb.ui.extract_view import dump_font
@@ -233,11 +233,10 @@ def _spectrum_picture(raster: Raster) -> NDArray[np.uint8]:
     height, width = _capped(raster.samples[:, :, next(iter(slots.values()))]).shape
     picture = np.zeros((height, width, 3), np.uint8)
     for name in names:
-        view = log_magnitude(_capped(raster.samples[:, :, slots[name]]))
-        peak = float(view.max())
-        if peak <= 0.0:
+        channel = stretched(_capped(raster.samples[:, :, slots[name]]), 0xFF)
+        if channel is None:
             continue
-        channel = (view * (255.0 / peak)).astype(np.uint8)
+        channel = channel.astype(np.uint8)
         if name == "L":
             picture[:, :] = channel[:, :, None]
         else:

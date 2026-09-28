@@ -63,6 +63,16 @@ def detect_patterns(data: bytes) -> tuple[Detection, ...]:
     return tuple(islice(found, MAX_DETECTIONS))
 
 
+def keyword_hits(data: bytes) -> tuple[Detection, ...]:
+    """Every keyword hit, in stream order, under the same cap as a full sweep.
+
+    The sweep judges candidates by their keywords alone; the signature half of
+    :func:`detect_patterns` would spend nine full passes per candidate on
+    findings it then throws away.
+    """
+    return tuple(islice(sorted(_keywords(data), key=lambda hit: hit.offset), MAX_DETECTIONS))
+
+
 def _keywords(data: bytes) -> Iterator[Detection]:
     """Every keyword occurrence, case-insensitively, as a flagged detection."""
     lowered = data.lower()

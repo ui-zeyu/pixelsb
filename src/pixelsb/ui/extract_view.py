@@ -1,4 +1,4 @@
-"""The extract panel: a hex dump beside one decoded text column.
+"""The extract view: a hex dump beside one decoded text column.
 
 Each pane holds its own text, so a selection copies only that column. The text
 pane's header names the encoding and switches it, and selecting or copying never

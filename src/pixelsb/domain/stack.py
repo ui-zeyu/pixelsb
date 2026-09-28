@@ -42,7 +42,7 @@ from pixelsb.domain.models import (
 )
 from pixelsb.domain.predicate import PredicateError, compile_filter
 from pixelsb.domain.selection import bits_for
-from pixelsb.domain.spectrum import log_magnitude
+from pixelsb.domain.spectrum import stretched
 
 # Rec. 709 luma weights, scaled into integer arithmetic.
 _LUMA = np.array([2126, 7152, 722], dtype=np.uint32)
@@ -241,11 +241,8 @@ def _spectrum(raster: Raster, planes: tuple[str, ...] | None) -> SampleArray:
     for index, plane in enumerate(raster.planes):
         if plane.name not in wanted:
             continue
-        view = log_magnitude(raster.samples[:, :, index])
-        peak = float(view.max())
-        out[:, :, index] = (
-            np.rint(view * (plane.maximum / peak)).astype(np.uint16) if peak > 0.0 else 0
-        )
+        band = stretched(raster.samples[:, :, index], plane.maximum)
+        out[:, :, index] = band if band is not None else 0
     return out
 
 

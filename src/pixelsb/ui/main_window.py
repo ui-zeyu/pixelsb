@@ -1,5 +1,6 @@
 """Main window: the layer panel, the canvas, the extract page, and the shortcuts."""
 
+from collections import OrderedDict
 from collections.abc import Callable
 from functools import partial
 from pathlib import Path
@@ -112,7 +113,7 @@ from pixelsb.ui.layers import LayerPanel
 from pixelsb.ui.painting import lighten_clear_button
 from pixelsb.ui.scan_panel import ScanPanel
 from pixelsb.ui.side_panels import Panel, SidePanels
-from pixelsb.ui.store import Store, Transition
+from pixelsb.ui.store import Store, Transition, compose
 from pixelsb.ui.text import readout_text, status_info, status_view
 
 type ErrorReporter = Callable[[str], None]
@@ -122,6 +123,9 @@ _TEXT_INPUTS = (QLineEdit, QAbstractSpinBox, QPlainTextEdit, QTextEdit, QComboBo
 _CANVAS_MIN_WIDTH = 260
 _LEFT_MIN_WIDTH = 240
 _LEFT_WIDTH = 288
+# How many combined pictures the session keeps decoded: enough for one
+# challenge's folder, few enough that a long day never pins every file.
+_COMPANION_LIMIT = 16
 _FORMAT_ITEMS = tuple(
     (fmt.value, label)
     for fmt, label in (
@@ -144,7 +148,7 @@ class MainWindow(QMainWindow):
         self._box_edit_key: object = None  # the state the box's own line already covers
         self._box_authoring = False
         self._panel_sized = False
-        self._companions: dict[str, LoadedImage] = {}  # a comb line's file, read once
+        self._companions: OrderedDict[str, LoadedImage] = OrderedDict()  # read once, kept few
         self.setWindowTitle(text.APP_NAME)
         # Wide enough that the width limit leaves the census page's dump its
         # scrollbar margin on a typical screen, whatever the fonts resolve to.
@@ -707,8 +711,10 @@ class MainWindow(QMainWindow):
 
         A relative word lands in the open picture's folder, where a challenge's
         other files ship; the image is kept, so re-reading the line — the echo
-        after Enter reparses it — costs no second decode. A file that will not
-        open refuses the line, exactly as a malformed command does.
+        after Enter reparses it — costs no second decode. The keep is a small
+        least-recently-used set, so a long session holds only the pictures a
+        recent line actually used. A file that will not open refuses the line,
+        exactly as a malformed command does.
         """
         image = self.store.state.image
         path = Path(word).expanduser()
@@ -717,9 +723,13 @@ class MainWindow(QMainWindow):
         key = str(path)
         if key not in self._companions:
             try:
-                self._companions[key] = load_image(path)
+                loaded = load_image(path)
             except (ImageLoadError, OSError) as exc:
                 raise CommandError(text.companion_failed(word, str(exc))) from None
+            while len(self._companions) >= _COMPANION_LIMIT:
+                self._companions.popitem(last=False)
+            self._companions[key] = loaded
+        self._companions.move_to_end(key)
         return self._companions[key]
 
     def _write_box(self, line: str) -> None:
@@ -776,10 +786,14 @@ class MainWindow(QMainWindow):
 
     def _on_scan_applied(self, candidate: ScanCandidate) -> None:
         """A scan row: its projection into the stack, its read order into the extract panel."""
-        self.apply(partial(set_bits, choices=candidate.selection))
-        self.apply(partial(set_channel_order, names=candidate.order.planes))
-        self.apply(partial(set_bit_order, bit_order=candidate.order.bit_order))
-        self.apply(partial(set_scan_order, scan=candidate.order.scan))
+        self.apply(
+            compose(
+                partial(set_bits, choices=candidate.selection),
+                partial(set_channel_order, names=candidate.order.planes),
+                partial(set_bit_order, bit_order=candidate.order.bit_order),
+                partial(set_scan_order, scan=candidate.order.scan),
+            )
+        )
 
     def _on_arnold_picked(self, times: int, a: int, b: int) -> None:
         self.apply(partial(apply_arnold, times=times, a=a, b=b))

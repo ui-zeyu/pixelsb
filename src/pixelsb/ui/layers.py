@@ -36,7 +36,7 @@ _PANEL_MIN_WIDTH = 240  # what the layer list needs to read a row
 
 
 class LayerPanel(QWidget):
-    """The left sidebar: the mask stack, with a note about the selected mask."""
+    """The left sidebar: the recipe — the stack of operations, top first."""
 
     add_requested = Signal(object)  # a Mask, added on top of the stack
     combine_requested = Signal()  # the add menu's combine: the window picks the file

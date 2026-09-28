@@ -432,6 +432,25 @@ def test_the_add_menu_combines_a_picked_picture(
     assert window.layers_panel._rows[0]._detail.text() == "comb xor b.png"
 
 
+def test_the_companion_keep_is_bounded(qtbot: QtBot, rgb_png: Path) -> None:
+    """A long session keeps the recently combined pictures, never every one."""
+    from pixelsb.ui.main_window import _COMPANION_LIMIT
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.open_path(rgb_png)
+    for index in range(_COMPANION_LIMIT):
+        window._companions[f"/old/{index}.png"] = image_from_pixels(
+            Path(f"/old/{index}.png"), np.zeros((2, 2, 3), np.uint8)
+        )
+    other = rgb_png.with_name("c.png")
+    Image.new("RGB", (2, 2), (9, 9, 9)).save(other)
+    loaded = window._companion(str(other))
+    assert len(window._companions) == _COMPANION_LIMIT
+    assert "/old/0.png" not in window._companions  # the least recent one left first
+    assert window._companion("c.png") is loaded  # the same file reads once
+
+
 def test_enter_writes_the_line_back_as_the_command_it_ran(qtbot: QtBot, rgb_png: Path) -> None:
     """The box and the recipe row read alike: Enter keeps the command's own wording."""
     window = MainWindow()

@@ -297,6 +297,14 @@ def test_comb_reads_the_other_picture_through_the_callers_loader() -> None:
     assert words == ["b.png"]
 
 
+def test_comb_hands_the_path_over_verbatim_with_its_spacing() -> None:
+    """A path runs to the end of the line, so its own spaces are its own."""
+    companion, words = _reader()
+    parsed = commands.parse("comb xor my  file.png", _PLANES, companion=companion)
+    assert parsed == CombineMask(_OTHER, CombineOp.XOR)
+    assert words == ["my  file.png"]
+
+
 def test_a_combine_reads_back_as_the_line_that_named_it() -> None:
     companion, _words = _reader()
     parsed = commands.parse("comb xor b.png", _PLANES, companion=companion)

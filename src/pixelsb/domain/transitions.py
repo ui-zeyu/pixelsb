@@ -46,9 +46,6 @@ def open_image(
     zoom: float | None = None,
 ) -> ViewerState:
     """Show an image. The mask stack carries over, as the view settings do."""
-    chosen = state.zoom if zoom is None else zoom
-    if not MIN_ZOOM <= chosen <= MAX_ZOOM:
-        raise ValueError(f"zoom {chosen} is outside {MIN_ZOOM}..{MAX_ZOOM}")
     if not image.planes:
         raise ValueError("image has no planes")
     return ViewerState(
@@ -59,7 +56,7 @@ def open_image(
         value_format=state.value_format,
         extract_encoding=state.extract_encoding,
         extract_order=state.extract_order,
-        zoom=chosen,
+        zoom=state.zoom if zoom is None else zoom,
     )
 
 
@@ -542,8 +539,6 @@ def cycle_format(state: ViewerState) -> ViewerState:
 
 
 def set_zoom(state: ViewerState, zoom: float) -> ViewerState:
-    if not MIN_ZOOM <= zoom <= MAX_ZOOM:
-        raise ValueError(f"zoom {zoom} is outside {MIN_ZOOM}..{MAX_ZOOM}")
     return replace(state, zoom=zoom)
 
 

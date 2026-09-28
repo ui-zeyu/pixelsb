@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
 
 from pixelsb.domain import bytes_text
 from pixelsb.domain.classify import StreamClassifier
-from pixelsb.domain.detect import detect_patterns
+from pixelsb.domain.detect import keyword_hits
 from pixelsb.domain.extract import StreamSource
 from pixelsb.domain.models import LoadedImage, Raster
 from pixelsb.domain.scan import ScanCandidate, ScanHit, scan_candidates
@@ -77,7 +77,7 @@ class _SweepWorker(Stoppable):
         if not stream:
             return ScanHit(candidate)
         classification = classify(stream)
-        flags = tuple(d.label for d in detect_patterns(stream) if d.flagged)
+        flags = tuple(hit.label for hit in keyword_hits(stream))
         return ScanHit(
             candidate,
             classification.label if classification else "",

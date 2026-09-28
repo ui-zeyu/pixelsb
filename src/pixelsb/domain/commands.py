@@ -182,12 +182,18 @@ def _verb_line(
     match = _VERB.match(line)
     if match is None:
         return None
-    words = line[match.end() :].split()
     verb = match["verb"].lower()
+    rest = line[match.end() :].strip()
+    words = rest.split()
     taken = _parameter_words(verb, words)
-    argument = " ".join(words[:taken]) if taken else None
+    if not taken:
+        argument = None
+    elif taken == len(words):
+        argument = rest  # every word is a parameter, spelled as the typist wrote it
+    else:
+        argument = " ".join(words[:taken])
     mask = _verb_mask(verb, argument, level_ceiling(planes), companion)
-    if words[taken:]:  # the verb and its parameters are the whole line
+    if taken < len(words):  # the verb and its parameters are the whole line
         raise CommandError(_VERB_APART)
     return mask
 
