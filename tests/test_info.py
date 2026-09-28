@@ -69,11 +69,6 @@ def _panel(qtbot: QtBot, path: Path) -> InfoPanel:
     return panel
 
 
-def _is_shown(panel: InfoPanel, row: int) -> bool:
-    """Whether the census row's name button carries the canvas accent."""
-    return bool(panel._name_buttons[row].property("shown"))
-
-
 def _label_texts(panel: InfoPanel) -> list[str]:
     widgets = (*panel.findChildren(QLabel), *panel.findChildren(QPushButton))
     return [widget.text() for widget in widgets if widget.text()]
@@ -232,8 +227,8 @@ def test_the_radio_renders_and_the_block_name_dumps(qtbot: QtBot, tmp_path: Path
     assert panel._canvas_note.text() == text.canvas_note(report.blocks[2], 1)
     assert "块转储 · IHDR" in panel._dump_view._type_label.text()  # the dump stayed put
     assert panel._selected == 0
-    assert _is_shown(panel, 2)
-    assert not _is_shown(panel, 1)  # the other stream is no longer the one on canvas
+    assert panel._canvas_row == 2
+    assert not panel._radios[1].isChecked()  # the other stream is no longer the one on canvas
 
 
 def test_a_failed_render_leaves_the_radio_where_the_canvas_is(qtbot: QtBot, tmp_path: Path) -> None:
@@ -306,7 +301,7 @@ def test_a_smuggled_stream_offers_its_own_geometries(qtbot: QtBot, tmp_path: Pat
     assert panel._stream_sizes_host.isHidden()
 
 
-def test_a_fresh_file_marks_the_first_stream_as_shown(qtbot: QtBot, tmp_path: Path) -> None:
+def test_a_fresh_file_opens_on_the_first_stream(qtbot: QtBot, tmp_path: Path) -> None:
     """The canvas opens on the file itself: the census says so, and renders nothing."""
     path = _split_idat_png(tmp_path)
     rendered: list[LoadedImage] = []
@@ -322,9 +317,7 @@ def test_a_fresh_file_marks_the_first_stream_as_shown(qtbot: QtBot, tmp_path: Pa
     assert not panel._radios[0].isChecked()
     assert not panel._radios[3].isChecked()
     assert panel._canvas_note.text() == text.canvas_note(report.blocks[1], 2)
-    assert _is_shown(panel, 1)
-    assert not _is_shown(panel, 2)
-    assert not _is_shown(panel, 0)
+    assert panel._canvas_row == 1
 
 
 def test_a_file_without_a_stream_claims_no_stream(qtbot: QtBot, tmp_path: Path) -> None:

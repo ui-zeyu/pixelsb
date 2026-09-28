@@ -106,8 +106,7 @@ QPushButton#segmentLeft:checked, QPushButton#segmentRight:checked {{
 QPushButton#linkButton {{ border: none; background: transparent; color: {ACCENT}; padding: 0 4px; }}
 QPushButton#linkButton:hover {{ background: {HOVER}; }}
 QPushButton#blockName {{ padding: 0 7px; min-height: 15px; }}
-QPushButton#blockName[shown="true"] {{ color: {ACCENT}; font-weight: 600; }}
-QPushButton#blockName[dumped="true"] {{ background: {HOVER}; border-color: {ACCENT}; }}
+QPushButton#blockName[dumped="true"] {{ color: {ACCENT}; font-weight: 600; }}
 QPushButton#ghost {{ border: none; background: transparent; color: {TEXT}; padding: 2px 8px; }}
 QPushButton#ghost:hover {{ background: {HOVER}; }}
 QPushButton#ghost:pressed {{ background: {PRESSED}; }}

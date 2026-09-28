@@ -231,7 +231,7 @@ class InfoPanel(QWidget):
         self._report = report
         self._selected = 0 if report.blocks else None
         # The canvas already shows the file's first stream: its head row carries
-        # the radio and the accent, without re-rendering anything.
+        # the radio, without re-rendering anything.
         self._canvas_row = next(
             (index for index, block in enumerate(report.blocks) if block.group == 1), None
         )
@@ -444,13 +444,12 @@ class InfoPanel(QWidget):
             radio.blockSignals(False)
 
     def _mark_rendered(self) -> None:
-        """Dress the rows: the stream on the canvas at its head, the dumped block tinted."""
+        """Dress the rows: the dumped block carries the accent; the radio speaks
+        for the stream on the canvas."""
         for row, button in self._name_buttons.items():
-            shown = row == self._canvas_row
             dumped = row == self._selected
-            if button.property("shown") == shown and button.property("dumped") == dumped:
+            if button.property("dumped") == dumped:
                 continue
-            button.setProperty("shown", shown)
             button.setProperty("dumped", dumped)
             theme.repolish(button)
 
