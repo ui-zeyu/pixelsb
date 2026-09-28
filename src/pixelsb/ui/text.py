@@ -13,6 +13,7 @@ from pixelsb.domain.models import (
     BitChoice,
     BitsMask,
     CombineMask,
+    CombineOp,
     CropMask,
     ExtractEncoding,
     ExtractOrder,
@@ -152,7 +153,7 @@ SECTION_EXIF = "EXIF"
 INFO_NO_EXIF = "无 EXIF 信息"
 FRAME_HEADERS = ("帧", "尺寸", "偏移", "延时")
 SIZE_HINT_NOTE = "声明的宽高放不下这些像素，可修补为："
-SIZE_OPEN_TIP = "按此宽高改写 IHDR 并打开修补后的文件"
+SIZE_OPEN_TIP = "按此宽高改写文件头并打开修补的文件副本"
 STREAM_SIZE_TIP = "按此宽高在内存里重渲这条流"
 WARNING_MARK = "⚠"
 BLOCK_RENDER_TIP = "把这一块所在的流渲染到画布"
@@ -275,7 +276,10 @@ LAYER_ADD_TIP = "添加操作；越靠上越晚生效，要参数的写进命令
 COMBINE_LABEL = "合成另一张图…"
 COMBINE_DIALOG = "选择要合成的另一张图"
 COMBINE_FAILED = "无法读取第二张图"
-MASK_COMBINE_TIP = "与另一张图逐通道异或：要同尺寸、有同名通道；comb xor b.png，路径相对当前图"
+MASK_COMBINE_TIP = (
+    "与另一张图逐通道合成（xor、and、or、min、max、add、sub）："
+    "要同尺寸、有同名通道；comb xor b.png，路径相对当前图"
+)
 LAYER_UP = "▲"
 LAYER_UP_TIP = "上移（更晚生效）"
 LAYER_DOWN = "▼"
@@ -320,6 +324,23 @@ MASK_INFO: dict[type[Mask], MaskInfo] = {
     ArnoldMask: MaskInfo("猫脸变换", MASK_ARNOLD_TIP),
     BitsMask: MaskInfo("位选择", MASK_BITS_TIP),
 }
+
+# One menu wording per combine operation: the command word leads, so the menu
+# and the line that lands the layer share their vocabulary.
+_COMBINE_MENU: dict[CombineOp, MaskInfo] = {
+    CombineOp.XOR: MaskInfo("xor · 异或", "逐通道异或：相同处变黑，差异凸出"),
+    CombineOp.AND: MaskInfo("and · 与", "逐通道按位与：两图同亮的位才留下"),
+    CombineOp.OR: MaskInfo("or · 或", "逐通道按位或：任一图亮的位就亮"),
+    CombineOp.MIN: MaskInfo("min · 取暗", "逐通道取较小值：更暗的像素赢"),
+    CombineOp.MAX: MaskInfo("max · 取亮", "逐通道取较大值：更亮的像素赢"),
+    CombineOp.ADD: MaskInfo("add · 相加", "逐通道相加取半：两图的亮度平均"),
+    CombineOp.SUB: MaskInfo("sub · 相减", "逐通道相减取半、抬回中间值：相同处平灰，差异凸出"),
+}
+
+
+def combine_menu() -> tuple[tuple[CombineOp, MaskInfo], ...]:
+    """The add menu's combine entries, in the enum's own order."""
+    return tuple(_COMBINE_MENU.items())
 
 
 def mask_info(mask: Mask) -> MaskInfo:

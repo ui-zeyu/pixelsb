@@ -202,10 +202,14 @@ def _parameter_words(verb: str, words: list[str]) -> int:
     """How many words this verb reads as its parameters: three, one, or all.
 
     A connective in the first word's place is a line trying to combine, so no
-    parameter is taken and the leftover words refuse the line below. ``fft``
-    reads every word as a channel name, so ``fft r g`` stays one operation;
-    ``comb`` reads every word too, because a path may carry spaces.
+    parameter is taken and the leftover words refuse the line below — unless
+    the verb is ``comb`` and the word is one of its operation names, since
+    ``comb or b.png`` is an operation of its own. ``fft`` reads every word as a
+    channel name, so ``fft r g`` stays one operation; ``comb`` reads every
+    word too, because a path may carry spaces.
     """
+    if verb == "comb" and words and words[0].lower() in _COMB_OPS:
+        return len(words)
     if not words or words[0].lower() in _CONNECTIVES:
         return 0
     if verb == "arnold":

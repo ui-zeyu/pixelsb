@@ -32,7 +32,7 @@ from pixelsb.domain.models import ExtractEncoding, FrameGeometry, LoadedImage
 from pixelsb.domain.png_render import render_blocks
 from pixelsb.io.classify import stream_classifier
 from pixelsb.io.inspect import exif_entries, inspect_container
-from pixelsb.io.loading import frame_geometries, image_from_pixels, openable_repairs, patched_ihdr
+from pixelsb.io.loading import frame_geometries, image_from_pixels, openable_repairs, patched_size
 from pixelsb.ui import text, theme
 from pixelsb.ui.controls import drain, hairline, section_title
 from pixelsb.ui.extract_view import ExtractView, dump_font
@@ -274,18 +274,21 @@ class InfoPanel(QWidget):
         self._sizes_row.addStretch(1)
 
     def _open_repaired(self, hint: SizeHint) -> None:
-        """Write a copy with the IHDR's width and height rewritten, and open it.
+        """Write a copy with the header's width and height rewritten, and open it.
 
-        The patch is the loader's own, CRC and all: a copy with a stale checksum
-        would be a broken PNG by anyone's reading, whatever this Pillow accepts.
+        The patch is the loader's own — a PNG renews its IHDR's CRC, a BMP's
+        DIB header is bare: a copy that is a broken file by anyone's reading
+        would be a strange thing for the repair row to hand out.
         """
+        image = self._image
         report = self._report
-        if report is None or report.header is None or not self._file_data:
+        if image is None or report is None or not self._file_data:
             return
-        header = next(block for block in report.blocks if block.label == "IHDR")
-        patched = patched_ihdr(self._file_data, header.payload_at, hint)
+        patched = patched_size(image.path, hint)
+        if patched is None:
+            return
         handle, name = tempfile.mkstemp(
-            prefix=f"pixelsb-{hint.width}x{hint.height}-", suffix=".png"
+            prefix=f"pixelsb-{hint.width}x{hint.height}-", suffix=f".{report.kind}"
         )
         with os.fdopen(handle, "wb") as file:
             file.write(patched)

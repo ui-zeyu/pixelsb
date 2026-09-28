@@ -10,7 +10,7 @@ import numpy as np
 from numpy.typing import NDArray
 from PIL import Image
 
-from pixelsb.domain.container import SizeHint, scan_container
+from pixelsb.domain.container import ContainerReport, SizeHint, scan_container
 from pixelsb.domain.models import FrameGeometry, LoadedImage, SampleArray, SampleOrigin, SamplePlane
 
 type Decoded = tuple[SampleArray, tuple[SamplePlane, ...]]
@@ -51,33 +51,67 @@ def load_frame(path: Path, index: int) -> LoadedImage:
     except ImageLoadError:
         raise
     except Exception as exc:
-        repaired = _repaired_png(file_path, index)
+        repaired = _repaired(file_path, index)
         if repaired is not None:
             return repaired
         raise ImageLoadError(str(exc)) from exc
 
 
-def _repair_hints(path: Path) -> tuple[bytes, int, tuple[SizeHint, ...]] | None:
-    """A doctored PNG's bytes, its IHDR payload offset, and the sizes to try.
+def _repair_hints(path: Path) -> tuple[bytes, int, tuple[SizeHint, ...], str] | None:
+    """A doctored header's bytes, its width field's offset, the sizes to try, the kind.
 
-    ``None`` when the file cannot be read, is no PNG, or hides no size
-    candidates; the two callers each turn that into their own failure.
+    ``None`` when the file cannot be read, hides no size candidates, or is a
+    kind whose header this cannot rewrite; each caller turns that into its own
+    failure.
     """
     try:
         data = Path(path).read_bytes()
     except OSError:
         return None
     report = scan_container(data)
-    if report.header is None or not report.sizes:
+    if not report.sizes:
         return None
-    header_at = next((block.payload_at for block in report.blocks if block.label == "IHDR"), None)
-    if header_at is None:
+    at = _width_field(report)
+    if at is None:
         return None
-    return data, header_at, report.sizes
+    return data, at, report.sizes, report.kind
 
 
-def _repaired_png(path: Path, index: int) -> LoadedImage | None:
-    """The image a doctored IHDR was hiding, read under its own geometry.
+def _width_field(report: ContainerReport) -> int | None:
+    """Where the declared width starts: the IHDR payload, or the DIB body.
+
+    Only the modern DIB headers — 40 bytes and up — carry 32-bit width and
+    height this can rewrite; the museum-piece core header keeps 16-bit fields
+    and gets no repair.
+    """
+    if report.kind == "png":
+        if report.header is None:
+            return None
+        return next((block.payload_at for block in report.blocks if block.label == "IHDR"), None)
+    if report.kind == "bmp":
+        dib = next((block for block in report.blocks if block.label == "DIB 头"), None)
+        if dib is None or len(dib.payload) < 4:
+            return None
+        (dib_size,) = struct.unpack_from("<I", dib.payload, 0)
+        if dib_size < 40:
+            return None
+        return dib.payload_at + 4  # past the size field, where width and height live
+    return None
+
+
+def _patched(data: bytes, at: int, hint: SizeHint, kind: str) -> bytes | None:
+    """The bytes rewritten to the hint's geometry: PNG renews its CRC, BMP is bare."""
+    if kind == "png":
+        return patched_ihdr(data, at, hint)
+    if kind == "bmp":
+        patched = bytearray(data)
+        patched[at : at + 8] = struct.pack("<ii", hint.width, hint.height)
+        return bytes(patched)
+    return None
+
+
+def _repaired(path: Path, index: int) -> LoadedImage | None:
+    """The image a doctored size header was hiding, read under its own geometry.
 
     The census's size hints are tried in their aspect order; the first one PIL
     accepts wins, and a file whose data fits nothing comes back as failure, as
@@ -86,10 +120,13 @@ def _repaired_png(path: Path, index: int) -> LoadedImage | None:
     found = _repair_hints(path)
     if found is None:
         return None
-    data, header_at, hints = found
+    data, at, hints, kind = found
     for hint in hints:
+        patched = _patched(data, at, hint, kind)
+        if patched is None:
+            return None
         try:
-            with Image.open(io.BytesIO(patched_ihdr(data, header_at, hint))) as image:
+            with Image.open(io.BytesIO(patched)) as image:
                 if index and index >= max(int(getattr(image, "n_frames", 1) or 1), 1):
                     continue
                 image.seek(index)
@@ -104,22 +141,40 @@ def openable_repairs(path: Path) -> tuple[SizeHint, ...]:
     """The census's size hints that Pillow can actually decode, best first.
 
     A byte count that matches a candidate geometry is necessary, never
-    sufficient: rows can carry filter bytes no renderer accepts, so every hint
-    is proved by a real decode before it earns a button.
+    sufficient: a stride can disagree with a renderer in ways the byte count
+    cannot see, so every hint is proved by a real decode before it earns a
+    button.
     """
     found = _repair_hints(path)
     if found is None:
         return ()
-    data, header_at, hints = found
+    data, at, hints, kind = found
     good: list[SizeHint] = []
     for hint in hints:
+        patched = _patched(data, at, hint, kind)
+        if patched is None:
+            continue
         try:
-            with Image.open(io.BytesIO(patched_ihdr(data, header_at, hint))) as image:
+            with Image.open(io.BytesIO(patched)) as image:
                 image.load()
         except Exception:
             continue
         good.append(hint)
     return tuple(good)
+
+
+def patched_size(path: Path, hint: SizeHint) -> bytes | None:
+    """The file's bytes rewritten to the hint's geometry, checksums and all.
+
+    The repair row's own patch, so the copy it hands out is sound by anyone's
+    reading: a PNG's IHDR gets a fresh CRC, a BMP's DIB header is bare.
+    ``None`` when the header cannot be found or rewritten.
+    """
+    found = _repair_hints(path)
+    if found is None:
+        return None
+    data, at, _hints, kind = found
+    return _patched(data, at, hint, kind)
 
 
 def patched_ihdr(data: bytes, header_at: int, hint: SizeHint) -> bytes:

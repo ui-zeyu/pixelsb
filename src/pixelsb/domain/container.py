@@ -7,7 +7,10 @@ still classified, and a smuggled second IDAT stream is still exposed, without
 this module knowing what any chunk means. The census reads one container: the
 first end marker ends the structure, and whatever follows travels as one tail
 block, whatever it turns out to be. The census also keeps what a renderer would
-need to show the blocks' bytes as pixels: the PNG header and palette.
+need to show the blocks' bytes as pixels: the PNG header and palette. BMP has
+no chunk framing to audit, so its census is the frame the spec draws — file
+header, DIB header, color table, pixel region — and the sizes its pixels fill
+when the declared pair does not hold them.
 """
 
 import math
@@ -21,8 +24,10 @@ from pixelsb.domain import bytes_text
 
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 _JPEG_SIGNATURE = b"\xff\xd8"
+_BMP_SIGNATURE = b"BM"
+_FILE_HEADER = 14  # BITMAPFILEHEADER: magic, declared size, two reserved, pixel offset
 CHANNELS = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}
-_SIZE_HINTS = 6  # candidate geometries shown for a doctored IHDR, at most
+_SIZE_HINTS = 6  # candidate geometries shown for a doctored IHDR or DIB, at most
 
 
 class BlockRole(StrEnum):
@@ -117,9 +122,9 @@ class ContainerReport:
 
     For PNG the ``header`` and ``palette`` are kept so the blocks' bytes can be
     rendered as pixels without touching the file again. ``sizes`` names the
-    geometries the first stream's data would fill exactly, when that is not the
-    declared one — a doctored IHDR is the usual reason, and one of them is what
-    the picture was made with.
+    geometries the pixel data would fill exactly, when that is not the
+    declared one — a doctored IHDR or DIB header is the usual reason, and one
+    of them is what the picture was made with.
     """
 
     kind: str
@@ -136,6 +141,10 @@ def scan_container(data: bytes) -> ContainerReport:
         return _scan_png(data)
     if data.startswith(_JPEG_SIGNATURE):
         return _scan_jpeg(data)
+    if data.startswith(_BMP_SIGNATURE):
+        report = _scan_bmp(data)
+        if report is not None:
+            return report
     return ContainerReport(kind="")
 
 
@@ -429,3 +438,144 @@ _JPEG_MARKERS = {
     0xFE: "COM",
     **{0xE0 + index: f"APP{index}" for index in range(16)},
 }
+
+
+def _scan_bmp(data: bytes) -> ContainerReport | None:
+    """The census of a BMP: the two headers, the palette, the pixels, the rest.
+
+    ``None`` says the bytes only pretend to start with ``BM``: the DIB header
+    size — the one field every BMP carries — is not a size the spec names, so
+    this is no bitmap and stays anonymous. A declared file size past the
+    actual end is the one structural lie this walk reports; a doctored width
+    or height is reported the PNG way, as the geometries the pixels fill.
+    """
+    if len(data) < _FILE_HEADER + 4:
+        return None
+    (dib_size,) = struct.unpack_from("<I", data, _FILE_HEADER)
+    if not 12 <= dib_size <= 124:
+        return None
+    (bf_size,) = struct.unpack_from("<I", data, 2)
+    (off_bits,) = struct.unpack_from("<I", data, 10)
+    width, height, bit_count = _bmp_geometry(data, dib_size)
+    findings: list[Finding] = []
+    pixel_from = max(_FILE_HEADER + dib_size, min(off_bits, len(data)))
+    if bf_size > len(data):
+        findings.append(Finding("stream-truncated", pixel_from))
+    pixel_end = bf_size if pixel_from < bf_size <= len(data) else len(data)
+    pixel = data[pixel_from:pixel_end]
+    head = data[:_FILE_HEADER]
+    body = data[_FILE_HEADER : _FILE_HEADER + dib_size]
+    blocks = [
+        Block(
+            0,
+            "文件头",
+            len(head),
+            BlockRole.REQUIRED,
+            head,
+            bytes_text.preview(head),
+            payload_at=0,
+        ),
+        Block(
+            _FILE_HEADER,
+            "DIB 头",
+            len(body),
+            BlockRole.REQUIRED,
+            body,
+            bytes_text.preview(body),
+            payload_at=_FILE_HEADER,
+        ),
+    ]
+    if pixel_from > _FILE_HEADER + dib_size:
+        gap = data[_FILE_HEADER + dib_size : pixel_from]
+        palette = bit_count <= 8  # the color table is the one thing a gap can be
+        blocks.append(
+            Block(
+                _FILE_HEADER + dib_size,
+                "调色板" if palette else "间隔",
+                len(gap),
+                BlockRole.REQUIRED if palette else BlockRole.ANCILLARY,
+                gap,
+                bytes_text.preview(gap),
+                payload_at=_FILE_HEADER + dib_size,
+            )
+        )
+    if pixel:
+        blocks.append(
+            Block(
+                pixel_from,
+                "像素数据",
+                len(pixel),
+                BlockRole.REQUIRED,
+                pixel,
+                bytes_text.preview(pixel),
+                payload_at=pixel_from,
+            )
+        )
+    if pixel_end < len(data):
+        residual = data[pixel_end:]
+        blocks.append(
+            Block(
+                pixel_end,
+                "残留数据",
+                len(residual),
+                BlockRole.ANCILLARY,
+                residual,
+                bytes_text.preview(residual),
+                payload_at=pixel_end,
+            )
+        )
+    return ContainerReport(
+        "bmp",
+        tuple(blocks),
+        tuple(findings),
+        sizes=_bmp_size_candidates(width, abs(height), bit_count, len(pixel)),
+    )
+
+
+def _bmp_geometry(data: bytes, dib_size: int) -> tuple[int, int, int]:
+    """The DIB header's width, height, and bit count; zeros where bytes stop short.
+
+    The core header keeps 16-bit fields; every later member widened them to
+    32 bits and moved the bit count along. Height keeps its sign — negative
+    reads top-down — and only its size matters to this census.
+    """
+    core = dib_size == 12
+    if len(data) < _FILE_HEADER + (26 if core else 30):
+        return 0, 0, 0
+    if core:
+        width, height = struct.unpack_from("<HH", data, 18)
+        (bit_count,) = struct.unpack_from("<H", data, 24)
+    else:
+        width, height = struct.unpack_from("<ii", data, 18)
+        (bit_count,) = struct.unpack_from("<H", data, 28)
+    return width, height, bit_count
+
+
+def _bmp_row_bytes(width: int, bit_count: int) -> int:
+    """One row's bytes: a BMP pads every scanline to whole 4-byte units."""
+    return (width * bit_count + 31) // 32 * 4
+
+
+def _bmp_size_candidates(
+    width: int, height: int, bit_count: int, actual: int
+) -> tuple[SizeHint, ...]:
+    """The geometries the pixel region fills exactly, closest aspect first.
+
+    Only a *mismatch* gets candidates, and the declared pair is the first to
+    drop out: a doctored DIB header over another picture's pixels is the
+    reason this walk exists, so each padded stride a divisor names yields the
+    widths that fit it and nothing else does.
+    """
+    if actual <= 0 or bit_count <= 0 or width < 1 or height < 1:
+        return ()
+    if actual == _bmp_row_bytes(width, bit_count) * height:
+        return ()
+    truth = math.log(width / height)
+    found: list[SizeHint] = []
+    for stride in _divisors(actual):
+        candidate = stride * 8 // bit_count
+        while candidate >= 1 and _bmp_row_bytes(candidate, bit_count) == stride:
+            found.append(SizeHint(candidate, actual // stride))
+            candidate -= 1
+    found.sort(key=lambda hint: abs(math.log(hint.width / hint.height) - truth))
+    return tuple(found[:_SIZE_HINTS])

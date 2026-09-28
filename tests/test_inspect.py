@@ -24,6 +24,25 @@ def _png(*chunks: bytes) -> bytes:
     return _PNG_SIGNATURE + b"".join(chunks)
 
 
+def _bmp(
+    width: int,
+    height: int,
+    pixel: bytes = b"",
+    *,
+    bit_count: int = 24,
+    palette: bytes = b"",
+) -> bytes:
+    """A bottom-up 24-bit BMP: the declared geometry, and the pixel bytes given."""
+    off_bits = 14 + 40 + len(palette)
+    return (
+        b"BM"
+        + struct.pack("<IHHI", off_bits + len(pixel), 0, 0, off_bits)
+        + struct.pack("<IiiHHIIiiII", 40, width, height, 1, bit_count, 0, 0, 0, 0, 0, 0)
+        + palette
+        + pixel
+    )
+
+
 def _scanlines(*pixels: bytes) -> bytes:
     return b"".join(b"\x00" + pixel for pixel in pixels)
 
@@ -288,6 +307,62 @@ def test_an_unknown_container_stays_empty(tmp_path: Path) -> None:
     report = inspect_container(path)
     assert report.kind == ""
     assert report.findings == ()
+
+
+def test_a_clean_bmp_lists_its_headers_and_pixels() -> None:
+    report = scan_container(_bmp(2, 2, bytes(16)))
+    assert report.kind == "bmp"
+    assert [block.label for block in report.blocks] == ["文件头", "DIB 头", "像素数据"]
+    assert report.findings == ()
+    assert report.sizes == ()
+
+
+def test_an_eight_bit_bmp_reads_its_color_table_and_a_gap_reads_as_a_gap() -> None:
+    """Bytes between the DIB header and the pixels are a palette at 8 bpp."""
+    report = scan_container(_bmp(2, 1, bytes(4), bit_count=8, palette=bytes(8)))
+    assert [block.label for block in report.blocks] == [
+        "文件头",
+        "DIB 头",
+        "调色板",
+        "像素数据",
+    ]
+    deep = scan_container(_bmp(1, 1, bytes(4), palette=bytes(6)))  # 24 bpp has no palette
+    assert deep.blocks[2].label == "间隔"
+    assert deep.blocks[2].role is BlockRole.ANCILLARY
+
+
+def test_bytes_after_a_bmps_pixels_travel_as_a_block() -> None:
+    report = scan_container(_bmp(2, 2, bytes(16)) + b"stowaway")
+    last = report.blocks[-1]
+    assert last.label == "残留数据"
+    assert last.payload == b"stowaway"
+    assert last.payload_at == last.offset
+    assert report.findings == ()  # the tail is a block to inspect, like any format's
+
+
+def test_a_bmp_declaring_more_file_than_it_has_is_reported_truncated() -> None:
+    report = scan_container(_bmp(2, 2, bytes(16))[:-6])
+    (finding,) = report.findings
+    assert finding.kind == "stream-truncated"
+
+
+def test_a_doctored_dib_offers_the_geometries_the_data_fills() -> None:
+    """Declared 10x10, data for one 24-bit row of five: the truth is a candidate."""
+    report = scan_container(_bmp(10, 10, bytes(16)))
+    sizes = [(hint.width, hint.height) for hint in report.sizes]
+    assert (5, 1) in sizes  # the data's true shape
+    assert (10, 10) not in sizes
+
+
+def test_a_bmp_that_fits_its_declared_size_asks_for_nothing() -> None:
+    report = scan_container(_bmp(5, 1, bytes(16)))
+    assert report.sizes == ()
+    assert report.findings == ()
+
+
+def test_bytes_starting_with_bm_but_no_dib_size_stay_anonymous() -> None:
+    report = scan_container(b"BM" + b"\x00" * 12 + struct.pack("<I", 999_999))
+    assert report.kind == ""
 
 
 def test_render_blocks_decodes_zlib_payloads() -> None:

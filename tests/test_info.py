@@ -16,7 +16,7 @@ from pixelsb.io.loading import image_from_pixels, load_image, openable_repairs
 from pixelsb.ui import text
 from pixelsb.ui.info import InfoPanel
 from tests.support import chunk as _chunk
-from tests.support import doctored_png
+from tests.support import doctored_bmp, doctored_png
 
 _ZIP_START = b"PK\x03\x04"
 
@@ -321,8 +321,8 @@ def test_a_fresh_file_opens_on_the_first_stream(qtbot: QtBot, tmp_path: Path) ->
 
 
 def test_a_file_without_a_stream_claims_no_stream(qtbot: QtBot, tmp_path: Path) -> None:
-    path = tmp_path / "case.bmp"  # a container the census does not read: no blocks
-    Image.new("RGB", (2, 2)).save(path)
+    path = tmp_path / "case.ppm"  # a container the census does not read: no blocks
+    path.write_bytes(b"P3\n1 1\n255\n0 0 0\n")
     panel = _panel(qtbot, path)
     assert panel._canvas_note.text() == text.original_note()
     assert panel._name_buttons == {}
@@ -348,6 +348,23 @@ def test_the_repair_button_writes_a_sound_png(qtbot: QtBot, tmp_path: Path) -> N
     payload = copy.find(b"IHDR") + 4
     stored = int.from_bytes(copy[payload + 13 : payload + 17], "big")
     assert stored == zlib.crc32(copy[payload - 4 : payload + 13]) & 0xFFFFFFFF
+
+
+def test_a_doctored_bmp_lists_blocks_and_repairs(qtbot: QtBot, tmp_path: Path) -> None:
+    """The census names the BMP's frame, and the repair row offers the true shape."""
+    path = tmp_path / "doctored.bmp"
+    doctored_bmp(path)
+    panel = _panel(qtbot, path)
+    report = panel._report
+    assert report is not None
+    assert report.kind == "bmp"
+    assert [block.label for block in report.blocks] == ["文件头", "DIB 头", "像素数据"]
+    emitted: list[Path] = []
+    panel.open_requested.connect(emitted.append)
+    truth = next(hint for hint in openable_repairs(path) if (hint.width, hint.height) == (5, 1))
+    panel._open_repaired(truth)
+    image = load_image(emitted[0])  # the copy opens as-is, no repair of its own
+    assert (image.width, image.height) == (5, 1)
 
 
 def test_a_stitched_tail_is_dumped_and_guessed(qtbot: QtBot, tmp_path: Path) -> None:

@@ -424,7 +424,7 @@ def test_the_add_menu_combines_a_picked_picture(
     window = MainWindow()
     qtbot.addWidget(window)
     window.open_path(rgb_png)
-    window.layers_panel.combine_requested.emit()
+    window.layers_panel.combine_requested.emit(CombineOp.XOR)
     picked = mask_of(window.store.state, CombineMask)
     assert picked.op is CombineOp.XOR
     assert picked.other.path == other_path

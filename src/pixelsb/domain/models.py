@@ -263,9 +263,21 @@ class FftMask:
 
 
 class CombineOp(StrEnum):
-    """What a combine does with the planes two pictures share."""
+    """What a combine does with the planes two pictures share.
+
+    The words are StegSolve's Image Combiner readings, so a recipe spelled here
+    names what the tool a challenge was made with does: AND, OR, MIN and MAX
+    leave one picture's pixels; ADD halves the sum, and SUB halves the
+    difference and lifts it to the plane's midpoint, so equal planes read flat.
+    """
 
     XOR = "xor"
+    AND = "and"
+    OR = "or"
+    MIN = "min"
+    MAX = "max"
+    ADD = "add"
+    SUB = "sub"
 
 
 @dataclass(frozen=True, slots=True)

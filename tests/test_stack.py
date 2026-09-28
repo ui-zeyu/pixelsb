@@ -209,6 +209,33 @@ def test_combining_xors_the_planes_two_pictures_share() -> None:
     assert combined.planes == base.planes
 
 
+@pytest.mark.parametrize(
+    ("op", "expected"),
+    [
+        (CombineOp.XOR, [10 ^ 99, 200 ^ 99]),
+        (CombineOp.AND, [10 & 99, 200 & 99]),
+        (CombineOp.OR, [10 | 99, 200 | 99]),
+        (CombineOp.MIN, [10, 99]),
+        (CombineOp.MAX, [99, 200]),
+        (CombineOp.ADD, [(10 + 99) // 2, (200 + 99) // 2]),
+        # (10 - 99) / 2 truncates toward zero: -44, where flooring would say -45.
+        (CombineOp.SUB, [(10 - 99) // 2 + 128 + 1, (200 - 99) // 2 + 128]),
+    ],
+)
+def test_each_combine_operation_reads_as_stegsolve_does(op: CombineOp, expected: list[int]) -> None:
+    base = _image([[[10, 200, 30]]])
+    other = make_image(np.full((1, 1, 3), 99, dtype=np.uint16), planes_rgb(), path=Path("b.png"))
+    combined = raster(base, CombineMask(other, op))
+    assert combined.samples[0, 0, :2].tolist() == expected
+
+
+def test_a_combine_subtracting_equal_planes_reads_flat() -> None:
+    base = _image([[[70, 70, 70]]])
+    other = make_image(np.full((1, 1, 3), 70, dtype=np.uint16), planes_rgb(), path=Path("b.png"))
+    combined = raster(base, CombineMask(other, CombineOp.SUB))
+    assert combined.samples[0, 0, 0] == 128
+
+
 def test_a_combine_keeps_the_planes_only_one_side_carries() -> None:
     base = make_image(np.array([[[10, 20, 30, 5]]], dtype=np.uint16), planes_rgba())
     other = make_image(np.array([[[15, 15, 15]]], dtype=np.uint16), planes_rgb())
@@ -231,6 +258,16 @@ def test_a_combine_meets_a_deeper_plane_at_its_own_depth() -> None:
     other = make_image(np.array([[[300]]], dtype=np.uint16), deep)
     combined = raster(base, CombineMask(other))
     assert combined.samples[0, 0, 0] == 200 ^ 300
+    assert combined.planes[0].bit_depth == 16
+
+
+def test_a_combine_subtracts_around_the_widened_plane_s_midpoint() -> None:
+    """A 16-bit meeting lifts the flat point to 32768, the depth's own middle."""
+    base = make_image(np.array([[[200]]], dtype=np.uint16), planes_rgb()[:1])
+    deep = (SamplePlane("R", 0, 16, SampleOrigin.RAW),)
+    other = make_image(np.array([[[300]]], dtype=np.uint16), deep)
+    combined = raster(base, CombineMask(other, CombineOp.SUB))
+    assert combined.samples[0, 0, 0] == 32768 - 50
     assert combined.planes[0].bit_depth == 16
 
 

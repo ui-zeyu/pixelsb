@@ -842,7 +842,7 @@ class MainWindow(QMainWindow):
     def _on_layer_added(self, mask: Mask) -> None:
         self.apply(partial(add_layer, mask=mask))
 
-    def _on_combine_requested(self) -> None:
+    def _on_combine_requested(self, op: CombineOp) -> None:
         """The add menu's combine: pick the other picture, and the op lands on top."""
         image = self.store.state.image
         if image is None:
@@ -854,7 +854,7 @@ class MainWindow(QMainWindow):
             return
         try:
             other = self._companion(selected)
-            self.apply(partial(add_combine, op=CombineOp.XOR, other=other))
+            self.apply(partial(add_combine, op=op, other=other))
         except CommandError as exc:
             self._reporter(str(exc))
 

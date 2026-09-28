@@ -1,12 +1,15 @@
 """The layer panel: the stack as a list, and the editor of the selected mask."""
 
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 from PySide6.QtCore import QPoint, Qt
+from PySide6.QtWidgets import QMenu
 from pytestqt.qtbot import QtBot
 
 from pixelsb.domain.models import (
+    CombineOp,
     CropMask,
     GrayscaleMask,
     InvertMask,
@@ -195,10 +198,15 @@ def test_the_add_menu_offers_the_parameterless_masks_and_the_combine(qtbot: QtBo
     assert added == [InvertMask()]
     menu.actions()[2].trigger()
     assert added == [InvertMask(), CropMask()]
-    asked: list[bool] = []
-    panel.combine_requested.connect(lambda: asked.append(True))
-    menu.actions()[-1].trigger()
-    assert asked == [True]
+    asked: list[CombineOp] = []
+    panel.combine_requested.connect(asked.append)
+    submenu = cast(QMenu, menu.actions()[-1].menu())
+    assert [action.text() for action in submenu.actions()] == [
+        info.label for _op, info in text.combine_menu()
+    ]
+    submenu.actions()[0].trigger()
+    submenu.actions()[-1].trigger()
+    assert asked == [CombineOp.XOR, CombineOp.SUB]
 
 
 def test_a_panel_without_an_image_lists_the_base_row_only(qtbot: QtBot) -> None:

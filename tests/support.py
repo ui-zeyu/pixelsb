@@ -127,3 +127,21 @@ def doctored_png(path: Path, *, ramp: bool = False, declared: tuple[int, int] = 
     data[at : at + 8] = width.to_bytes(4, "big") + height.to_bytes(4, "big")
     path.write_bytes(bytes(data))
     return path
+
+
+def doctored_bmp(path: Path, *, declared: tuple[int, int] = (10, 10)) -> Path:
+    """A BMP declared ``declared`` whose pixels really fill 5x1: the repair row's case.
+
+    Raw BMP pixels carry no filter bytes, so every candidate geometry decodes:
+    Pillow refuses the file as declared, the loader opens the nearest aspect,
+    and the true shape waits as a button on the info page.
+    """
+    off_bits = 14 + 40
+    pixel = bytes(16)  # one 24-bit row of five pixels, padded to the 4-byte unit
+    head = (
+        b"BM"
+        + struct.pack("<IHHI", off_bits + len(pixel), 0, 0, off_bits)
+        + struct.pack("<IiiHHIIiiII", 40, declared[0], declared[1], 1, 24, 0, 0, 0, 0, 0, 0)
+    )
+    path.write_bytes(head + pixel)
+    return path

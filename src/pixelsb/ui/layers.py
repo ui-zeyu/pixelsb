@@ -39,7 +39,7 @@ class LayerPanel(QWidget):
     """The left sidebar: the recipe — the stack of operations, top first."""
 
     add_requested = Signal(object)  # a Mask, added on top of the stack
-    combine_requested = Signal()  # the add menu's combine: the window picks the file
+    combine_requested = Signal(object)  # the add menu's combine op: the window picks the file
     remove_requested = Signal(int)  # the layer's place in the stack
     move_requested = Signal(int, int)  # that place, and which way (-1 or +1)
     enabled_requested = Signal(int, bool)
@@ -119,9 +119,12 @@ class LayerPanel(QWidget):
                 lambda _checked=False, mask=mask: self.add_requested.emit(mask)
             )
         menu.addSeparator()
-        combine = menu.addAction(text.COMBINE_LABEL)
-        combine.setToolTip(text.MASK_COMBINE_TIP)
-        combine.triggered.connect(lambda _checked=False: self.combine_requested.emit())
+        combine = menu.addMenu(text.COMBINE_LABEL)
+        combine.setToolTipsVisible(True)
+        for op, info in text.combine_menu():
+            action = combine.addAction(info.label)
+            action.setToolTip(info.tip)
+            action.triggered.connect(lambda _checked=False, op=op: self.combine_requested.emit(op))
 
     def _card(self) -> QFrame:
         card = _Card(self)

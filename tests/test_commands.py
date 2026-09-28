@@ -305,6 +305,16 @@ def test_comb_hands_the_path_over_verbatim_with_its_spacing() -> None:
     assert words == ["my  file.png"]
 
 
+@pytest.mark.parametrize("op", list(CombineOp))
+def test_every_combine_operation_parses_and_reads_back(op: CombineOp) -> None:
+    """Each operation word lands its enum value, even when it is a connective."""
+    companion, _words = _reader()
+    parsed = commands.parse(f"comb {op.value} b.png", _PLANES, companion=companion)
+    assert parsed == CombineMask(_OTHER, op)
+    assert commands.text_of(parsed, _PLANES) == f"comb {op.value} b.png"
+    assert commands.parse(commands.text_of(parsed, _PLANES), _PLANES, companion=companion) == parsed
+
+
 def test_a_combine_reads_back_as_the_line_that_named_it() -> None:
     companion, _words = _reader()
     parsed = commands.parse("comb xor b.png", _PLANES, companion=companion)
@@ -338,8 +348,8 @@ def test_a_comb_path_runs_to_the_end_of_the_line() -> None:
     [
         ("comb", "需要一个操作和一张图"),
         ("comb xor", "另一张图的路径"),
-        ("comb nope b.png", "操作是 xor 之一"),
-        ("comb 1 b.png", "操作是 xor 之一"),
+        ("comb nope b.png", "操作是 xor、and、or、min、max、add、sub 之一"),
+        ("comb 1 b.png", "操作是 xor、and、or、min、max、add、sub 之一"),
     ],
 )
 def test_a_broken_comb_line_says_what_is_missing(text: str, message: str) -> None:

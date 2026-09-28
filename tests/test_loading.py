@@ -12,7 +12,7 @@ from pixelsb.io.loading import (
     load_frame,
     load_image,
 )
-from tests.support import doctored_png
+from tests.support import doctored_bmp, doctored_png
 
 
 def test_image_from_pixels_keeps_a_fourth_channel() -> None:
@@ -224,6 +224,20 @@ def test_a_doctored_ihdr_opens_under_the_geometry_its_data_fills(tmp_path: Path)
     image = load_image(path)
     assert (image.width, image.height) == (5, 1)
     assert path.read_bytes() == data  # the file on disk is exactly as it was
+
+
+def test_a_doctored_dib_opens_under_the_aspect_first_geometry(tmp_path: Path) -> None:
+    """Pillow refuses a BMP declared bigger than its data; a census hint opens.
+
+    Raw BMP pixels decode under any geometry, so the nearest aspect to the
+    declared one wins and the true shape waits as a button on the info page —
+    the filter bytes that disqualify wrong PNG geometries have no BMP voice.
+    """
+    path = doctored_bmp(tmp_path / "doctored.bmp")
+    data = path.read_bytes()
+    image = load_image(path)
+    assert (image.width, image.height) == (2, 2)
+    assert path.read_bytes() == data
 
 
 def test_a_small_declared_size_still_loads_as_declared(tmp_path: Path) -> None:

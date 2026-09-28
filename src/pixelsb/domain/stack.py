@@ -9,6 +9,7 @@ There is no view outside the stack: which bits are on show is itself a mask,
 and its output is the picture every reader gets.
 """
 
+from collections.abc import Callable
 from dataclasses import replace
 from typing import assert_never
 
@@ -47,6 +48,37 @@ from pixelsb.domain.spectrum import stretched
 # Rec. 709 luma weights, scaled into integer arithmetic.
 _LUMA = np.array([2126, 7152, 722], dtype=np.uint32)
 _LUMA_SCALE = 10_000
+
+# One reading per combine operation, in the widened plane the two pictures
+# meet at. The bitwise and extremal ops ignore the maximum; the arithmetic
+# two follow StegSolve: ADD halves the sum so the result stays in range, and
+# SUB halves the difference and lifts it to the plane's midpoint, so two
+# equal planes read flat gray and a difference stands out around it.
+type Combine = Callable[[SampleArray, SampleArray, int], SampleArray]
+
+
+def _subtracted(ours: SampleArray, theirs: SampleArray, maximum: int) -> SampleArray:
+    """Half the difference toward the other picture, lifted by the midpoint.
+
+    The division truncates toward zero rather than flooring, because the
+    readings this matches are the ones StegSolve's Java ints produced.
+    """
+    delta = ours.astype(np.int32) - theirs
+    half = np.sign(delta) * (np.abs(delta) // 2)
+    return (half + (maximum + 1) // 2).astype(np.uint16)
+
+
+_COMBINE: dict[CombineOp, Combine] = {
+    CombineOp.XOR: lambda ours, theirs, _maximum: np.bitwise_xor(ours, theirs),
+    CombineOp.AND: lambda ours, theirs, _maximum: np.bitwise_and(ours, theirs),
+    CombineOp.OR: lambda ours, theirs, _maximum: np.bitwise_or(ours, theirs),
+    CombineOp.MIN: lambda ours, theirs, _maximum: np.minimum(ours, theirs),
+    CombineOp.MAX: lambda ours, theirs, _maximum: np.maximum(ours, theirs),
+    CombineOp.ADD: lambda ours, theirs, _maximum: ((ours.astype(np.uint32) + theirs) // 2).astype(
+        np.uint16
+    ),
+    CombineOp.SUB: _subtracted,
+}
 
 
 def resolve(image: LoadedImage, layers: tuple[Layer, ...]) -> Raster:
@@ -89,8 +121,8 @@ def apply_mask(raster: Raster, mask: Mask) -> Raster:
             return _cropped(raster)
         case FftMask(planes=planes):
             return replace(raster, samples=_spectrum(raster, planes))
-        case CombineMask(op=CombineOp.XOR, other=other):
-            return _combined(raster, other)
+        case CombineMask(op=op, other=other):
+            return _combined(raster, op, other)
         case ArnoldMask(times=times, a=a, b=b):
             return _arnold(raster, times, a, b)
         case _ as unknown:
@@ -246,8 +278,8 @@ def _spectrum(raster: Raster, planes: tuple[str, ...] | None) -> SampleArray:
     return out
 
 
-def _combined(raster: Raster, other: LoadedImage) -> Raster:
-    """The raster exclusive-ored with the other picture, plane by shared plane.
+def _combined(raster: Raster, op: CombineOp, other: LoadedImage) -> Raster:
+    """The raster combined with the other picture, plane by shared plane.
 
     A plane the other picture lacks keeps its samples, and a plane only the
     other picture has is dropped — this raster's picture stays the frame of
@@ -264,10 +296,13 @@ def _combined(raster: Raster, other: LoadedImage) -> Raster:
             channels.append(raster.samples[:, :, index])
             planes.append(plane)
             continue
-        channels.append(raster.samples[:, :, index] ^ other.samples[:, :, mate.index])
-        planes.append(
-            replace(plane, index=len(planes), bit_depth=max(plane.bit_depth, mate.bit_depth))
+        depth = max(plane.bit_depth, mate.bit_depth)
+        channels.append(
+            _COMBINE[op](
+                raster.samples[:, :, index], other.samples[:, :, mate.index], (1 << depth) - 1
+            )
         )
+        planes.append(replace(plane, index=len(planes), bit_depth=depth))
     return replace(raster, samples=np.stack(channels, axis=-1), planes=tuple(planes))
 
 
