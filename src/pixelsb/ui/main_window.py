@@ -143,7 +143,9 @@ class MainWindow(QMainWindow):
         self._box_authoring = False
         self._panel_sized = False
         self.setWindowTitle(text.APP_NAME)
-        self.resize(1200, 800)
+        # Wide enough that the width limit leaves the census page's dump its
+        # scrollbar margin on a typical screen, whatever the fonts resolve to.
+        self.resize(1320, 860)
         self.setAcceptDrops(True)
         self._build_actions()
         self._build_toolbar()
@@ -172,6 +174,9 @@ class MainWindow(QMainWindow):
         self.apply(partial(open_image, image=image, zoom=zoom))
         self._scroll.horizontalScrollBar().setValue(0)
         self._scroll.verticalScrollBar().setValue(0)
+        # The first panel sizing ran before any file was open; the page now
+        # holds its dump, so the width is asked for again against real layout.
+        self._size_panel()
         self.canvas.setFocus(Qt.FocusReason.OtherFocusReason)
         QTimer.singleShot(0, self._fit)
 
@@ -216,7 +221,7 @@ class MainWindow(QMainWindow):
         super().showEvent(event)
 
     def _size_panel(self) -> None:
-        """Give the right panel the width its pages' content needs, once."""
+        """Give the right panel the width its pages' content needs."""
         width = self.width()
         handles = 2 * self._splitter.handleWidth()
         # Both pages hold a two-pane dump; the wider one decides the panel.

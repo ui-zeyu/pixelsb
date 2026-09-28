@@ -826,6 +826,18 @@ def test_fit_shrinks_a_large_image_below_one_to_one(qtbot: QtBot, tmp_path: Path
     assert window.store.state.zoom == pytest.approx(window._fit_zoom((800, 600)), rel=0.001)
 
 
+def test_opening_a_file_asks_the_panel_width_again(qtbot: QtBot, rgb_png: Path) -> None:
+    """The first sizing ran with no file open; with the dump in place, ask again."""
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.open_path(rgb_png)
+    wanted = max(window.extract_panel.preferred_width(), window.info_panel.preferred_width())
+    limit = window.width() - 2 * window._splitter.handleWidth() - 288 - 260
+    assert window._splitter.sizes()[2] == min(wanted, limit)
+    assert window.info_panel._dump.horizontalScrollBar().maximum() == 0
+
+
 def test_the_zoom_steppers_walk_the_octave_ladder(qtbot: QtBot, rgb_png: Path) -> None:
     window = MainWindow()
     qtbot.addWidget(window)
