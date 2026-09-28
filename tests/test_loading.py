@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from pixelsb.domain.container import SizeHint
 from pixelsb.domain.models import SampleOrigin
 from pixelsb.io.loading import (
     ImageLoadError,
@@ -11,6 +12,8 @@ from pixelsb.io.loading import (
     image_from_pixels,
     load_frame,
     load_image,
+    openable_repairs,
+    patched_size,
 )
 from tests.support import doctored_bmp, doctored_png
 
@@ -238,6 +241,13 @@ def test_a_doctored_dib_opens_under_the_aspect_first_geometry(tmp_path: Path) ->
     image = load_image(path)
     assert (image.width, image.height) == (2, 2)
     assert path.read_bytes() == data
+
+
+def test_a_core_header_dib_earns_no_repair(tmp_path: Path) -> None:
+    """The 12-byte DIB's fields are 16 bits: nothing to rewrite 32 bits into."""
+    path = doctored_bmp(tmp_path / "core.bmp", core=True)
+    assert openable_repairs(path) == ()
+    assert patched_size(path, SizeHint(5, 1)) is None
 
 
 def test_a_small_declared_size_still_loads_as_declared(tmp_path: Path) -> None:

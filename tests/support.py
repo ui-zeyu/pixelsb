@@ -129,19 +129,26 @@ def doctored_png(path: Path, *, ramp: bool = False, declared: tuple[int, int] = 
     return path
 
 
-def doctored_bmp(path: Path, *, declared: tuple[int, int] = (10, 10)) -> Path:
+def doctored_bmp(
+    path: Path,
+    *,
+    declared: tuple[int, int] = (10, 10),
+    core: bool = False,
+) -> Path:
     """A BMP declared ``declared`` whose pixels really fill 5x1: the repair row's case.
 
     Raw BMP pixels carry no filter bytes, so every candidate geometry decodes:
     Pillow refuses the file as declared, the loader opens the nearest aspect,
-    and the true shape waits as a button on the info page.
+    and the true shape waits as a button on the info page. ``core`` writes the
+    12-byte DIB, whose 16-bit fields earn a census but no repair.
     """
-    off_bits = 14 + 40
-    pixel = bytes(16)  # one 24-bit row of five pixels, padded to the 4-byte unit
-    head = (
-        b"BM"
-        + struct.pack("<IHHI", off_bits + len(pixel), 0, 0, off_bits)
-        + struct.pack("<IiiHHIIiiII", 40, declared[0], declared[1], 1, 24, 0, 0, 0, 0, 0, 0)
+    dib = (
+        struct.pack("<IHHHH", 12, declared[0], declared[1], 1, 24)
+        if core
+        else struct.pack("<IiiHHIIiiII", 40, declared[0], declared[1], 1, 24, 0, 0, 0, 0, 0, 0)
     )
-    path.write_bytes(head + pixel)
+    off_bits = 14 + len(dib)
+    pixel = bytes(16)  # one 24-bit row of five pixels, padded to the 4-byte unit
+    head = b"BM" + struct.pack("<IHHI", off_bits + len(pixel), 0, 0, off_bits)
+    path.write_bytes(head + dib + pixel)
     return path

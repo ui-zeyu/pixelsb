@@ -8,8 +8,12 @@ from pixelsb.ui.side_panels import Panel
 _NONE = Qt.KeyboardModifier.NoModifier
 
 
-def command(key: Qt.Key, modifiers: Qt.KeyboardModifier = _NONE, text: str = "") -> object:
-    return keymap.key_command(key, modifiers, text)
+def command(
+    key: Qt.Key,
+    modifiers: Qt.KeyboardModifier = _NONE,
+    character: str = "",
+) -> object:
+    return keymap.key_command(key, modifiers, character)
 
 
 def test_the_arrows_step_and_shift_widens_the_step() -> None:
@@ -54,11 +58,11 @@ def test_the_view_keys_mean_their_view() -> None:
 
 
 def test_the_letters_answer_the_text_the_key_carries() -> None:
-    assert command(Qt.Key.Key_R, text="r") == keymap.ChannelLsb("R")
+    assert command(Qt.Key.Key_R, character="r") == keymap.ChannelLsb("R")
     assert command(Qt.Key.Key_R, Qt.KeyboardModifier.ShiftModifier, "R") == keymap.ChannelLsb("R")
-    assert command(Qt.Key.Key_L, text="l") == keymap.ChannelLsb("L")
-    assert command(Qt.Key.Key_3, text="3") == keymap.OrderedLsb(2)
-    assert isinstance(command(Qt.Key.Key_F, text="f"), keymap.CycleFormat)
+    assert command(Qt.Key.Key_L, character="l") == keymap.ChannelLsb("L")
+    assert command(Qt.Key.Key_3, character="3") == keymap.OrderedLsb(2)
+    assert isinstance(command(Qt.Key.Key_F, character="f"), keymap.CycleFormat)
 
 
 def test_the_letters_fire_once_per_press() -> None:
@@ -66,6 +70,6 @@ def test_the_letters_fire_once_per_press() -> None:
 
 
 def test_a_key_with_no_meaning_names_none() -> None:
-    assert command(Qt.Key.Key_X, text="x") is None
-    assert command(Qt.Key.Key_9, text="9") == keymap.OrderedLsb(8)
+    assert command(Qt.Key.Key_X, character="x") is None
+    assert command(Qt.Key.Key_9, character="9") == keymap.OrderedLsb(8)
     assert command(Qt.Key.Key_F, Qt.KeyboardModifier.ControlModifier, "") is None

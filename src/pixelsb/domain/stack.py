@@ -85,8 +85,9 @@ def resolve(image: LoadedImage, layers: tuple[Layer, ...]) -> Raster:
     """Apply the enabled masks, bottom to top: each one reads the one below it.
 
     A mask that cannot apply here — a region expression that will not compile,
-    the cat map wanting a square, a projection naming a channel the picture
-    lacks — keeps everything and reports itself against its layer.
+    a crop with no region under it, the cat map wanting a square, a projection
+    naming a channel the picture lacks — keeps everything and reports itself
+    against its layer.
     """
     raster = Raster(samples=image.samples, planes=image.planes)
     failures: list[MaskFailure] = []
@@ -278,16 +279,38 @@ def _spectrum(raster: Raster, planes: tuple[str, ...] | None) -> SampleArray:
     return out
 
 
+def ensure_combinable(base: Raster | LoadedImage, other: LoadedImage) -> None:
+    """Whether two pictures can combine at all: one size, and planes to share.
+
+    The command judges the fit where both pictures are known, before the layer
+    lands; the stack judges it again at fold time, because an open picture
+    carries the stack to the next image, where the same two answers are the
+    layer's own failure.
+    """
+    if base.width != other.width or base.height != other.height:
+        raise ValueError(
+            f"合成要同尺寸的图：这张是 {base.width}×{base.height}，"
+            f"另一张是 {other.width}×{other.height}"
+        )
+    ours = {plane.name for plane in base.planes}
+    theirs = {plane.name for plane in other.planes}
+    if not ours & theirs:
+        ours_names = "、".join(plane.name for plane in base.planes)
+        theirs_names = "、".join(plane.name for plane in other.planes)
+        raise ValueError(f"两张图没有同名的通道：这张有 {ours_names}，另一张有 {theirs_names}")
+
+
 def _combined(raster: Raster, op: CombineOp, other: LoadedImage) -> Raster:
     """The raster combined with the other picture, plane by shared plane.
 
     A plane the other picture lacks keeps its samples, and a plane only the
     other picture has is dropped — this raster's picture stays the frame of
     reference. Shared planes meet at the wider of their two depths, so an
-    8-bit and a 16-bit channel of one name combine in 16 bits. That the two
-    pictures fit together at all — one size, at least one shared plane — is
-    judged where both are known, before the layer lands.
+    8-bit and a 16-bit channel of one name combine in 16 bits. The fit the
+    command judged before the layer landed is judged again here, because the
+    stack travels to whatever picture opens next.
     """
+    ensure_combinable(raster, other)
     channels: list[NDArray] = []
     planes: list[SamplePlane] = []
     for index, plane in enumerate(raster.planes):
@@ -326,10 +349,8 @@ def _gray(samples: SampleArray, planes: tuple[SamplePlane, ...]) -> SampleArray:
     if indexes is None:
         return samples
     luma = (samples[:, :, list(indexes)].astype(np.uint32) * _LUMA).sum(axis=-1) // _LUMA_SCALE
-    gray = luma.astype(np.uint16)
     converted = samples.copy()
-    for index in indexes:
-        converted[:, :, index] = gray
+    converted[..., list(indexes)] = luma[..., None]  # one broadcast write, all three slots
     return converted
 
 
@@ -344,7 +365,7 @@ def _color_indexes(planes: tuple[SamplePlane, ...]) -> tuple[int, int, int] | No
 def _cropped(raster: Raster) -> Raster:
     """Crop the raster to the rows and columns its live pixels occupy."""
     if raster.live is None:
-        return raster
+        raise ValueError("裁剪要有一条先落下的区域操作：没有通过的像素可收")
     span = match_span(raster.live)
     if span is None:
         return _nothing_left(raster)

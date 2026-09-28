@@ -57,9 +57,6 @@ from pixelsb.domain.selection import all_bits, channel_members, whole
 
 # A verb at the head of a line: the word itself, so a word that merely contains
 # one — or follows a dot — is left to the expression grammar.
-_VERB = re.compile(r"(?i)(?P<verb>thr|xor|inv|gray|crop|fft|arnold|comb)(?![\w.])")
-_CONNECTIVES = frozenset({"and", "or", "not"})
-
 _VALUE_MASKS: dict[str, type[ThresholdMask] | type[XorMask]] = {
     "thr": ThresholdMask,
     "xor": XorMask,
@@ -70,9 +67,15 @@ _BARE_MASKS: dict[str, type[InvertMask] | type[GrayscaleMask] | type[CropMask] |
     "crop": CropMask,
     "fft": FftMask,
 }
+# Every verb in one place: the head-of-line pattern and the apart-message both
+# spell themselves from this tuple, so a new verb cannot miss either. arnold
+# and comb take their parameters in branches of their own, not in a table.
+_VERBS = (*_VALUE_MASKS, *_BARE_MASKS, "arnold", "comb")
+_VERB = re.compile(rf"(?i)(?P<verb>{'|'.join(_VERBS)})(?![\w.])")
+_CONNECTIVES = frozenset({"and", "or", "not"})
 
 _ONE_OPERATION = "一行只写一个操作：位选择（b、b.0、all）和区域条件不能组合在一起，请分成两行"
-_VERB_APART = "操作命令要单独一行：thr、xor、inv、gray、crop、fft、arnold、comb 不能和别的内容组合"
+_VERB_APART = f"操作命令要单独一行：{'、'.join(_VERBS)} 不能和别的内容组合"
 
 # How a comb line reaches its file: the caller's loader, so the domain never reads.
 type Companion = Callable[[str], LoadedImage]

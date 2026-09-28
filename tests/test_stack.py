@@ -271,6 +271,25 @@ def test_a_combine_subtracts_around_the_widened_plane_s_midpoint() -> None:
     assert combined.planes[0].bit_depth == 16
 
 
+def test_a_combine_carried_to_another_size_fails_the_layer() -> None:
+    """Opening another picture carries the stack: the combine re-judges the fit there."""
+    base = _image([[[10, 20, 30], [40, 50, 60]]])
+    other = make_image(np.full((1, 1, 3), 15, dtype=np.uint16), planes_rgb(), path=Path("b.png"))
+    combined = raster(base, CombineMask(other))
+    (failure,) = combined.failures
+    assert "同尺寸" in failure.message
+    assert combined.samples[0, 0].tolist() == [10, 20, 30]  # the refused layer leaves the pixels
+
+
+def test_a_combine_with_no_shared_plane_fails_the_layer() -> None:
+    gray = (SamplePlane("L", 0, 8, SampleOrigin.RAW),)
+    base = _image([[[10, 20, 30]]])
+    other = make_image(np.zeros((1, 1, 1), dtype=np.uint16), gray, path=Path("b.png"))
+    combined = raster(base, CombineMask(other))
+    (failure,) = combined.failures
+    assert "同名的通道" in failure.message
+
+
 def test_two_combines_of_one_picture_are_alike_and_others_are_not() -> None:
     first = _image([[[10, 20, 30]]])
     second = _image([[[1, 2, 3]]])
@@ -319,8 +338,11 @@ def test_cropping_with_nothing_left_keeps_no_cells_at_all() -> None:
 
 
 def test_cropping_without_a_region_mask_has_nothing_to_crop_to() -> None:
+    """A crop with no region under it cannot apply: the layer says so."""
     image = _image([[[1, 0, 0]]])
     alone = raster(image, CropMask())
+    (failure,) = alone.failures
+    assert "裁剪" in failure.message
     assert alone.samples is image.samples
     assert not alone.cropped
 

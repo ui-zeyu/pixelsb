@@ -1,9 +1,10 @@
 """What a key press means when no text input holds the keyboard.
 
-The mapping is pure: a key, its modifiers, the text it carries, and whether the
-press is an auto-repeat, in; one command out — or ``None`` when the key means
-nothing. The window executes the command: the gallery page stands in for the
-canvas under the arrow keys, and everything else is one transition apiece.
+The mapping is pure: a key, its modifiers, the character it carries, and
+whether the press is an auto-repeat, in; one command out — or ``None`` when the
+key means nothing. The window executes the command: the gallery page stands in
+for the canvas under the arrow keys, and everything else is one transition
+apiece.
 """
 
 from dataclasses import dataclass
@@ -109,7 +110,7 @@ type KeyCommand = (
 def key_command(
     key: Qt.Key,
     modifiers: Qt.KeyboardModifier,
-    text: str,
+    character: str,
     *,
     auto_repeat: bool = False,
 ) -> KeyCommand | None:
@@ -136,7 +137,7 @@ def key_command(
         return Fit()
     if auto_repeat:
         return None
-    label = text.upper()
+    label = character.upper()
     if label == "F":
         return CycleFormat()
     if label in _CHANNEL_LETTERS:

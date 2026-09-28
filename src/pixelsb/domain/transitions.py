@@ -3,7 +3,7 @@
 from collections.abc import Callable
 from dataclasses import replace
 
-from pixelsb.domain import commands
+from pixelsb.domain import commands, stack
 from pixelsb.domain.models import (
     MAX_ZOOM,
     MIN_ZOOM,
@@ -210,20 +210,15 @@ def add_combine(state: ViewerState, op: CombineOp, other: LoadedImage) -> Viewer
 
 
 def _combinable(base: LoadedImage, other: LoadedImage) -> None:
-    """Whether two pictures can combine at all: one size, and planes to share."""
-    if base.width != other.width or base.height != other.height:
-        raise commands.CommandError(
-            f"合成要同尺寸的图：这张是 {base.width}×{base.height}，"
-            f"另一张是 {other.width}×{other.height}"
-        )
-    ours = {plane.name for plane in base.planes}
-    theirs = {plane.name for plane in other.planes}
-    if not ours & theirs:
-        ours_names = "、".join(plane.name for plane in base.planes)
-        theirs_names = "、".join(plane.name for plane in other.planes)
-        raise commands.CommandError(
-            f"两张图没有同名的通道：这张有 {ours_names}，另一张有 {theirs_names}"
-        )
+    """Whether two pictures can combine at all, as the command's own refusal.
+
+    The judgment itself is the stack's: a combine layer an open picture carries
+    to another image fails there by the same two answers.
+    """
+    try:
+        stack.ensure_combinable(base, other)
+    except ValueError as exc:
+        raise commands.CommandError(str(exc)) from None
 
 
 def apply_arnold(state: ViewerState, times: int, a: int, b: int) -> ViewerState:

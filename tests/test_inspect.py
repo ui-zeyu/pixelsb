@@ -31,15 +31,21 @@ def _bmp(
     *,
     bit_count: int = 24,
     palette: bytes = b"",
+    core: bool = False,
 ) -> bytes:
-    """A bottom-up 24-bit BMP: the declared geometry, and the pixel bytes given."""
-    off_bits = 14 + 40 + len(palette)
+    """A bottom-up BMP: the declared geometry, and the pixel bytes given.
+
+    ``core`` writes the museum-piece 12-byte DIB, whose width and height are
+    16-bit fields.
+    """
+    dib = (
+        struct.pack("<IHHHH", 12, width, height, 1, bit_count)
+        if core
+        else struct.pack("<IiiHHIIiiII", 40, width, height, 1, bit_count, 0, 0, 0, 0, 0, 0)
+    )
+    off_bits = 14 + len(dib) + len(palette)
     return (
-        b"BM"
-        + struct.pack("<IHHI", off_bits + len(pixel), 0, 0, off_bits)
-        + struct.pack("<IiiHHIIiiII", 40, width, height, 1, bit_count, 0, 0, 0, 0, 0, 0)
-        + palette
-        + pixel
+        b"BM" + struct.pack("<IHHI", off_bits + len(pixel), 0, 0, off_bits) + dib + palette + pixel
     )
 
 
@@ -351,6 +357,16 @@ def test_a_doctored_dib_offers_the_geometries_the_data_fills() -> None:
     report = scan_container(_bmp(10, 10, bytes(16)))
     sizes = [(hint.width, hint.height) for hint in report.sizes]
     assert (5, 1) in sizes  # the data's true shape
+    assert (10, 10) not in sizes
+
+
+def test_a_core_header_bmp_reads_its_narrow_fields() -> None:
+    """The 12-byte DIB keeps 16-bit width and height, and is censed all the same."""
+    report = scan_container(_bmp(10, 10, bytes(16), core=True))
+    assert report.kind == "bmp"
+    assert [block.label for block in report.blocks] == ["文件头", "DIB 头", "像素数据"]
+    sizes = [(hint.width, hint.height) for hint in report.sizes]
+    assert (5, 1) in sizes  # the core fields read the same doctored geometry
     assert (10, 10) not in sizes
 
 

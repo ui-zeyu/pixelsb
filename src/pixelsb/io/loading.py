@@ -4,6 +4,7 @@ import io
 import struct
 import zlib
 from collections.abc import Callable
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -15,6 +16,12 @@ from pixelsb.domain.models import FrameGeometry, LoadedImage, SampleArray, Sampl
 
 type Decoded = tuple[SampleArray, tuple[SamplePlane, ...]]
 type Decoder = Callable[[Image.Image], Decoded]
+type RepairPlan = tuple[bytes, int, tuple[SizeHint, ...], str]
+
+# Recent files' repair plans: the census behind one costs a pass over the whole
+# pixel stream, and the info page's size row and its buttons ask for it again
+# and again, where sharing one plan costs nothing but memory for the bytes.
+_REPAIR_PLANS = 8
 
 
 class ImageLoadError(Exception):
@@ -57,13 +64,25 @@ def load_frame(path: Path, index: int) -> LoadedImage:
         raise ImageLoadError(str(exc)) from exc
 
 
-def _repair_hints(path: Path) -> tuple[bytes, int, tuple[SizeHint, ...], str] | None:
+def _repair_hints(path: Path) -> RepairPlan | None:
     """A doctored header's bytes, its width field's offset, the sizes to try, the kind.
 
     ``None`` when the file cannot be read, hides no size candidates, or is a
     kind whose header this cannot rewrite; each caller turns that into its own
-    failure.
+    failure. The plan is remembered per file stamp — size and mtime — so the
+    page's size row and a click on one of its buttons share one census instead
+    of re-reading and re-decompressing the file for each.
     """
+    try:
+        info = path.stat()
+    except OSError:
+        return None
+    return _repair_plan(path, (info.st_mtime_ns, info.st_size))
+
+
+@lru_cache(maxsize=_REPAIR_PLANS)
+def _repair_plan(path: Path, _stamp: tuple[int, int]) -> RepairPlan | None:
+    """The plan for one file at one stamp: the stamp is what keeps the cache true."""
     try:
         data = Path(path).read_bytes()
     except OSError:
@@ -99,15 +118,19 @@ def _width_field(report: ContainerReport) -> int | None:
     return None
 
 
-def _patched(data: bytes, at: int, hint: SizeHint, kind: str) -> bytes | None:
-    """The bytes rewritten to the hint's geometry: PNG renews its CRC, BMP is bare."""
-    if kind == "png":
-        return patched_ihdr(data, at, hint)
+def _patched(data: bytes, at: int, hint: SizeHint, kind: str) -> bytes:
+    """The bytes rewritten to the hint's geometry: PNG renews its CRC, BMP is bare.
+
+    Every kind ``_width_field`` can locate a width field for has its patch
+    here, and a plan only hands out such kinds, so this is total over what the
+    callers reach; a patch that decodes wrong fails the decode every hint must
+    survive anyway.
+    """
     if kind == "bmp":
         patched = bytearray(data)
         patched[at : at + 8] = struct.pack("<ii", hint.width, hint.height)
         return bytes(patched)
-    return None
+    return patched_ihdr(data, at, hint)
 
 
 def _repaired(path: Path, index: int) -> LoadedImage | None:
@@ -123,8 +146,6 @@ def _repaired(path: Path, index: int) -> LoadedImage | None:
     data, at, hints, kind = found
     for hint in hints:
         patched = _patched(data, at, hint, kind)
-        if patched is None:
-            return None
         try:
             with Image.open(io.BytesIO(patched)) as image:
                 if index and index >= max(int(getattr(image, "n_frames", 1) or 1), 1):
@@ -152,8 +173,6 @@ def openable_repairs(path: Path) -> tuple[SizeHint, ...]:
     good: list[SizeHint] = []
     for hint in hints:
         patched = _patched(data, at, hint, kind)
-        if patched is None:
-            continue
         try:
             with Image.open(io.BytesIO(patched)) as image:
                 image.load()
