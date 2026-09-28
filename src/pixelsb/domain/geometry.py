@@ -17,7 +17,7 @@ def pixel_at(
     height: int,
 ) -> PixelCoord | None:
     """Map a logical widget position to a pixel. ``zoom`` is the canvas scale."""
-    if zoom < 1 or width < 1 or height < 1 or widget_x < 0 or widget_y < 0:
+    if zoom < MIN_ZOOM or width < 1 or height < 1 or widget_x < 0 or widget_y < 0:
         return None
     x = int(widget_x / zoom)
     y = int(widget_y / zoom)
@@ -41,9 +41,9 @@ def initial_zoom(
     return min(max(fit, MIN_ZOOM), cap, MAX_ZOOM)
 
 
-def slider_zoom(position: int) -> int:
-    """The whole-number zoom at a slider position; each doubling takes equal travel."""
-    return max(int(MIN_ZOOM), round(MIN_ZOOM * _ZOOM_RATIO ** (position / SLIDER_STEPS)))
+def slider_zoom(position: int) -> float:
+    """The zoom at a slider position; each doubling takes equal travel."""
+    return max(MIN_ZOOM, MIN_ZOOM * _ZOOM_RATIO ** (position / SLIDER_STEPS))
 
 
 def slider_position(zoom: float) -> int:

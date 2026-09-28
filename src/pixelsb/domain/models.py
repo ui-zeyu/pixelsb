@@ -13,7 +13,9 @@ type RgbaArray = NDArray[np.uint8]
 type ChannelArray = NDArray[np.uint8]
 type IndexArray = NDArray[np.intp]
 
-MIN_ZOOM = 1.0
+# 1/16, four octaves below 1:1, so fitting a large picture may shrink it; the
+# ladder stays in powers of two, mirroring MAX_ZOOM's octaves above 1:1.
+MIN_ZOOM = 0.0625
 MAX_ZOOM = 128.0
 # The widest level a value mask can name, whatever the image's planes are; the
 # useful ceiling for one image is the widest of its own planes (level_ceiling).

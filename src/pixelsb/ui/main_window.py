@@ -341,9 +341,7 @@ class MainWindow(QMainWindow):
         self._zoom_in = self._ghost_button(text.ZOOM_IN, 28, partial(self._zoom_by, 1))
         self._zoom_out = self._ghost_button(text.ZOOM_OUT, 28, partial(self._zoom_by, -1))
         self._zoom_fit = self._ghost_button(text.ZOOM_FIT, 0, self._fit)
-        self._zoom_reset = self._ghost_button(
-            text.ZOOM_RESET, 0, partial(self._zoom_to, float(MIN_ZOOM))
-        )
+        self._zoom_reset = self._ghost_button(text.ZOOM_RESET, 0, partial(self._zoom_to, 1.0))
         self._zoom_reset.setToolTip(text.ZOOM_RESET_TIP)
         self._zoom_slider = QSlider(Qt.Orientation.Horizontal)
         self._zoom_slider.setRange(0, SLIDER_STEPS)
@@ -948,7 +946,10 @@ class MainWindow(QMainWindow):
         state = self.store.state
         if state.image is None or step == 0:
             return
-        new_zoom = min(max(state.zoom + step, MIN_ZOOM), MAX_ZOOM)
+        # One press is one doubling, so the buttons read the same ladder the
+        # slider draws and keep working below 1:1, where adding one would land
+        # back above it.
+        new_zoom = min(max(state.zoom * 2.0**step, MIN_ZOOM), MAX_ZOOM)
         self._zoom_around(new_zoom, viewport_x, viewport_y)
 
     def _zoom_scale(

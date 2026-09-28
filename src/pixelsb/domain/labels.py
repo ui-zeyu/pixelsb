@@ -37,7 +37,7 @@ def label_fits(zoom: float, text: str) -> bool:
 
 def zoom_required(text: str) -> int:
     if not text:
-        return int(MIN_ZOOM)
+        return math.ceil(MIN_ZOOM)
     lines = text.split("\n")
     longest = max(len(line) for line in lines)
     by_width = math.ceil(MIN_FONT * ADVANCE * longest) + LABEL_PAD

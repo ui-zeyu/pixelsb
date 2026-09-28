@@ -1,3 +1,4 @@
+import math
 from functools import partial
 from pathlib import Path
 
@@ -781,7 +782,7 @@ def test_typing_in_the_filter_box_keeps_its_keys(qtbot: QtBot, rgb_png: Path) ->
     assert window.store.state.zoom == 4
     window.canvas.setFocus()
     qtbot.keyClick(window.canvas, Qt.Key.Key_Plus)
-    assert window.store.state.zoom == 5
+    assert window.store.state.zoom == 8
 
 
 def test_arrow_key_moves_the_cursor(qtbot: QtBot, rgb_png: Path) -> None:
@@ -803,8 +804,39 @@ def test_the_zoom_slider_is_geometric(qtbot: QtBot, rgb_png: Path) -> None:
     window.apply(partial(set_zoom, zoom=8.0))
     assert window._zoom_slider.value() == geometry.slider_position(8.0)
     window._zoom_slider.setValue(geometry.slider_position(16.0))
-    assert window.store.state.zoom == 16.0
-    assert window._zoom_label.text() == text.zoom_label(16.0)
+    assert window.store.state.zoom == pytest.approx(16.0, rel=0.01)
+    assert window._zoom_label.text() == text.zoom_label(window.store.state.zoom)
+
+
+def test_fit_shrinks_a_large_image_below_one_to_one(qtbot: QtBot, tmp_path: Path) -> None:
+    """A picture wider than the window fits by shrinking; 1:1 is no longer the floor."""
+    big = Image.new("RGB", (800, 600), (120, 40, 200))
+    path = tmp_path / "big.png"
+    big.save(path)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.resize(700, 400)
+    window.show()
+    window.open_path(path)
+    assert window.store.state.zoom < 1.0
+    assert window.canvas.width() == math.ceil(800 * window.store.state.zoom)
+    window.apply(partial(set_zoom, zoom=1.0))
+    window._zoom_fit.click()
+    assert window.store.state.zoom < 1.0
+    assert window.store.state.zoom == pytest.approx(window._fit_zoom((800, 600)), rel=0.001)
+
+
+def test_the_zoom_steppers_walk_the_octave_ladder(qtbot: QtBot, rgb_png: Path) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.open_path(rgb_png)
+    window.apply(partial(set_zoom, zoom=1.0))
+    window._zoom_in.click()
+    assert window.store.state.zoom == 2.0
+    window._zoom_out.click()
+    window._zoom_out.click()
+    assert window.store.state.zoom == 0.5
 
 
 def test_the_zoom_label_fits_the_widest_value(qtbot: QtBot) -> None:

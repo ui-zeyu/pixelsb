@@ -10,6 +10,7 @@ from pixelsb.domain.extract import extract_bytes
 from pixelsb.domain.geometry import SLIDER_STEPS, slider_position, slider_zoom
 from pixelsb.domain.models import (
     MAX_ZOOM,
+    MIN_ZOOM,
     BitChoice,
     BitOrder,
     BitsMask,
@@ -195,11 +196,11 @@ def test_cropping_crops_to_the_rows_and_columns_its_pixels_touch(pattern: int) -
             assert bool(mask[dy, dx]) == bool(live[coord.y, coord.x])
 
 
-@given(zoom=st.integers(min_value=1, max_value=int(MAX_ZOOM)))
-def test_the_slider_round_trips_every_whole_zoom(zoom: int) -> None:
+@given(zoom=st.floats(min_value=MIN_ZOOM, max_value=MAX_ZOOM))
+def test_the_slider_round_trips_every_zoom(zoom: float) -> None:
     position = slider_position(zoom)
     assert 0 <= position <= SLIDER_STEPS
-    assert slider_zoom(position) == zoom
+    assert slider_zoom(position) == pytest.approx(zoom, rel=0.01)
 
 
 def _transposed(image: LoadedImage) -> LoadedImage:
